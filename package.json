@@ -1,0 +1,28 @@
+{
+  "name": "@paperclipai/orager",
+  "version": "0.0.1",
+  "private": true,
+  "description": "OpenRouter agentic CLI — drop-in replacement for the claude CLI in paperclip",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "orager": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "typescript": "^5.7.3",
+    "tsx": "^4.19.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
