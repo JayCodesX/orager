@@ -173,7 +173,7 @@ export interface OpenRouterUsage {
 export interface OpenRouterDelta {
   role?: string;
   content?: string | null;
-  /** Extended-thinking text (DeepSeek R1, Claude extended thinking, etc.). */
+  /** Extended-thinking text (DeepSeek R1, extended thinking models, etc.). */
   reasoning?: string | null;
   /** Structured reasoning details (some providers). */
   reasoning_details?: Array<{
@@ -295,7 +295,7 @@ export interface OpenRouterCallOptions {
   tool_choice?: "auto" | "none" | "required" | { type: "function"; function: { name: string } };
   parallel_tool_calls?: boolean;
 
-  // Reasoning (DeepSeek R1, Claude extended thinking, OpenAI o-series, etc.)
+  // Reasoning (DeepSeek R1, extended thinking models, OpenAI o-series, etc.)
   reasoning?: OpenRouterReasoningConfig;
 
   // Output format

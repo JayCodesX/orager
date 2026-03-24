@@ -18,7 +18,7 @@ beforeEach(async () => {
   //       other-skill/
   //         SKILL.md
 
-  const skillsRoot = path.join(tmpDir, ".claude", "skills");
+  const skillsRoot = path.join(tmpDir, ".orager", "skills");
   await fs.mkdir(path.join(skillsRoot, "my-skill"), { recursive: true });
   await fs.mkdir(path.join(skillsRoot, "other-skill"), { recursive: true });
 

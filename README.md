@@ -1,6 +1,6 @@
 # orager
 
-An agentic CLI that runs a multi-turn tool-calling loop backed by [OpenRouter](https://openrouter.ai). Drop-in replacement for the `claude` CLI in Paperclip's `claude_local`-style adapter configurations — works with any OpenRouter model.
+An agentic CLI that runs a multi-turn tool-calling loop backed by [OpenRouter](https://openrouter.ai) — works with any model available on the platform.
 
 ## Install
 

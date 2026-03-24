@@ -67,7 +67,7 @@ export async function loadSkillsFromDirs(addDirs: string[]): Promise<SkillEntry[
   const skills: SkillEntry[] = [];
 
   for (const dir of addDirs) {
-    const skillsRoot = path.join(dir, ".claude", "skills");
+    const skillsRoot = path.join(dir, ".orager", "skills");
 
     let skillDirs: string[];
     try {

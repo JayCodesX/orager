@@ -2,7 +2,7 @@
   "name": "@paperclipai/orager",
   "version": "0.0.1",
   "private": true,
-  "description": "OpenRouter agentic CLI — drop-in replacement for the claude CLI in paperclip",
+  "description": "OpenRouter agentic CLI for Paperclip agent loops",
   "license": "MIT",
   "type": "module",
   "bin": {
