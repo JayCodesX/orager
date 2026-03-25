@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import { runAgentLoop } from "./loop.js";
 import { emit } from "./emit.js";
 import { loadToolsFromFile } from "./tools/load-tools.js";
+import { pruneOldSessions } from "./session.js";
 import type { CliOptions, EmitResultEvent } from "./types.js";
 
 // ── Stdin reading ────────────────────────────────────────────────────────────
@@ -258,6 +259,15 @@ function parseArgs(argv: string[]): CliOptions {
         opts.systemPromptFile = argv[++i];
         break;
       }
+      case "--prune-sessions": {
+        // handled in main before loop
+        break;
+      }
+      case "--older-than": {
+        // handled in main before loop (paired with --prune-sessions)
+        i++;
+        break;
+      }
       default:
         // Unknown flags or positional args — skip
         break;
@@ -296,7 +306,50 @@ process.on("SIGTERM", () => handleInterrupt("SIGTERM"));
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
+// ── Prune subcommand ──────────────────────────────────────────────────────────
+
+async function handlePrune(argv: string[]): Promise<void> {
+  // Parse --older-than <value> where value is e.g. "30d", "7d", "24h", "1h"
+  let olderThanMs = 30 * 24 * 60 * 60 * 1000; // default: 30 days
+  const idx = argv.indexOf("--older-than");
+  if (idx !== -1) {
+    const raw = argv[idx + 1] ?? "";
+    const match = /^(\d+(?:\.\d+)?)(d|h|m)$/.exec(raw);
+    if (match) {
+      const n = parseFloat(match[1]);
+      const unit = match[2];
+      if (unit === "d") olderThanMs = n * 24 * 60 * 60 * 1000;
+      else if (unit === "h") olderThanMs = n * 60 * 60 * 1000;
+      else if (unit === "m") olderThanMs = n * 60 * 1000;
+    } else {
+      process.stderr.write(
+        `orager: invalid --older-than value "${raw}". Use e.g. 30d, 7d, 24h, 1h.\n`
+      );
+      process.exit(1);
+    }
+  }
+
+  const days = (olderThanMs / (24 * 60 * 60 * 1000)).toFixed(1);
+  process.stderr.write(`[orager] pruning sessions older than ${days} day(s)...\n`);
+
+  const result = await pruneOldSessions(olderThanMs);
+  process.stdout.write(
+    `Pruned ${result.deleted} session(s). Kept ${result.kept}. Errors: ${result.errors}.\n`
+  );
+  process.exit(0);
+}
+
+// ── Main ─────────────────────────────────────────────────────────────────────
+
 async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
+
+  // Handle --prune-sessions before anything else — no API key needed
+  if (argv.includes("--prune-sessions")) {
+    await handlePrune(argv);
+    return; // exit(0) called inside handlePrune
+  }
+
   // Resolve API key
   const apiKey =
     process.env["OPENROUTER_API_KEY"] ?? process.env["ORAGER_API_KEY"] ?? "";
@@ -310,7 +363,7 @@ async function main(): Promise<void> {
 
   const [prompt, opts] = await Promise.all([
     readStdin(),
-    Promise.resolve(parseArgs(process.argv.slice(2))),
+    Promise.resolve(parseArgs(argv)),
   ]);
 
   // Load extra tools from JSON spec files

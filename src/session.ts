@@ -37,3 +37,48 @@ export async function deleteSession(sessionId: string): Promise<void> {
 export function newSessionId(): string {
   return crypto.randomUUID();
 }
+
+// ── Pruning ───────────────────────────────────────────────────────────────────
+
+export interface PruneResult {
+  deleted: number;
+  kept: number;
+  errors: number;
+}
+
+/**
+ * Delete session files that haven't been modified in more than `olderThanMs`
+ * milliseconds. Returns counts of deleted, kept, and errored files.
+ */
+export async function pruneOldSessions(olderThanMs: number): Promise<PruneResult> {
+  const cutoff = Date.now() - olderThanMs;
+  let deleted = 0;
+  let kept = 0;
+  let errors = 0;
+
+  let entries: string[];
+  try {
+    entries = await fs.readdir(SESSIONS_DIR);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { deleted: 0, kept: 0, errors: 0 };
+    throw err;
+  }
+
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) continue;
+    const filePath = path.join(SESSIONS_DIR, entry);
+    try {
+      const stat = await fs.stat(filePath);
+      if (stat.mtimeMs < cutoff) {
+        await fs.unlink(filePath);
+        deleted++;
+      } else {
+        kept++;
+      }
+    } catch {
+      errors++;
+    }
+  }
+
+  return { deleted, kept, errors };
+}

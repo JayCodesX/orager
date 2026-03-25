@@ -115,7 +115,7 @@ orager --print - --output-format stream-json --model openai/gpt-4o <<< "Fix the 
 | `--site-url <url>` | HTTP-Referer header for OpenRouter attribution |
 | `--site-name <name>` | X-Title header for OpenRouter attribution |
 
-## Session persistence
+## Session management
 
 Sessions are saved to `~/.orager/sessions/<session-id>.json`. Resume a previous session:
 
@@ -127,6 +127,21 @@ orager --print - --output-format stream-json \
 ```
 
 By default, resuming from a different working directory starts a fresh session with a warning. Use `--force-resume` to override.
+
+### Pruning old sessions
+
+Session files accumulate indefinitely. Prune sessions that haven't been used recently:
+
+```bash
+# Delete sessions not modified in the last 30 days (default)
+orager --prune-sessions
+
+# Custom age threshold
+orager --prune-sessions --older-than 7d
+orager --prune-sessions --older-than 24h
+```
+
+Time units: `d` (days), `h` (hours), `m` (minutes).
 
 ## Output format
 
@@ -156,6 +171,82 @@ Orager emits one JSON object per line (`stream-json`):
 
 Append `:free`, `:nitro`, `:floor`, `:online`, `:thinking`, or `:extended` to any model ID. Full catalogue at [openrouter.ai/models](https://openrouter.ai/models).
 
+## MCP server
+
+orager ships an [MCP](https://modelcontextprotocol.io) server so any MCP-compatible client (Cursor, Claude Desktop, VS Code, etc.) can delegate tasks to OpenRouter models without leaving their editor.
+
+### Setup
+
+Add to your editor's MCP config (e.g. `~/.cursor/mcp.json` or Claude Desktop's `claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "orager": {
+      "command": "node",
+      "args": ["/path/to/orager/dist/mcp.js"],
+      "env": {
+        "OPENROUTER_API_KEY": "sk-or-...",
+        "ORAGER_DEFAULT_MODEL": "deepseek/deepseek-chat-v3-0324"
+      }
+    }
+  }
+}
+```
+
+Or run directly during development:
+
+```bash
+npm run mcp
+```
+
+### Tools exposed
+
+| Tool | Description |
+|---|---|
+| `run_agent` | Run an agent to completion. Returns the result text and a `session_id` you can pass on the next call to continue. |
+| `list_models` | Return the configured default model for this server instance. |
+
+### `run_agent` parameters
+
+| Parameter | Type | Description |
+|---|---|---|
+| `prompt` | string | **Required.** Task or question for the agent. |
+| `model` | string | OpenRouter model ID (default: `ORAGER_DEFAULT_MODEL`). |
+| `session_id` | string | Resume a previous session. |
+| `cwd` | string | Working directory (default: server process cwd). |
+| `max_turns` | number | Max agent turns (default: `20`). |
+| `max_cost_usd` | number | Stop if cost exceeds this USD value. |
+| `system_prompt` | string | Extra text appended to the system prompt. |
+| `dangerously_skip_permissions` | boolean | Skip tool approval prompts. |
+
+### Model chaining
+
+Because OpenRouter proxies all major models under one API key, you can chain models within a single workflow — use a cheap fast model for implementation and a smarter model for review:
+
+```
+Claude (via run_agent, model: anthropic/claude-sonnet-4-6)
+  └── reviews diff produced by
+DeepSeek (previous run_agent call, model: deepseek/deepseek-chat-v3-0324)
+```
+
+Both calls go through the same OpenRouter API key. No separate Anthropic API key needed.
+
+### Graceful shutdown
+
+When the MCP server receives SIGTERM or SIGINT it stops accepting new `run_agent` calls and waits up to 60 seconds for any in-flight calls to complete before exiting. Each in-flight call saves session state after every turn, so a mid-task shutdown loses at most the current turn — the next call can resume via `session_id`.
+
+### Environment variables
+
+| Variable | Description |
+|---|---|
+| `OPENROUTER_API_KEY` | OpenRouter API key (required) |
+| `ORAGER_DEFAULT_MODEL` | Default model if `model` not specified in tool call |
+| `ORAGER_MAX_TURNS` | Default max turns (default: `20`) |
+| `ORAGER_MAX_COST_USD` | Default cost cap in USD (default: none) |
+
+---
+
 ## Development
 
 ```bash
@@ -163,4 +254,5 @@ npm install
 npm run build    # tsc
 npm run test     # vitest run
 npm run dev      # tsx src/index.ts (run without building)
+npm run mcp      # tsx src/mcp.ts (run MCP server without building)
 ```

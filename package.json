@@ -6,14 +6,16 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "orager": "./dist/index.js"
+    "orager": "./dist/index.js",
+    "orager-mcp": "./dist/mcp.js"
   },
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "dev": "tsx src/index.ts"
+    "dev": "tsx src/index.ts",
+    "mcp": "tsx src/mcp.ts"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
@@ -23,5 +25,8 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.28.0"
   }
 }
