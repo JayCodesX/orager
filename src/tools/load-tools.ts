@@ -145,7 +145,7 @@ export async function loadToolsFromFile(filePath: string): Promise<ToolExecutor[
     if (typeof spec.exec !== "string" || !spec.exec) {
       throw new Error(`tools[${i}].exec must be a non-empty string`);
     }
-    tools.push(specToExecutor(spec as ToolSpec));
+    tools.push(specToExecutor(spec as unknown as ToolSpec));
   }
 
   return tools;
