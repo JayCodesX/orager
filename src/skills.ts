@@ -106,22 +106,29 @@ export async function loadSkillsFromDirs(addDirs: string[]): Promise<SkillEntry[
 
 // ── System prompt builder (prompt-only skills) ────────────────────────────────
 
+/** Strip YAML frontmatter block (---...---) from skill content. */
+function stripFrontmatter(content: string): string {
+  const trimmed = content.trimStart();
+  if (!trimmed.startsWith("---")) return trimmed;
+  const afterOpen = trimmed.slice(3);
+  const closeIdx = afterOpen.indexOf("\n---");
+  if (closeIdx === -1) return trimmed;
+  return afterOpen.slice(closeIdx + 4).trimStart();
+}
+
 export function buildSkillsSystemPrompt(skills: SkillEntry[]): string {
   const promptSkills = skills.filter((s) => !s.exec);
   if (promptSkills.length === 0) return "";
 
-  const lines: string[] = [
-    "## Available Skills",
-    "",
-    "The following skills are available to you:",
-    "",
-  ];
+  const lines: string[] = ["## Skills", ""];
 
   for (const skill of promptSkills) {
-    if (skill.description) {
-      lines.push(`- **${skill.name}**: ${skill.description}`);
-    } else {
-      lines.push(`- **${skill.name}**`);
+    const body = stripFrontmatter(skill.content);
+    if (body) {
+      // Include the full skill body (already contains its own headings)
+      lines.push(body, "");
+    } else if (skill.description) {
+      lines.push(`### ${skill.name}`, "", skill.description, "");
     }
   }
 
