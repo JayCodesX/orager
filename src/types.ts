@@ -422,6 +422,9 @@ export interface CliOptions {
 
   // Context
   transforms?: string[];
+
+  /** Path to a file whose contents are appended to the system prompt. */
+  systemPromptFile?: string;
 }
 
 // ── Agent loop options ───────────────────────────────────────────────────────
@@ -492,6 +495,9 @@ export interface AgentLoopOptions {
 
   // Context
   transforms?: string[];
+
+  /** Extra text appended to the system prompt (e.g. agent instructions). */
+  appendSystemPrompt?: string;
 }
 
 // ── Permission types ─────────────────────────────────────────────────────────

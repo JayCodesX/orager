@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import process from "node:process";
+import fs from "node:fs/promises";
 import { runAgentLoop } from "./loop.js";
 import { emit } from "./emit.js";
 import { loadToolsFromFile } from "./tools/load-tools.js";
@@ -253,6 +254,10 @@ function parseArgs(argv: string[]): CliOptions {
         if (s) opts.models.push(s);
         break;
       }
+      case "--system-prompt-file": {
+        opts.systemPromptFile = argv[++i];
+        break;
+      }
       default:
         // Unknown flags or positional args — skip
         break;
@@ -326,6 +331,17 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Load system prompt file if provided
+  let appendSystemPrompt: string | undefined;
+  if (opts.systemPromptFile) {
+    try {
+      appendSystemPrompt = await fs.readFile(opts.systemPromptFile, "utf8");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`orager: warning: could not read --system-prompt-file "${opts.systemPromptFile}": ${msg}\n`);
+    }
+  }
+
   // Keep session ID available for interrupt handler
   if (opts.sessionId) {
     interruptSessionId = opts.sessionId;
@@ -392,6 +408,7 @@ async function main(): Promise<void> {
     reasoning,
     provider,
     transforms: opts.transforms,
+    appendSystemPrompt,
   });
 }
 

@@ -119,6 +119,10 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     systemPrompt += "\n\n" + skillsSection;
   }
 
+  if (opts.appendSystemPrompt?.trim()) {
+    systemPrompt += "\n\n" + opts.appendSystemPrompt.trim();
+  }
+
   // Merge: built-in tools + skill tools + finish tool (opt-in) + caller-supplied extra tools
   const allTools = [
     ...ALL_TOOLS,
