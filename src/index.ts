@@ -277,6 +277,7 @@ function handleInterrupt(signal: string): void {
     subtype: "interrupted",
     result: `Process interrupted by ${signal}`,
     session_id: interruptSessionId,
+    finish_reason: null,
     usage: interruptUsage,
     total_cost_usd: 0,
   };

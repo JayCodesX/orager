@@ -398,6 +398,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           subtype: "error_max_cost",
           result: lastAssistantText,
           session_id: sessionId,
+          finish_reason: lastFinishReason,
           usage: {
             input_tokens: cumulativeUsage.prompt_tokens,
             output_tokens: cumulativeUsage.completion_tokens,
@@ -434,6 +435,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       subtype,
       result: lastAssistantText,
       session_id: sessionId,
+      finish_reason: lastFinishReason,
       usage: {
         input_tokens: cumulativeUsage.prompt_tokens,
         output_tokens: cumulativeUsage.completion_tokens,
@@ -464,6 +466,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       subtype: "error",
       result: message,
       session_id: sessionId,
+      finish_reason: lastFinishReason,
       usage: {
         input_tokens: cumulativeUsage.prompt_tokens,
         output_tokens: cumulativeUsage.completion_tokens,
@@ -472,7 +475,4 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       total_cost_usd: totalCostUsd,
     });
   }
-
-  // suppress unused variable warnings
-  void lastFinishReason;
 }

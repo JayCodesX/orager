@@ -143,6 +143,7 @@ export interface EmitResultEvent {
   subtype: "success" | "error_max_turns" | "error_max_cost" | "error" | "interrupted";
   result: string;
   session_id: string;
+  finish_reason: string | null;
   usage: {
     input_tokens: number;
     output_tokens: number;
