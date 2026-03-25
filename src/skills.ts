@@ -38,13 +38,32 @@ function extractFrontmatter(raw: string): Frontmatter {
   for (const line of block.split(/\r?\n/)) {
     const descMatch = line.match(/^description\s*:\s*(.+)$/);
     if (descMatch) {
-      description = descMatch[1].trim().replace(/^['"]|['"]$/g, "");
+      const raw = descMatch[1].trim();
+      if (
+        (raw.startsWith('"') && raw.endsWith('"')) ||
+        (raw.startsWith("'") && raw.endsWith("'"))
+      ) {
+        description = raw.slice(1, -1);
+      } else {
+        description = raw;
+      }
       continue;
     }
 
     const execMatch = line.match(/^exec\s*:\s*(.+)$/);
     if (execMatch) {
-      exec = execMatch[1].trim().replace(/^['"]|['"]$/g, "");
+      const raw = execMatch[1].trim();
+      // Only strip outer quotes when the string is symmetrically quoted
+      // (e.g. 'cmd' or "cmd") — never strip a trailing quote that is part of
+      // the command itself (e.g. -H "Authorization: Bearer $TOKEN")
+      if (
+        (raw.startsWith('"') && raw.endsWith('"')) ||
+        (raw.startsWith("'") && raw.endsWith("'"))
+      ) {
+        exec = raw.slice(1, -1);
+      } else {
+        exec = raw;
+      }
       continue;
     }
 
