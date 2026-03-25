@@ -4,7 +4,14 @@ import fs from "node:fs/promises";
 import { runAgentLoop } from "./loop.js";
 import { emit } from "./emit.js";
 import { loadToolsFromFile } from "./tools/load-tools.js";
-import { pruneOldSessions } from "./session.js";
+import {
+  pruneOldSessions,
+  deleteTrashedSessions,
+  trashSession,
+  restoreSession,
+  deleteSession,
+  listSessions,
+} from "./session.js";
 import type { CliOptions, EmitResultEvent } from "./types.js";
 
 // ── Stdin reading ────────────────────────────────────────────────────────────
@@ -306,6 +313,86 @@ process.on("SIGTERM", () => handleInterrupt("SIGTERM"));
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
+// ── Session management subcommands ───────────────────────────────────────────
+
+async function handleListSessions(): Promise<void> {
+  const sessions = await listSessions();
+  if (sessions.length === 0) {
+    process.stdout.write("No sessions found.\n");
+    process.exit(0);
+  }
+
+  const active = sessions.filter((s) => !s.trashed);
+  const trashed = sessions.filter((s) => s.trashed);
+
+  const fmt = (s: (typeof sessions)[0]) =>
+    `  ${s.sessionId}  ${s.model.padEnd(40)}  turns:${String(s.turnCount).padStart(3)}  ${s.updatedAt.slice(0, 16).replace("T", " ")}  ${s.trashed ? "[TRASHED]" : ""}`;
+
+  if (active.length > 0) {
+    process.stdout.write(`Active sessions (${active.length}):\n`);
+    for (const s of active) process.stdout.write(fmt(s) + "\n");
+  }
+  if (trashed.length > 0) {
+    process.stdout.write(`\nTrashed sessions (${trashed.length}):\n`);
+    for (const s of trashed) process.stdout.write(fmt(s) + "\n");
+  }
+  process.exit(0);
+}
+
+async function handleTrashSession(argv: string[]): Promise<void> {
+  const idx = argv.indexOf("--trash-session");
+  const sessionId = argv[idx + 1] ?? "";
+  if (!sessionId) {
+    process.stderr.write("orager: --trash-session requires a session ID.\n");
+    process.exit(1);
+  }
+  const ok = await trashSession(sessionId);
+  if (ok) {
+    process.stdout.write(`Session ${sessionId} marked as trashed.\n`);
+  } else {
+    process.stderr.write(`Session ${sessionId} not found.\n`);
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
+async function handleRestoreSession(argv: string[]): Promise<void> {
+  const idx = argv.indexOf("--restore-session");
+  const sessionId = argv[idx + 1] ?? "";
+  if (!sessionId) {
+    process.stderr.write("orager: --restore-session requires a session ID.\n");
+    process.exit(1);
+  }
+  const ok = await restoreSession(sessionId);
+  if (ok) {
+    process.stdout.write(`Session ${sessionId} restored.\n`);
+  } else {
+    process.stderr.write(`Session ${sessionId} not found.\n`);
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
+async function handleDeleteSession(argv: string[]): Promise<void> {
+  const idx = argv.indexOf("--delete-session");
+  const sessionId = argv[idx + 1] ?? "";
+  if (!sessionId) {
+    process.stderr.write("orager: --delete-session requires a session ID.\n");
+    process.exit(1);
+  }
+  await deleteSession(sessionId);
+  process.stdout.write(`Session ${sessionId} deleted.\n`);
+  process.exit(0);
+}
+
+async function handleDeleteTrashed(): Promise<void> {
+  const result = await deleteTrashedSessions();
+  process.stdout.write(
+    `Deleted ${result.deleted} trashed session(s). Active sessions kept: ${result.kept}. Errors: ${result.errors}.\n`,
+  );
+  process.exit(0);
+}
+
 // ── Prune subcommand ──────────────────────────────────────────────────────────
 
 async function handlePrune(argv: string[]): Promise<void> {
@@ -344,11 +431,13 @@ async function handlePrune(argv: string[]): Promise<void> {
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
 
-  // Handle --prune-sessions before anything else — no API key needed
-  if (argv.includes("--prune-sessions")) {
-    await handlePrune(argv);
-    return; // exit(0) called inside handlePrune
-  }
+  // Session management commands — no API key needed
+  if (argv.includes("--list-sessions"))    { await handleListSessions();       return; }
+  if (argv.includes("--trash-session"))    { await handleTrashSession(argv);   return; }
+  if (argv.includes("--restore-session"))  { await handleRestoreSession(argv); return; }
+  if (argv.includes("--delete-session"))   { await handleDeleteSession(argv);  return; }
+  if (argv.includes("--delete-trashed"))   { await handleDeleteTrashed();      return; }
+  if (argv.includes("--prune-sessions"))   { await handlePrune(argv);          return; }
 
   // Resolve API key
   const apiKey =

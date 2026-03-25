@@ -15,7 +15,26 @@ export async function saveSession(data: SessionData): Promise<void> {
   await fs.writeFile(sessionPath(data.sessionId), JSON.stringify(data, null, 2), { encoding: "utf8", mode: 0o600 });
 }
 
+/**
+ * Load a session by ID. Returns null if the session does not exist or has
+ * been marked as trashed (trashed sessions are skipped on resume).
+ */
 export async function loadSession(sessionId: string): Promise<SessionData | null> {
+  try {
+    const raw = await fs.readFile(sessionPath(sessionId), "utf8");
+    const data = JSON.parse(raw) as SessionData;
+    if (data.trashed) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Load a session regardless of its trashed status. Used for management
+ * commands (list, delete) that need to see all sessions including trashed ones.
+ */
+export async function loadSessionRaw(sessionId: string): Promise<SessionData | null> {
   try {
     const raw = await fs.readFile(sessionPath(sessionId), "utf8");
     return JSON.parse(raw) as SessionData;
@@ -34,8 +53,79 @@ export async function deleteSession(sessionId: string): Promise<void> {
   }
 }
 
+/**
+ * Mark a session as trashed. It will be preserved on disk but skipped on
+ * resume. Use listSessions() to review trashed sessions, deleteSession() to
+ * permanently remove them.
+ */
+export async function trashSession(sessionId: string): Promise<boolean> {
+  const data = await loadSessionRaw(sessionId);
+  if (!data) return false;
+  await saveSession({ ...data, trashed: true });
+  return true;
+}
+
+/**
+ * Restore a trashed session so it can be resumed again.
+ */
+export async function restoreSession(sessionId: string): Promise<boolean> {
+  const data = await loadSessionRaw(sessionId);
+  if (!data) return false;
+  const { trashed: _removed, ...rest } = data;
+  await saveSession(rest as SessionData);
+  return true;
+}
+
 export function newSessionId(): string {
   return crypto.randomUUID();
+}
+
+// ── Session listing ───────────────────────────────────────────────────────────
+
+export interface SessionSummary {
+  sessionId: string;
+  model: string;
+  createdAt: string;
+  updatedAt: string;
+  turnCount: number;
+  cwd: string;
+  trashed: boolean;
+}
+
+/**
+ * List all sessions. Returns summaries sorted by updatedAt descending (most
+ * recent first). Includes trashed sessions so they can be reviewed and deleted.
+ */
+export async function listSessions(): Promise<SessionSummary[]> {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(SESSIONS_DIR);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
+
+  const summaries: SessionSummary[] = [];
+
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) continue;
+    const sessionId = entry.slice(0, -5);
+    const data = await loadSessionRaw(sessionId);
+    if (!data) continue;
+    summaries.push({
+      sessionId: data.sessionId,
+      model: data.model,
+      createdAt: data.createdAt,
+      updatedAt: data.updatedAt,
+      turnCount: data.turnCount,
+      cwd: data.cwd,
+      trashed: data.trashed === true,
+    });
+  }
+
+  return summaries.sort(
+    (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+  );
 }
 
 // ── Pruning ───────────────────────────────────────────────────────────────────
@@ -81,4 +171,25 @@ export async function pruneOldSessions(olderThanMs: number): Promise<PruneResult
   }
 
   return { deleted, kept, errors };
+}
+
+/**
+ * Delete all sessions currently marked as trashed.
+ */
+export async function deleteTrashedSessions(): Promise<PruneResult> {
+  const sessions = await listSessions();
+  const trashed = sessions.filter((s) => s.trashed);
+  let deleted = 0;
+  let errors = 0;
+
+  for (const s of trashed) {
+    try {
+      await deleteSession(s.sessionId);
+      deleted++;
+    } catch {
+      errors++;
+    }
+  }
+
+  return { deleted, kept: sessions.length - trashed.length, errors };
 }

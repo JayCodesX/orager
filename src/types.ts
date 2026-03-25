@@ -87,6 +87,8 @@ export interface SessionData {
   updatedAt: string;
   turnCount: number;
   cwd: string;
+  /** When true the session is skipped on resume and excluded from active use. */
+  trashed?: boolean;
 }
 
 // ── stream-json emit types (must match what paperclip's parse.ts expects) ───
