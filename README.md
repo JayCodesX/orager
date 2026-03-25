@@ -128,6 +128,53 @@ orager --print - --output-format stream-json \
 
 By default, resuming from a different working directory starts a fresh session with a warning. Use `--force-resume` to override.
 
+### Session management commands
+
+```bash
+# List all sessions (active + trashed)
+orager --list-sessions
+
+# Mark a session as trashed (preserved on disk, skipped on resume)
+orager --trash-session <session-id>
+
+# Restore a trashed session
+orager --restore-session <session-id>
+
+# Permanently delete a session
+orager --delete-session <session-id>
+
+# Delete all trashed sessions
+orager --delete-trashed
+```
+
+### Session rollback
+
+Roll back a session to a prior turn, discarding everything after that point. Useful when a run went wrong and you want to rewind the AI's context:
+
+```bash
+# Roll back to after turn 3 (discards turns 4, 5, ...)
+orager --rollback-session <session-id> --to-turn 3
+
+# Roll back to before any assistant turn (keep only the initial prompt)
+orager --rollback-session <session-id> --to-turn 0
+```
+
+Turns are numbered from 1. After rollback, resume the session normally:
+
+```bash
+orager --print - --resume <session-id> <<< "Try a different approach"
+```
+
+### Trashing bad sessions
+
+When a session has gone off the rails, trash it so Paperclip starts fresh on the next heartbeat:
+
+```bash
+orager --trash-session <session-id>
+```
+
+The trashed session is preserved on disk (useful for debugging) and pruned eventually by `--prune-sessions`. In the Paperclip adapter UI, toggle **Reset session on next run** to trash the session automatically before the next heartbeat.
+
 ### Pruning old sessions
 
 Session files accumulate indefinitely. Prune sessions that haven't been used recently:
@@ -139,6 +186,9 @@ orager --prune-sessions
 # Custom age threshold
 orager --prune-sessions --older-than 7d
 orager --prune-sessions --older-than 24h
+
+# Immediately prune everything (useful after bad session runs)
+orager --prune-sessions --older-than 0d
 ```
 
 Time units: `d` (days), `h` (hours), `m` (minutes).

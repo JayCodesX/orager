@@ -11,6 +11,7 @@ import {
   restoreSession,
   deleteSession,
   listSessions,
+  rollbackSession,
 } from "./session.js";
 import type { CliOptions, EmitResultEvent } from "./types.js";
 
@@ -385,6 +386,40 @@ async function handleDeleteSession(argv: string[]): Promise<void> {
   process.exit(0);
 }
 
+async function handleRollbackSession(argv: string[]): Promise<void> {
+  const idx = argv.indexOf("--rollback-session");
+  const sessionId = argv[idx + 1] ?? "";
+  if (!sessionId) {
+    process.stderr.write("orager: --rollback-session requires a session ID.\n");
+    process.exit(1);
+  }
+  const toIdx = argv.indexOf("--to-turn");
+  if (toIdx === -1) {
+    process.stderr.write("orager: --rollback-session requires --to-turn <n>.\n");
+    process.exit(1);
+  }
+  const toTurn = parseInt(argv[toIdx + 1] ?? "", 10);
+  if (isNaN(toTurn) || toTurn < 0) {
+    process.stderr.write("orager: --to-turn must be a non-negative integer.\n");
+    process.exit(1);
+  }
+  const result = await rollbackSession(sessionId, toTurn);
+  if (!result.ok) {
+    process.stderr.write(`Session ${sessionId} not found.\n`);
+    process.exit(1);
+  }
+  if (result.newTurnCount === result.originalTurnCount) {
+    process.stdout.write(
+      `Session ${sessionId} unchanged (already at ${result.originalTurnCount} turn(s), requested to-turn=${toTurn}).\n`,
+    );
+  } else {
+    process.stdout.write(
+      `Session ${sessionId} rolled back from turn ${result.originalTurnCount} to turn ${result.newTurnCount}.\n`,
+    );
+  }
+  process.exit(0);
+}
+
 async function handleDeleteTrashed(): Promise<void> {
   const result = await deleteTrashedSessions();
   process.stdout.write(
@@ -432,12 +467,13 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
 
   // Session management commands — no API key needed
-  if (argv.includes("--list-sessions"))    { await handleListSessions();       return; }
-  if (argv.includes("--trash-session"))    { await handleTrashSession(argv);   return; }
-  if (argv.includes("--restore-session"))  { await handleRestoreSession(argv); return; }
-  if (argv.includes("--delete-session"))   { await handleDeleteSession(argv);  return; }
-  if (argv.includes("--delete-trashed"))   { await handleDeleteTrashed();      return; }
-  if (argv.includes("--prune-sessions"))   { await handlePrune(argv);          return; }
+  if (argv.includes("--list-sessions"))    { await handleListSessions();         return; }
+  if (argv.includes("--trash-session"))    { await handleTrashSession(argv);    return; }
+  if (argv.includes("--restore-session"))  { await handleRestoreSession(argv);  return; }
+  if (argv.includes("--delete-session"))   { await handleDeleteSession(argv);   return; }
+  if (argv.includes("--delete-trashed"))   { await handleDeleteTrashed();       return; }
+  if (argv.includes("--rollback-session")) { await handleRollbackSession(argv); return; }
+  if (argv.includes("--prune-sessions"))   { await handlePrune(argv);           return; }
 
   // Resolve API key
   const apiKey =

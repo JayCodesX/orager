@@ -174,6 +174,63 @@ export async function pruneOldSessions(olderThanMs: number): Promise<PruneResult
 }
 
 /**
+ * Roll back a session to a given turn number by truncating the message
+ * history. Turn 1 = the first assistant reply and its tool results.
+ *
+ * Returns { ok: false } if the session doesn't exist.
+ * Returns { ok: true, originalTurnCount, newTurnCount } on success.
+ * If toTurn >= current turnCount the session is unchanged.
+ */
+export async function rollbackSession(
+  sessionId: string,
+  toTurn: number,
+): Promise<{ ok: boolean; originalTurnCount: number; newTurnCount: number }> {
+  const data = await loadSessionRaw(sessionId);
+  if (!data) return { ok: false, originalTurnCount: 0, newTurnCount: 0 };
+
+  const { messages } = data;
+  const originalTurnCount = data.turnCount;
+
+  if (toTurn >= originalTurnCount) {
+    return { ok: true, originalTurnCount, newTurnCount: originalTurnCount };
+  }
+  if (toTurn <= 0) {
+    // Roll back to before any assistant turn — keep only the first user message
+    const firstUserIdx = messages.findIndex((m) => m.role === "user");
+    const truncated = firstUserIdx >= 0 ? messages.slice(0, firstUserIdx + 1) : [];
+    await saveSession({ ...data, messages: truncated, turnCount: 0, updatedAt: new Date().toISOString() });
+    return { ok: true, originalTurnCount, newTurnCount: 0 };
+  }
+
+  // Find the cut point: end of the tool-message block following the Nth
+  // AssistantMessage (turns are 1-indexed).
+  let turnsSeen = 0;
+  let cutIndex = messages.length;
+
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i].role === "assistant") {
+      turnsSeen++;
+      if (turnsSeen === toTurn) {
+        // Include all immediately following ToolMessages
+        let j = i + 1;
+        while (j < messages.length && messages[j].role === "tool") j++;
+        cutIndex = j;
+        break;
+      }
+    }
+  }
+
+  await saveSession({
+    ...data,
+    messages: messages.slice(0, cutIndex),
+    turnCount: toTurn,
+    updatedAt: new Date().toISOString(),
+  });
+
+  return { ok: true, originalTurnCount, newTurnCount: toTurn };
+}
+
+/**
  * Delete all sessions currently marked as trashed.
  */
 export async function deleteTrashedSessions(): Promise<PruneResult> {
