@@ -260,6 +260,9 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           apiKey,
           model: turnOverrides.model ?? model,
           models: opts.models,
+          // Pass the session ID so openrouter.ts can set X-Session-Id for
+          // sticky routing, maximising prompt cache hits across turns.
+          sessionId,
           messages,
           tools: allTools.map((t) => t.definition),
           temperature: turnOverrides.temperature ?? opts.temperature,

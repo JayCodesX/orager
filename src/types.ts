@@ -260,6 +260,17 @@ export interface OpenRouterResponseFormat {
   json_schema?: Record<string, unknown>;
 }
 
+// ── Anthropic prompt cache control ──────────────────────────────────────────
+
+/**
+ * Anthropic cache_control block attached to message content or tool definitions
+ * to mark cache breakpoints. OpenRouter passes this through to Anthropic when
+ * the model is anthropic/*.  Other providers silently ignore it.
+ */
+export interface AnthropicCacheControl {
+  type: "ephemeral";
+}
+
 // ── OpenRouter call options (all supported parameters) ───────────────────────
 
 export interface OpenRouterCallOptions {
@@ -270,6 +281,12 @@ export interface OpenRouterCallOptions {
   siteUrl?: string;
   /** Sent as X-Title to display your app name in OpenRouter dashboards. */
   siteName?: string;
+  /**
+   * Session ID used for X-Session-Id header — enables sticky routing on
+   * OpenRouter so requests in the same session land on the same provider
+   * endpoint, maximising prompt cache hit rates.
+   */
+  sessionId?: string;
   /** Ordered fallback model list; tried in sequence if primary fails. */
   models?: string[];
   messages: Message[];

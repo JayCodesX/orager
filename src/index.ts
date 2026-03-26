@@ -469,10 +469,154 @@ async function handlePrune(argv: string[]): Promise<void> {
   process.exit(0);
 }
 
+// ── Config file loading ───────────────────────────────────────────────────────
+// When --config-file <path> is passed (e.g. from the paperclip adapter),
+// read the JSON config, delete the file immediately (it may contain secrets),
+// then inject the decoded options into argv so the rest of parseArgs works
+// without modification. The file is chmod 600 by the writer; we delete it
+// before doing anything else to minimise the window where it is readable.
+
+interface ConfigFileSchema {
+  model?: string;
+  models?: string[];
+  maxTurns?: number;
+  maxRetries?: number;
+  sessionId?: string;
+  addDirs?: string[];
+  dangerouslySkipPermissions?: boolean;
+  sandboxRoot?: string;
+  useFinishTool?: boolean;
+  siteUrl?: string;
+  siteName?: string;
+  temperature?: number;
+  top_p?: number;
+  top_k?: number;
+  frequency_penalty?: number;
+  presence_penalty?: number;
+  repetition_penalty?: number;
+  min_p?: number;
+  seed?: number;
+  stop?: string[];
+  tool_choice?: string;
+  parallel_tool_calls?: boolean;
+  reasoningEffort?: string;
+  reasoningMaxTokens?: number;
+  reasoningExclude?: boolean;
+  providerOrder?: string[];
+  providerIgnore?: string[];
+  providerOnly?: string[];
+  dataCollection?: string;
+  zdr?: boolean;
+  sort?: string;
+  quantizations?: string[];
+  require_parameters?: boolean;
+  preset?: string;
+  transforms?: string[];
+  maxCostUsd?: number;
+  costPerInputToken?: number;
+  costPerOutputToken?: number;
+  requireApproval?: boolean;
+  requireApprovalFor?: string;
+  toolsFiles?: string[];
+  systemPromptFile?: string;
+  outputFormat?: string;
+}
+
+/**
+ * Read the config file at `filePath`, delete it immediately, and return
+ * an argv fragment equivalent to the flags the config represents.
+ */
+async function loadConfigFile(filePath: string): Promise<string[]> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(filePath, "utf8");
+  } catch (err) {
+    throw new Error(`Cannot read --config-file "${filePath}": ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // Delete immediately — the file may contain secrets (API keys via env, etc.)
+  // Best-effort: a deletion failure is not fatal but is logged.
+  try {
+    await fs.unlink(filePath);
+  } catch (err) {
+    process.stderr.write(`[orager] warning: could not delete config file "${filePath}": ${err instanceof Error ? err.message : String(err)}\n`);
+  }
+
+  let cfg: ConfigFileSchema;
+  try {
+    cfg = JSON.parse(raw) as ConfigFileSchema;
+  } catch (err) {
+    throw new Error(`--config-file contains invalid JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // Convert config object back to argv tokens so parseArgs handles it uniformly
+  const args: string[] = [];
+
+  if (cfg.model) args.push("--model", cfg.model);
+  if (Array.isArray(cfg.models)) {
+    for (const m of cfg.models) args.push("--model-fallback", m);
+  }
+  if (cfg.maxTurns !== undefined) args.push("--max-turns", String(cfg.maxTurns));
+  if (cfg.maxRetries !== undefined) args.push("--max-retries", String(cfg.maxRetries));
+  if (cfg.sessionId) args.push("--resume", cfg.sessionId);
+  if (Array.isArray(cfg.addDirs)) {
+    for (const d of cfg.addDirs) args.push("--add-dir", d);
+  }
+  if (cfg.dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
+  if (cfg.sandboxRoot) args.push("--sandbox-root", cfg.sandboxRoot);
+  if (cfg.useFinishTool) args.push("--use-finish-tool");
+  if (cfg.siteUrl) args.push("--site-url", cfg.siteUrl);
+  if (cfg.siteName) args.push("--site-name", cfg.siteName);
+  if (cfg.temperature !== undefined) args.push("--temperature", String(cfg.temperature));
+  if (cfg.top_p !== undefined) args.push("--top-p", String(cfg.top_p));
+  if (cfg.top_k !== undefined) args.push("--top-k", String(cfg.top_k));
+  if (cfg.frequency_penalty !== undefined) args.push("--frequency-penalty", String(cfg.frequency_penalty));
+  if (cfg.presence_penalty !== undefined) args.push("--presence-penalty", String(cfg.presence_penalty));
+  if (cfg.repetition_penalty !== undefined) args.push("--repetition-penalty", String(cfg.repetition_penalty));
+  if (cfg.min_p !== undefined) args.push("--min-p", String(cfg.min_p));
+  if (cfg.seed !== undefined) args.push("--seed", String(cfg.seed));
+  if (Array.isArray(cfg.stop)) {
+    for (const s of cfg.stop) args.push("--stop", s);
+  }
+  if (cfg.tool_choice) args.push("--tool-choice", cfg.tool_choice);
+  if (cfg.parallel_tool_calls === true) args.push("--parallel-tool-calls");
+  if (cfg.parallel_tool_calls === false) args.push("--no-parallel-tool-calls");
+  if (cfg.reasoningEffort) args.push("--reasoning-effort", cfg.reasoningEffort);
+  if (cfg.reasoningMaxTokens !== undefined) args.push("--reasoning-max-tokens", String(cfg.reasoningMaxTokens));
+  if (cfg.reasoningExclude) args.push("--reasoning-exclude");
+  if (Array.isArray(cfg.providerOrder) && cfg.providerOrder.length > 0)
+    args.push("--provider-order", cfg.providerOrder.join(","));
+  if (Array.isArray(cfg.providerIgnore) && cfg.providerIgnore.length > 0)
+    args.push("--provider-ignore", cfg.providerIgnore.join(","));
+  if (Array.isArray(cfg.providerOnly) && cfg.providerOnly.length > 0)
+    args.push("--provider-only", cfg.providerOnly.join(","));
+  if (cfg.dataCollection) args.push("--data-collection", cfg.dataCollection);
+  if (cfg.zdr) args.push("--zdr");
+  if (cfg.sort) args.push("--sort", cfg.sort);
+  if (Array.isArray(cfg.quantizations) && cfg.quantizations.length > 0)
+    args.push("--quantizations", cfg.quantizations.join(","));
+  if (cfg.require_parameters) args.push("--require-parameters");
+  if (cfg.preset) args.push("--preset", cfg.preset);
+  if (Array.isArray(cfg.transforms) && cfg.transforms.length > 0)
+    args.push("--transforms", cfg.transforms.join(","));
+  if (cfg.maxCostUsd !== undefined) args.push("--max-cost-usd", String(cfg.maxCostUsd));
+  if (cfg.costPerInputToken !== undefined) args.push("--cost-per-input-token", String(cfg.costPerInputToken));
+  if (cfg.costPerOutputToken !== undefined) args.push("--cost-per-output-token", String(cfg.costPerOutputToken));
+  if (cfg.requireApprovalFor) args.push("--require-approval-for", cfg.requireApprovalFor);
+  else if (cfg.requireApproval) args.push("--require-approval");
+  if (Array.isArray(cfg.toolsFiles)) {
+    for (const f of cfg.toolsFiles) args.push("--tools-file", f);
+  }
+  if (cfg.systemPromptFile) args.push("--system-prompt-file", cfg.systemPromptFile);
+  if (cfg.outputFormat) args.push("--output-format", cfg.outputFormat);
+
+  return args;
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  const argv = process.argv.slice(2);
+  let argv = process.argv.slice(2);
 
   // Session management commands — no API key needed
   if (argv.includes("--list-sessions"))    { await handleListSessions();         return; }
@@ -482,6 +626,24 @@ async function main(): Promise<void> {
   if (argv.includes("--delete-trashed"))   { await handleDeleteTrashed();       return; }
   if (argv.includes("--rollback-session")) { await handleRollbackSession(argv); return; }
   if (argv.includes("--prune-sessions"))   { await handlePrune(argv);           return; }
+
+  // ── Config file expansion ──────────────────────────────────────────────────
+  // If --config-file <path> is present, load the JSON config, delete the file,
+  // and expand its contents into argv. This replaces the 50+ CLI args that
+  // the adapter used to pass; the file is deleted before any further processing
+  // so secrets are not left on disk.
+  const cfIdx = argv.indexOf("--config-file");
+  if (cfIdx !== -1) {
+    const cfPath = argv[cfIdx + 1];
+    if (!cfPath) {
+      process.stderr.write("orager: --config-file requires a path argument\n");
+      process.exit(1);
+    }
+    // Remove --config-file and its path from argv, then inject the expanded flags
+    const remaining = [...argv.slice(0, cfIdx), ...argv.slice(cfIdx + 2)];
+    const configArgs = await loadConfigFile(cfPath);
+    argv = [...remaining, ...configArgs];
+  }
 
   // Resolve API key
   const apiKey =

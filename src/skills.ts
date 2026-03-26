@@ -3,6 +3,41 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import type { ToolExecutor, ToolParameterSchema, ToolResult } from "./types.js";
 
+// ── Skills cache ──────────────────────────────────────────────────────────────
+// Cache skill entries per directory to avoid re-reading from disk on every
+// agent invocation. Cache entries are invalidated when any SKILL.md mtime
+// changes or when the entry is older than SKILLS_CACHE_TTL_MS (5 minutes).
+// Skills from each dir are cached independently so a change in one dir does
+// not evict other dirs.
+
+const SKILLS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+interface SkillsCacheEntry {
+  skills: SkillEntry[];
+  loadedAt: number;
+  /** Concatenated "<file>:<mtime>" pairs for all SKILL.md files in the dir. */
+  mtimeKey: string;
+}
+
+// Keyed by the skills root path (dir + "/.orager/skills")
+const skillsCache = new Map<string, SkillsCacheEntry>();
+
+/** Build a mtime key by stat-ing every SKILL.md under the given skillsRoot. */
+async function buildMtimeKey(skillsRoot: string, skillDirs: string[]): Promise<string> {
+  const parts: string[] = [];
+  for (const skillName of skillDirs) {
+    const skillFile = path.join(skillsRoot, skillName, "SKILL.md");
+    try {
+      const stat = await fs.stat(skillFile);
+      parts.push(`${skillFile}:${stat.mtimeMs}`);
+    } catch {
+      // File may not exist — include a sentinel so its absence is part of the key
+      parts.push(`${skillFile}:missing`);
+    }
+  }
+  return parts.join("|");
+}
+
 export interface SkillEntry {
   name: string;
   description: string;
@@ -98,6 +133,26 @@ export async function loadSkillsFromDirs(addDirs: string[]): Promise<SkillEntry[
       continue;
     }
 
+    // ── Cache check ──────────────────────────────────────────────────────────
+    // Build the mtime key for all SKILL.md files in this dir. If the key and
+    // age both match the cached entry, skip disk reads and reuse cached skills.
+    const now = Date.now();
+    const mtimeKey = await buildMtimeKey(skillsRoot, skillDirs);
+    const cached = skillsCache.get(skillsRoot);
+
+    if (
+      cached &&
+      cached.mtimeKey === mtimeKey &&
+      now - cached.loadedAt < SKILLS_CACHE_TTL_MS
+    ) {
+      // Cache hit — use cached skills for this dir
+      skills.push(...cached.skills);
+      continue;
+    }
+
+    // ── Cache miss or stale — reload from disk ───────────────────────────────
+    const dirSkills: SkillEntry[] = [];
+
     for (const skillName of skillDirs) {
       const skillFile = path.join(skillsRoot, skillName, "SKILL.md");
 
@@ -110,7 +165,7 @@ export async function loadSkillsFromDirs(addDirs: string[]): Promise<SkillEntry[
 
       const fm = extractFrontmatter(content);
 
-      skills.push({
+      dirSkills.push({
         name: skillName,
         description: fm.description,
         content,
@@ -118,6 +173,10 @@ export async function loadSkillsFromDirs(addDirs: string[]): Promise<SkillEntry[
         parameters: fm.parameters,
       });
     }
+
+    // Store the freshly loaded skills in the cache
+    skillsCache.set(skillsRoot, { skills: dirSkills, loadedAt: now, mtimeKey });
+    skills.push(...dirSkills);
   }
 
   return skills;
