@@ -121,6 +121,8 @@ export interface DaemonStartOptions {
   apiKey: string;
   /** Model for cache-warming and keep-alive pings. */
   model: string;
+  /** When set, restrict agent runs to cwds within these path prefixes. */
+  allowedCwdPrefixes?: string[];
 }
 
 export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void> {
@@ -137,6 +139,10 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
   process.stderr.write(`[orager daemon] signing key loaded from ${KEY_PATH}\n`);
 
   let activeRuns = 0;
+  let draining = false;
+  let completedRuns = 0;
+  let errorRuns = 0;
+  const daemonStartedAt = Date.now();
   let lastActivityAt = Date.now();
   let keepAliveTimer: ReturnType<typeof setInterval> | null = null;
   const usedModels = new Set<string>([model]);
@@ -201,6 +207,38 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
     }
   }
 
+  /**
+   * Check OpenRouter account balance. Logs a warning if remaining credits
+   * are below $1.00. Non-fatal — a check failure is silently ignored.
+   */
+  async function checkCredits(key: string): Promise<void> {
+    try {
+      const res = await fetch("https://openrouter.ai/api/v1/auth/key", {
+        headers: { Authorization: `Bearer ${key}` },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!res.ok) return;
+      const body = await res.json() as {
+        data?: { limit?: number | null; usage?: number; rate_limited?: boolean };
+      };
+      const { limit, usage } = body.data ?? {};
+      if (typeof limit === "number" && typeof usage === "number") {
+        const remaining = limit - usage;
+        if (remaining < 1.0) {
+          process.stderr.write(
+            `[orager daemon] WARNING: OpenRouter credit balance low ($${remaining.toFixed(2)} remaining)\n`
+          );
+        } else {
+          process.stderr.write(
+            `[orager daemon] OpenRouter credits OK ($${remaining.toFixed(2)} remaining)\n`
+          );
+        }
+      }
+    } catch {
+      // Non-fatal — ignore check failures
+    }
+  }
+
   // ── Idle shutdown ───────────────────────────────────────────────────────────
   function scheduleIdleCheck(): ReturnType<typeof setInterval> {
     const timer = setInterval(() => {
@@ -226,6 +264,22 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
       return;
     }
 
+    // Metrics endpoint
+    if (req.method === "GET" && req.url === "/metrics") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        activeRuns,
+        maxConcurrent,
+        completedRuns,
+        errorRuns,
+        draining,
+        uptimeMs: Date.now() - daemonStartedAt,
+        model,
+        usedModels: Array.from(usedModels),
+      }));
+      return;
+    }
+
     // Run endpoint
     if (req.method === "POST" && req.url === "/run") {
       handleRun(req, res);
@@ -242,6 +296,13 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
   ): Promise<void> {
     const startTime = Date.now();
     let agentId = "unknown";
+
+    // ── Drain check ─────────────────────────────────────────────────────────
+    if (draining) {
+      res.writeHead(503, { "Retry-After": "5" });
+      res.end(JSON.stringify({ error: "daemon shutting down" }));
+      return;
+    }
 
     // ── JWT verification ────────────────────────────────────────────────────
     const authHeader = req.headers["authorization"] ?? "";
@@ -287,6 +348,21 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
         res.writeHead(400);
         res.end(JSON.stringify({ error: "prompt is required" }));
         return;
+      }
+
+      // ── Sandbox root enforcement ─────────────────────────────────────────
+      const { allowedCwdPrefixes } = daemonOpts;
+      if (allowedCwdPrefixes && allowedCwdPrefixes.length > 0) {
+        const reqCwd = runReq.opts?.cwd ?? "";
+        const allowed = allowedCwdPrefixes.some(
+          (prefix) => reqCwd === prefix || reqCwd.startsWith(prefix + "/"),
+        );
+        if (!allowed) {
+          res.writeHead(403);
+          res.end(JSON.stringify({ error: `cwd '${reqCwd}' is not within an allowed prefix` }));
+          auditLog({ timestamp: new Date().toISOString(), agentId, durationMs: 0, status: "rejected", statusCode: 403 });
+          return;
+        }
       }
 
       // Track which models are being used for multi-model keep-alive (#5)
@@ -338,6 +414,7 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
               JSON.stringify({ type: "result", subtype: "error", result: msg, session_id: "", finish_reason: null, usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 }, total_cost_usd: 0 }) + "\n",
             );
           }
+          errorRuns++;
         })
         .finally(() => {
           if (!timedOut) {
@@ -346,6 +423,7 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
             auditLog({ timestamp: new Date().toISOString(), agentId, durationMs: Date.now() - startTime, status: timedOut ? "timeout" : "ok", statusCode: 200 });
           }
           activeRuns--;
+          completedRuns++;
         });
     });
 
@@ -370,14 +448,29 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
 
   // Warm cache on startup (Phase 4c)
   await warmCache();
+  await checkCredits(apiKey);
   startKeepAlive();
 
   // Graceful shutdown
   process.on("SIGTERM", async () => {
-    process.stderr.write("[orager daemon] SIGTERM — shutting down\n");
+    draining = true;
+    process.stderr.write("[orager daemon] SIGTERM — draining in-flight runs...\n");
     stopKeepAlive();
     await releasePidLock();
     await removePortFile();
+
+    const DRAIN_TIMEOUT_MS = 120_000; // 2 minutes
+    const drainStart = Date.now();
+    while (activeRuns > 0 && Date.now() - drainStart < DRAIN_TIMEOUT_MS) {
+      await new Promise<void>((r) => setTimeout(r, 500));
+    }
+    if (activeRuns > 0) {
+      process.stderr.write(
+        `[orager daemon] drain timeout — ${activeRuns} run(s) abandoned\n`
+      );
+    } else {
+      process.stderr.write("[orager daemon] all runs completed — exiting\n");
+    }
     server.close(() => process.exit(0));
   });
   process.on("SIGINT", async () => {

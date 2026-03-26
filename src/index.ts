@@ -653,7 +653,15 @@ async function main(): Promise<void> {
     const modelIdx = argv.indexOf("--model");
     const model = modelIdx !== -1 ? (argv[modelIdx + 1] ?? "deepseek/deepseek-chat-v3-2") : "deepseek/deepseek-chat-v3-2";
 
-    await startDaemon({ port, maxConcurrent, idleTimeoutMs, apiKey, model });
+    const allowedCwdIdxs: number[] = [];
+    for (let i = 0; i < argv.length; i++) {
+      if (argv[i] === "--allowed-cwd") allowedCwdIdxs.push(i);
+    }
+    const allowedCwdPrefixes = allowedCwdIdxs
+      .map((i) => argv[i + 1])
+      .filter((s): s is string => !!s);
+
+    await startDaemon({ port, maxConcurrent, idleTimeoutMs, apiKey, model, allowedCwdPrefixes: allowedCwdPrefixes.length > 0 ? allowedCwdPrefixes : undefined });
     // startDaemon never returns (server keeps process alive)
     return;
   }

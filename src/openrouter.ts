@@ -126,6 +126,7 @@ interface ParseState {
   toolCallMap: Map<number, ToolCallAccumulator>;
   usage: OpenRouterUsage;
   cachedTokens: number;
+  cacheWriteTokens: number;
   responseModel: string;
   finishReason: string | null;
   streamError: string | null;
@@ -163,6 +164,7 @@ function processLine(line: string, state: ParseState): void {
   if (chunk.usage) {
     state.usage = chunk.usage;
     state.cachedTokens = chunk.usage.prompt_tokens_details?.cached_tokens ?? 0;
+    state.cacheWriteTokens = chunk.usage.prompt_tokens_details?.cache_write_tokens ?? state.cacheWriteTokens;
   }
 
   if (chunk.model) {
@@ -325,6 +327,7 @@ export async function callOpenRouter(
     toolCallMap: new Map(),
     usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     cachedTokens: 0,
+    cacheWriteTokens: 0,
     responseModel: model,
     finishReason: null,
     streamError: null,
@@ -365,6 +368,7 @@ export async function callOpenRouter(
     toolCalls,
     usage: state.usage,
     cachedTokens: state.cachedTokens,
+    cacheWriteTokens: state.cacheWriteTokens,
     model: state.responseModel,
     finishReason: state.finishReason,
     isError: state.streamError !== null,

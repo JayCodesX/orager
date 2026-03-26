@@ -292,6 +292,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     total_tokens: 0,
   };
   let cumulativeCachedTokens = 0;
+  let cumulativeCacheWriteTokens = 0;
   let totalCostUsd = 0;
   let lastResponseModel = model;
   let lastFinishReason: string | null = null;
@@ -455,6 +456,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       cumulativeUsage.completion_tokens += response.usage.completion_tokens;
       cumulativeUsage.total_tokens += response.usage.total_tokens;
       cumulativeCachedTokens += response.cachedTokens;
+      cumulativeCacheWriteTokens += response.cacheWriteTokens;
 
       // Accumulate cost
       if (opts.costPerInputToken !== undefined || opts.costPerOutputToken !== undefined) {
@@ -600,8 +602,10 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             input_tokens: cumulativeUsage.prompt_tokens,
             output_tokens: cumulativeUsage.completion_tokens,
             cache_read_input_tokens: cumulativeCachedTokens,
+            cache_write_tokens: cumulativeCacheWriteTokens,
           },
           total_cost_usd: totalCostUsd,
+          turnCount: turn,
         });
         return;
       }
@@ -637,8 +641,10 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         input_tokens: cumulativeUsage.prompt_tokens,
         output_tokens: cumulativeUsage.completion_tokens,
         cache_read_input_tokens: cumulativeCachedTokens,
+        cache_write_tokens: cumulativeCacheWriteTokens,
       },
       total_cost_usd: totalCostUsd,
+      turnCount: turn,
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -668,8 +674,10 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         input_tokens: cumulativeUsage.prompt_tokens,
         output_tokens: cumulativeUsage.completion_tokens,
         cache_read_input_tokens: cumulativeCachedTokens,
+        cache_write_tokens: cumulativeCacheWriteTokens,
       },
       total_cost_usd: totalCostUsd,
+      turnCount: turn,
     });
   }
 }

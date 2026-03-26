@@ -159,8 +159,11 @@ export interface EmitResultEvent {
     input_tokens: number;
     output_tokens: number;
     cache_read_input_tokens: number;
+    cache_write_tokens?: number;
   };
   total_cost_usd: number;
+  /** Number of agent turns completed in this run. */
+  turnCount?: number;
 }
 
 export type EmitEvent =
@@ -359,6 +362,8 @@ export interface OpenRouterCallResult {
   usage: OpenRouterUsage;
   /** Tokens served from prompt cache (0 if no cache hit). */
   cachedTokens: number;
+  /** Tokens written to the prompt cache this request (0 when no new cache entry was created). */
+  cacheWriteTokens: number;
   model: string;
   finishReason: string | null;
   /** True when OpenRouter returned a mid-stream error chunk. */
