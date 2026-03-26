@@ -278,6 +278,14 @@ export async function callOpenRouter(
   if (opts.transforms !== undefined && opts.transforms.length > 0) body.transforms = opts.transforms;
   // Fallback models
   if (opts.models !== undefined && opts.models.length > 0) body.models = opts.models;
+  // Plugins (e.g. response-healing)
+  // When response_format is set (structured outputs), add response-healing by default
+  // unless the caller has already supplied an explicit plugins array.
+  if (opts.plugins !== undefined && opts.plugins.length > 0) {
+    body.plugins = opts.plugins;
+  } else if (opts.response_format !== undefined) {
+    body.plugins = [{ id: "response-healing" }];
+  }
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",

@@ -275,6 +275,15 @@ function parseArgs(argv: string[]): CliOptions {
         opts.systemPromptFile = argv[++i];
         break;
       }
+      case "--summarize-at": {
+        const n = parseFloat(argv[++i]);
+        if (!isNaN(n) && n > 0 && n <= 1) opts.summarizeAt = n;
+        break;
+      }
+      case "--summarize-model": {
+        opts.summarizeModel = argv[++i];
+        break;
+      }
       case "--prune-sessions": {
         // handled in main before loop
         break;
@@ -759,6 +768,8 @@ async function main(): Promise<void> {
     transforms: opts.transforms,
     preset: opts.preset,
     appendSystemPrompt,
+    summarizeAt: opts.summarizeAt,
+    summarizeModel: opts.summarizeModel,
   });
 }
 

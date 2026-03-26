@@ -89,6 +89,8 @@ export interface SessionData {
   cwd: string;
   /** When true the session is skipped on resume and excluded from active use. */
   trashed?: boolean;
+  /** When true the session messages have been compacted by summarization. */
+  summarized?: boolean;
 }
 
 // ── stream-json emit types (must match what paperclip's parse.ts expects) ───
@@ -332,6 +334,9 @@ export interface OpenRouterCallOptions {
   /** ["middle-out"] compresses long conversations to fit context window. */
   transforms?: string[];
 
+  // Plugins (e.g. response-healing)
+  plugins?: Array<{ id: string; enabled?: boolean }>;
+
   // Infrastructure
   signal?: AbortSignal;
   onChunk?: (chunk: OpenRouterStreamChunk) => void;
@@ -451,6 +456,11 @@ export interface CliOptions {
 
   /** Path to a file whose contents are appended to the system prompt. */
   systemPromptFile?: string;
+
+  /** Fraction of context window at which to trigger summarization (0–1). */
+  summarizeAt?: number;
+  /** Model to use for summarization. */
+  summarizeModel?: string;
 }
 
 // ── Agent loop options ───────────────────────────────────────────────────────
@@ -527,6 +537,11 @@ export interface AgentLoopOptions {
 
   /** Extra text appended to the system prompt (e.g. agent instructions). */
   appendSystemPrompt?: string;
+
+  /** Fraction of context window at which to trigger summarization (default 0.8) */
+  summarizeAt?: number;
+  /** Model to use for summarization (defaults to opts.model) */
+  summarizeModel?: string;
 }
 
 // ── Permission types ─────────────────────────────────────────────────────────
