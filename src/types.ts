@@ -308,6 +308,9 @@ export interface OpenRouterCallOptions {
   // Provider routing
   provider?: OpenRouterProviderRouting;
 
+  // OpenRouter preset slug (named server-side config for routing/model settings)
+  preset?: string;
+
   // Context management
   /** ["middle-out"] compresses long conversations to fit context window. */
   transforms?: string[];
@@ -421,6 +424,10 @@ export interface CliOptions {
   zdr?: boolean;
   sort?: "price" | "throughput" | "latency";
   quantizations?: string[];
+  require_parameters?: boolean;
+
+  // OpenRouter preset slug (named server-side config for routing/model settings)
+  preset?: string;
 
   // Context
   transforms?: string[];
@@ -494,6 +501,9 @@ export interface AgentLoopOptions {
 
   // Provider routing
   provider?: OpenRouterProviderRouting;
+
+  // OpenRouter preset slug (named server-side config for routing/model settings)
+  preset?: string;
 
   // Context
   transforms?: string[];

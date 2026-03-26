@@ -162,6 +162,8 @@ export async function callOpenRouter(
   if (opts.structured_outputs !== undefined) body.structured_outputs = opts.structured_outputs;
   // Provider routing
   if (opts.provider !== undefined) body.provider = opts.provider;
+  // OpenRouter preset (named server-side config)
+  if (opts.preset !== undefined && opts.preset.length > 0) body.preset = opts.preset;
   // Context transforms
   if (opts.transforms !== undefined && opts.transforms.length > 0) body.transforms = opts.transforms;
   // Fallback models

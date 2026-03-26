@@ -277,6 +277,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           reasoning: turnOverrides.reasoning ?? opts.reasoning,
           provider: opts.provider,
           transforms: opts.transforms,
+          preset: opts.preset,
           siteUrl: opts.siteUrl,
           siteName: opts.siteName,
         },

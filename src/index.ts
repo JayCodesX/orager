@@ -253,6 +253,14 @@ function parseArgs(argv: string[]): CliOptions {
         if (s) opts.quantizations = s.split(",").map((q) => q.trim()).filter(Boolean);
         break;
       }
+      case "--require-parameters": {
+        opts.require_parameters = true;
+        break;
+      }
+      case "--preset": {
+        opts.preset = argv[++i];
+        break;
+      }
       case "--transforms": {
         const s = argv[++i];
         if (s) opts.transforms = s.split(",").map((t) => t.trim()).filter(Boolean);
@@ -534,7 +542,7 @@ async function main(): Promise<void> {
     : undefined;
 
   const provider = (opts.providerOrder || opts.providerIgnore || opts.providerOnly ||
-    opts.dataCollection || opts.zdr || opts.sort || opts.quantizations)
+    opts.dataCollection || opts.zdr || opts.sort || opts.quantizations || opts.require_parameters)
     ? {
         ...(opts.providerOrder ? { order: opts.providerOrder } : {}),
         ...(opts.providerIgnore ? { ignore: opts.providerIgnore } : {}),
@@ -543,6 +551,7 @@ async function main(): Promise<void> {
         ...(opts.zdr ? { zdr: true } : {}),
         ...(opts.sort ? { sort: opts.sort } : {}),
         ...(opts.quantizations ? { quantizations: opts.quantizations } : {}),
+        ...(opts.require_parameters ? { require_parameters: true } : {}),
       }
     : undefined;
 
@@ -586,6 +595,7 @@ async function main(): Promise<void> {
     reasoning,
     provider,
     transforms: opts.transforms,
+    preset: opts.preset,
     appendSystemPrompt,
   });
 }
