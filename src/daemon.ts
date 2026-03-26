@@ -33,6 +33,7 @@ import type { EmitEvent, AgentLoopOptions } from "./types.js";
 // Written on startup so clients (adapter) can discover the port without config.
 
 const PORT_FILE = path.join(os.homedir(), ".orager", "daemon.port");
+const PID_FILE = path.join(os.homedir(), ".orager", "daemon.pid");
 
 async function writePortFile(port: number): Promise<void> {
   await fs.mkdir(path.dirname(PORT_FILE), { recursive: true });
@@ -51,6 +52,52 @@ export async function readDaemonPort(): Promise<number | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Write a PID lock file. If a live daemon process is already running (PID is
+ * alive), throw a clear error. If the PID file exists but the PID is dead
+ * (stale from a crash), overwrite it silently — this also handles fix #6
+ * (stale port file cleanup).
+ */
+async function acquirePidLock(port: number): Promise<void> {
+  try {
+    const existing = await fs.readFile(PID_FILE, "utf8");
+    const parsed = JSON.parse(existing) as { pid: number; port: number };
+    try {
+      process.kill(parsed.pid, 0); // signal 0 = existence check, no actual signal
+      // If we reach here, the process is alive
+      throw new Error(
+        `[orager daemon] already running (PID ${parsed.pid}, port ${parsed.port}). ` +
+        `Stop it first with: kill ${parsed.pid}`
+      );
+    } catch (killErr) {
+      const code = (killErr as NodeJS.ErrnoException).code;
+      if (code === "EPERM") {
+        // Process alive but we lack permission to signal it
+        throw new Error(
+          `[orager daemon] appears to be running (PID ${parsed.pid}). Stop it first.`
+        );
+      }
+      // ESRCH = no such process — PID is stale, proceed (fixes #6)
+    }
+  } catch (readErr) {
+    // File missing or unparseable — proceed
+    const message = (readErr as Error).message ?? "";
+    if (message.includes("already running") || message.includes("appears to be running")) {
+      throw readErr;
+    }
+  }
+  await fs.mkdir(path.dirname(PID_FILE), { recursive: true });
+  await fs.writeFile(
+    PID_FILE,
+    JSON.stringify({ pid: process.pid, port }),
+    { encoding: "utf8", mode: 0o600 },
+  );
+}
+
+async function releasePidLock(): Promise<void> {
+  await fs.unlink(PID_FILE).catch(() => {});
 }
 
 // ── Daemon run request schema ─────────────────────────────────────────────────
@@ -92,6 +139,8 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
   let activeRuns = 0;
   let lastActivityAt = Date.now();
   let keepAliveTimer: ReturnType<typeof setInterval> | null = null;
+  const usedModels = new Set<string>([model]);
+  let lastRealRequestAt = Date.now();
 
   // ── Audit log (metadata only — no prompt/response content) ─────────────────
   function auditLog(entry: {
@@ -126,13 +175,20 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
     if (keepAliveTimer) return;
     const PING_INTERVAL_MS = 4 * 60 * 1000; // 4 minutes
     keepAliveTimer = setInterval(async () => {
-      await callOpenRouter({
-        apiKey,
-        model,
-        messages: [{ role: "user", content: "ping" }],
-        max_tokens: 1,
-      }).catch(() => {});
-      process.stderr.write(`[orager daemon] keep-alive ping sent\n`);
+      // Skip if a real request completed recently — cache is already warm (#8)
+      if (Date.now() - lastRealRequestAt < PING_INTERVAL_MS) {
+        return;
+      }
+      // Ping all models that have been used (#5)
+      for (const m of usedModels) {
+        await callOpenRouter({
+          apiKey,
+          model: m,
+          messages: [{ role: "user", content: "ping" }],
+          max_tokens: 1,
+        }).catch(() => {});
+      }
+      process.stderr.write(`[orager daemon] keep-alive ping sent (${usedModels.size} model(s))\n`);
     }, PING_INTERVAL_MS);
     // Don't let the interval block process exit
     if (keepAliveTimer.unref) keepAliveTimer.unref();
@@ -166,7 +222,7 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
     // Health check
     if (req.method === "GET" && req.url === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok", activeRuns, model }));
+      res.end(JSON.stringify({ status: "ok", activeRuns, maxConcurrent, model }));
       return;
     }
 
@@ -233,9 +289,14 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
         return;
       }
 
-      activeRuns++;
+      // Track which models are being used for multi-model keep-alive (#5)
+      if (runReq.opts?.model) usedModels.add(runReq.opts.model);
+      lastRealRequestAt = Date.now();
 
-      // Stream newline-delimited JSON events back to the client
+      activeRuns++;
+      if (activeRuns >= maxConcurrent) {
+        process.stderr.write(`[orager daemon] warning: at max concurrent runs (${activeRuns}/${maxConcurrent})\n`);
+      }
       res.writeHead(200, {
         "Content-Type": "application/x-ndjson",
         "Transfer-Encoding": "chunked",
@@ -295,6 +356,7 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
   }
 
   // ── Start server ────────────────────────────────────────────────────────────
+  await acquirePidLock(port);
   await new Promise<void>((resolve, reject) => {
     server.listen(port, "127.0.0.1", () => resolve());
     server.on("error", reject);
@@ -314,11 +376,13 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
   process.on("SIGTERM", async () => {
     process.stderr.write("[orager daemon] SIGTERM — shutting down\n");
     stopKeepAlive();
+    await releasePidLock();
     await removePortFile();
     server.close(() => process.exit(0));
   });
   process.on("SIGINT", async () => {
     stopKeepAlive();
+    await releasePidLock();
     await removePortFile();
     server.close(() => process.exit(0));
   });

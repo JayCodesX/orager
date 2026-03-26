@@ -12,7 +12,15 @@ function sessionPath(sessionId: string): string {
 
 export async function saveSession(data: SessionData): Promise<void> {
   await fs.mkdir(SESSIONS_DIR, { recursive: true });
-  await fs.writeFile(sessionPath(data.sessionId), JSON.stringify(data, null, 2), { encoding: "utf8", mode: 0o600 });
+  const target = sessionPath(data.sessionId);
+  const tmp = `${target}.${process.pid}.tmp`;
+  try {
+    await fs.writeFile(tmp, JSON.stringify(data, null, 2), { encoding: "utf8", mode: 0o600 });
+    await fs.rename(tmp, target);
+  } catch (err) {
+    await fs.unlink(tmp).catch(() => {});
+    throw err;
+  }
 }
 
 /**

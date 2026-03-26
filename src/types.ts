@@ -40,6 +40,11 @@ export interface ToolParameterSchema {
 
 export interface ToolDefinition {
   type: "function";
+  /**
+   * When set, overrides the name-based heuristic for tool result caching.
+   * true = results may be cached; false = results are never cached.
+   */
+  readonly?: boolean;
   function: {
     name: string;
     description: string;
@@ -91,6 +96,8 @@ export interface SessionData {
   trashed?: boolean;
   /** When true the session messages have been compacted by summarization. */
   summarized?: boolean;
+  /** Origin of this session. Informational only — used to diagnose concurrent access. */
+  source?: "cli" | "daemon" | "mcp";
 }
 
 // ── stream-json emit types (must match what paperclip's parse.ts expects) ───

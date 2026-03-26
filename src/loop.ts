@@ -48,6 +48,13 @@ const CONTEXT_WINDOW_MAP: Array<[RegExp, number]> = [
   [/gpt-4o/i, 128_000],
 ];
 
+/**
+ * Hard cap on message count. When exceeded, summarization is forced regardless
+ * of the summarizeAt threshold — even if summarizeAt is 0 (disabled).
+ * Prevents session files from growing unboundedly in long-running agents.
+ */
+const MAX_SESSION_MESSAGES = 500;
+
 function getContextWindow(model: string): number {
   for (const [re, size] of CONTEXT_WINDOW_MAP) {
     if (re.test(model)) return size;
@@ -312,7 +319,12 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     }
 
     // ── Tool result cache (read-only tools only) ─────────────────────────────
-    const readOnly = isReadOnlyTool(toolName);
+    // Prefer the explicit readonly flag on the tool definition; fall back to
+    // the name-pattern heuristic when unset (backward compatible).
+    const readOnly =
+      executor.definition.readonly !== undefined
+        ? executor.definition.readonly
+        : isReadOnlyTool(toolName);
     const sortedArgs = Object.fromEntries(
       Object.entries(parsedInput).sort(([a], [b]) => a.localeCompare(b)),
     );
@@ -527,11 +539,17 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       }
 
       // ── Session summarization check ───────────────────────────────────────
-      if (summarizeAt > 0 && estimateTokens(messages) > contextWindow * summarizeAt) {
-        onLog?.("stderr", "[orager] context window nearing limit — summarizing session...\n");
+      const tokenCount = estimateTokens(messages);
+      const overTokenThreshold = summarizeAt > 0 && tokenCount > contextWindow * summarizeAt;
+      const overMessageCap = messages.length > MAX_SESSION_MESSAGES;
+
+      if (overTokenThreshold || overMessageCap) {
+        const reason = overMessageCap
+          ? `message count (${messages.length}) exceeded hard cap (${MAX_SESSION_MESSAGES})`
+          : `token estimate (${tokenCount}) exceeds ${Math.round(summarizeAt * 100)}% of context window`;
+        onLog?.("stderr", `[orager] ${reason} — summarizing session...\n`);
         try {
           const summary = await summarizeSession(messages, apiKey, model, summarizeModel);
-          // Find the system message (first message if role is system)
           const systemMsg = messages[0]?.role === "system" ? messages[0] : null;
           const compacted: Message[] = [
             ...(systemMsg ? [systemMsg] : []),
@@ -539,7 +557,6 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           ];
           messages = compacted;
           onLog?.("stderr", "[orager] session summarized and compacted.\n");
-          // Best-effort save to record summarized flag
           await saveSession({
             sessionId,
             model: lastResponseModel,
