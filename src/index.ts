@@ -14,6 +14,7 @@ import {
   rollbackSession,
 } from "./session.js";
 import type { CliOptions, EmitResultEvent } from "./types.js";
+import { startDaemon } from "./daemon.js";
 
 // ── Stdin reading ────────────────────────────────────────────────────────────
 
@@ -626,6 +627,36 @@ async function loadConfigFile(filePath: string): Promise<string[]> {
 
 async function main(): Promise<void> {
   let argv = process.argv.slice(2);
+
+  // ── Daemon mode ─────────────────────────────────────────────────────────────
+  if (argv.includes("--serve")) {
+    const apiKey =
+      process.env["OPENROUTER_API_KEY"] ?? process.env["ORAGER_API_KEY"] ?? "";
+    if (!apiKey) {
+      process.stderr.write("orager: API key not set. Export OPENROUTER_API_KEY or ORAGER_API_KEY.\n");
+      process.exit(1);
+    }
+    const portIdx = argv.indexOf("--port");
+    const port = portIdx !== -1 ? parseInt(argv[portIdx + 1] ?? "3456", 10) : 3456;
+
+    const maxConcIdx = argv.indexOf("--max-concurrent");
+    const maxConcurrent = maxConcIdx !== -1 ? parseInt(argv[maxConcIdx + 1] ?? "3", 10) : 3;
+
+    const idleIdx = argv.indexOf("--idle-timeout");
+    let idleTimeoutMs = 30 * 60 * 1000; // default 30 min
+    if (idleIdx !== -1) {
+      const raw = argv[idleIdx + 1] ?? "";
+      const m = /^(\d+(?:\.\d+)?)(m|h)$/.exec(raw);
+      if (m) idleTimeoutMs = parseFloat(m[1]) * (m[2] === "h" ? 3600_000 : 60_000);
+    }
+
+    const modelIdx = argv.indexOf("--model");
+    const model = modelIdx !== -1 ? (argv[modelIdx + 1] ?? "deepseek/deepseek-chat-v3-2") : "deepseek/deepseek-chat-v3-2";
+
+    await startDaemon({ port, maxConcurrent, idleTimeoutMs, apiKey, model });
+    // startDaemon never returns (server keeps process alive)
+    return;
+  }
 
   // Session management commands — no API key needed
   if (argv.includes("--list-sessions"))    { await handleListSessions();         return; }
