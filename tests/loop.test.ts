@@ -14,9 +14,14 @@ vi.mock("../src/session.js", () => ({
   newSessionId: vi.fn().mockReturnValue("test-session-id"),
 }));
 
+vi.mock("../src/audit.js", () => ({
+  auditApproval: vi.fn(),
+}));
+
 // Import mocked functions after vi.mock declarations (vitest hoists vi.mock)
 const { callOpenRouter } = await import("../src/openrouter.js");
-const { saveSession, loadSession } = await import("../src/session.js");
+const { saveSession, loadSession, newSessionId } = await import("../src/session.js");
+const { auditApproval } = await import("../src/audit.js");
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -748,5 +753,392 @@ describe("runAgentLoop — parallel_tool_calls", () => {
     expect(te.content[1].tool_use_id).toBe("c2");
     // Both tools were actually called
     expect(callCount).toBe(2);
+  });
+});
+
+// ── Shared reset helper for new describe blocks ───────────────────────────────
+// vi.clearAllMocks() only clears call counts — it does NOT flush the
+// mockResolvedValueOnce queue. Use vi.resetAllMocks() + re-setup so that
+// leftover queued values from previous tests can't bleed into the next test.
+function resetMocks() {
+  vi.resetAllMocks();
+  vi.mocked(loadSession).mockResolvedValue(null);
+  vi.mocked(saveSession).mockResolvedValue(undefined);
+  vi.mocked(newSessionId).mockReturnValue("test-session-id");
+}
+
+// ── toolErrorBudgetHardStop ───────────────────────────────────────────────────
+
+describe("runAgentLoop — toolErrorBudgetHardStop", () => {
+  beforeEach(resetMocks);
+
+  it("emits error_tool_budget after 5 consecutive tool errors when hardStop=true", async () => {
+    const erroringTool: ToolExecutor = {
+      definition: {
+        type: "function",
+        function: {
+          name: "my_error_tool",
+          description: "Always errors",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+      async execute() {
+        return { toolCallId: "", content: "always fails", isError: true };
+      },
+    };
+
+    const toolCall: ToolCall = {
+      id: "call-err",
+      type: "function",
+      function: { name: "my_error_tool", arguments: "{}" },
+    };
+
+    // Return the failing tool call 5 times (TOOL_ERROR_BUDGET = 5).
+    // Only 5 mocks — the hard stop fires before a 6th call is made.
+    vi.mocked(callOpenRouter)
+      .mockResolvedValueOnce(toolResponse([{ ...toolCall, id: "e1" }]))
+      .mockResolvedValueOnce(toolResponse([{ ...toolCall, id: "e2" }]))
+      .mockResolvedValueOnce(toolResponse([{ ...toolCall, id: "e3" }]))
+      .mockResolvedValueOnce(toolResponse([{ ...toolCall, id: "e4" }]))
+      .mockResolvedValueOnce(toolResponse([{ ...toolCall, id: "e5" }]));
+
+    const { opts, emitted } = loopOpts({
+      extraTools: [erroringTool],
+      toolErrorBudgetHardStop: true,
+      maxTurns: 20,
+    });
+
+    await runAgentLoop(opts);
+
+    const result = resultEvent(emitted);
+    expect(result.subtype).toBe("error_tool_budget");
+    expect(result.result).toContain("my_error_tool");
+    // Should have stopped after the 5th error (5 model calls)
+    expect(vi.mocked(callOpenRouter)).toHaveBeenCalledTimes(5);
+  });
+
+  it("does NOT hard stop (only warns) when toolErrorBudgetHardStop is false (default)", async () => {
+    const erroringTool: ToolExecutor = {
+      definition: {
+        type: "function",
+        function: {
+          name: "soft_error_tool",
+          description: "Always errors",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+      async execute() {
+        return { toolCallId: "", content: "soft fail", isError: true };
+      },
+    };
+
+    const toolCall: ToolCall = {
+      id: "call-soft",
+      type: "function",
+      function: { name: "soft_error_tool", arguments: "{}" },
+    };
+
+    // 5 error turns followed by a success — budget warning resets, loop continues
+    const logs: string[] = [];
+    vi.mocked(callOpenRouter)
+      .mockResolvedValueOnce(toolResponse([{ ...toolCall, id: "s1" }]))
+      .mockResolvedValueOnce(toolResponse([{ ...toolCall, id: "s2" }]))
+      .mockResolvedValueOnce(toolResponse([{ ...toolCall, id: "s3" }]))
+      .mockResolvedValueOnce(toolResponse([{ ...toolCall, id: "s4" }]))
+      .mockResolvedValueOnce(toolResponse([{ ...toolCall, id: "s5" }]))
+      .mockResolvedValueOnce(noToolResponse("recovered"));
+
+    const { opts, emitted } = loopOpts({
+      extraTools: [erroringTool],
+      toolErrorBudgetHardStop: false,
+      maxTurns: 20,
+      onLog: (_s, msg) => logs.push(msg),
+    });
+
+    await runAgentLoop(opts);
+
+    // Should complete successfully (no hard stop)
+    expect(resultEvent(emitted).subtype).toBe("success");
+    // Should have logged a warning
+    expect(logs.some((l) => l.includes("WARNING: tool") && l.includes("soft_error_tool"))).toBe(true);
+  });
+});
+
+// ── _parentSessionIds spawn-cycle detection ───────────────────────────────────
+
+describe("runAgentLoop — _parentSessionIds spawn-cycle detection", () => {
+  beforeEach(resetMocks);
+
+  it("aborts run and logs error when sessionId is in _parentSessionIds", async () => {
+    const logs: string[] = [];
+    const { opts, emitted } = loopOpts({
+      sessionId: "sess-cycle-123",
+      _parentSessionIds: ["sess-cycle-123"],
+      onLog: (_s, msg) => logs.push(msg),
+    });
+
+    await runAgentLoop(opts);
+
+    // Should log the cycle detection error
+    expect(logs.some((l) => l.includes("spawn cycle detected"))).toBe(true);
+    // Should NOT have called the LLM (returns before the loop)
+    expect(vi.mocked(callOpenRouter)).not.toHaveBeenCalled();
+    // No result event emitted
+    expect(resultEvent(emitted)).toBeUndefined();
+  });
+
+  it("does NOT abort when sessionId is NOT in _parentSessionIds", async () => {
+    vi.mocked(callOpenRouter).mockResolvedValueOnce(noToolResponse("done"));
+    const { opts, emitted } = loopOpts({
+      sessionId: null,
+      _parentSessionIds: ["some-other-session"],
+    });
+
+    await runAgentLoop(opts);
+
+    expect(resultEvent(emitted).subtype).toBe("success");
+    expect(vi.mocked(callOpenRouter)).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── extraTools name validation ────────────────────────────────────────────────
+
+describe("runAgentLoop — extraTools name validation", () => {
+  beforeEach(resetMocks);
+
+  it("warns when an extraTool name contains invalid characters", async () => {
+    const badTool: ToolExecutor = {
+      definition: {
+        type: "function",
+        function: {
+          name: "my invalid tool!",
+          description: "Has spaces and exclamation",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+      execute: false,
+    };
+
+    const logs: string[] = [];
+    vi.mocked(callOpenRouter).mockResolvedValueOnce(noToolResponse("done"));
+    const { opts } = loopOpts({
+      extraTools: [badTool],
+      onLog: (_s, msg) => logs.push(msg),
+    });
+
+    await runAgentLoop(opts);
+
+    expect(logs.some((l) => l.includes("invalid characters") && l.includes("my invalid tool!"))).toBe(true);
+  });
+
+  it("does NOT warn for valid extraTool names", async () => {
+    const validTool: ToolExecutor = {
+      definition: {
+        type: "function",
+        function: {
+          name: "my_valid-tool123",
+          description: "Valid name",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+      execute: false,
+    };
+
+    const logs: string[] = [];
+    vi.mocked(callOpenRouter).mockResolvedValueOnce(noToolResponse("done"));
+    const { opts } = loopOpts({
+      extraTools: [validTool],
+      onLog: (_s, msg) => logs.push(msg),
+    });
+
+    await runAgentLoop(opts);
+
+    expect(logs.some((l) => l.includes("invalid characters"))).toBe(false);
+  });
+});
+
+// ── Loop detection escalation ─────────────────────────────────────────────────
+
+describe("runAgentLoop — loop detection escalation", () => {
+  beforeEach(resetMocks);
+
+  it("injects a stuck warning when identical tool calls repeat beyond maxIdenticalToolCallTurns", async () => {
+    // Same tool call every turn, 4 turns then a final text response
+    const repeatCall = bashCall("c1", "echo stuck");
+    vi.mocked(callOpenRouter)
+      .mockResolvedValueOnce(toolResponse([repeatCall]))
+      .mockResolvedValueOnce(toolResponse([repeatCall]))
+      .mockResolvedValueOnce(toolResponse([repeatCall]))  // streak hits 3 = maxIdenticalTurns
+      .mockResolvedValueOnce(noToolResponse("finally done"));
+
+    const logs: string[] = [];
+    const { opts, emitted } = loopOpts({
+      maxIdenticalToolCallTurns: 3,
+      maxTurns: 10,
+      onLog: (_s, msg) => logs.push(msg),
+    });
+
+    await runAgentLoop(opts);
+
+    expect(resultEvent(emitted).subtype).toBe("success");
+    expect(logs.some((l) => l.includes("loop detected"))).toBe(true);
+  });
+
+  it("keeps injecting stuck warnings on every subsequent identical turn (streak does not reset)", async () => {
+    // 5 identical turns — threshold=3, so turns 3, 4, 5 should each inject a warning
+    const repeatCall = bashCall("c1", "echo loop");
+    vi.mocked(callOpenRouter)
+      .mockResolvedValueOnce(toolResponse([repeatCall]))
+      .mockResolvedValueOnce(toolResponse([repeatCall]))
+      .mockResolvedValueOnce(toolResponse([repeatCall]))  // first warning (streak=3)
+      .mockResolvedValueOnce(toolResponse([repeatCall]))  // second warning (streak stays at 3)
+      .mockResolvedValueOnce(toolResponse([repeatCall]))  // third warning (streak stays at 3)
+      .mockResolvedValueOnce(noToolResponse("escaped"));
+
+    const logs: string[] = [];
+    const { opts, emitted } = loopOpts({
+      maxIdenticalToolCallTurns: 3,
+      maxTurns: 20,
+      onLog: (_s, msg) => logs.push(msg),
+    });
+
+    await runAgentLoop(opts);
+
+    expect(resultEvent(emitted).subtype).toBe("success");
+    // "loop detected" should appear 3 times (turns 3, 4, 5)
+    const loopWarnings = logs.filter((l) => l.includes("loop detected"));
+    expect(loopWarnings.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+// ── Delegated tool audit trail ────────────────────────────────────────────────
+
+describe("runAgentLoop — delegated tool audit trail", () => {
+  beforeEach(resetMocks);
+
+  it("calls auditApproval with decision:delegated when a delegated tool is invoked", async () => {
+    const delegatedTool: ToolExecutor = {
+      definition: {
+        type: "function",
+        function: {
+          name: "my_audited_tool",
+          description: "Delegated tool",
+          parameters: { type: "object", properties: { query: { type: "string", description: "" } } },
+        },
+      },
+      execute: false,
+    };
+
+    const delegatedCall: ToolCall = {
+      id: "call-audit",
+      type: "function",
+      function: { name: "my_audited_tool", arguments: JSON.stringify({ query: "test" }) },
+    };
+
+    vi.mocked(callOpenRouter)
+      .mockResolvedValueOnce(toolResponse([delegatedCall]))
+      .mockResolvedValueOnce(noToolResponse("done"));
+
+    const { opts } = loopOpts({
+      extraTools: [delegatedTool],
+      onToolCall: vi.fn().mockResolvedValue("audit result"),
+    });
+
+    await runAgentLoop(opts);
+
+    expect(vi.mocked(auditApproval)).toHaveBeenCalledOnce();
+    const call = vi.mocked(auditApproval).mock.calls[0][0];
+    expect(call.toolName).toBe("my_audited_tool");
+    expect(call.decision).toBe("delegated");
+    expect(call.mode).toBe("delegated");
+  });
+
+  it("does NOT call auditApproval for normal (non-delegated) tool calls", async () => {
+    vi.mocked(callOpenRouter)
+      .mockResolvedValueOnce(toolResponse([bashCall("c1", "echo hi")]))
+      .mockResolvedValueOnce(noToolResponse("done"));
+
+    const { opts } = loopOpts();
+
+    await runAgentLoop(opts);
+
+    expect(vi.mocked(auditApproval)).not.toHaveBeenCalled();
+  });
+});
+
+// ── JSON healing ──────────────────────────────────────────────────────────────
+
+describe("runAgentLoop — JSON healing", () => {
+  beforeEach(resetMocks);
+
+  it("injects a healing message when response_format is json_object and response is not valid JSON", async () => {
+    // Turn 1: invalid JSON
+    // Turn 2: valid JSON (healing succeeded)
+    vi.mocked(callOpenRouter)
+      .mockResolvedValueOnce(noToolResponse("this is not { valid json"))
+      .mockResolvedValueOnce(noToolResponse('{"result": "ok"}'));
+
+    const logs: string[] = [];
+    const { opts, emitted } = loopOpts({
+      response_format: { type: "json_object" },
+      onLog: (_s, msg) => logs.push(msg),
+    });
+
+    await runAgentLoop(opts);
+
+    expect(resultEvent(emitted).subtype).toBe("success");
+    expect(logs.some((l) => l.includes("JSON healing"))).toBe(true);
+    // Two API calls: original + healing retry
+    expect(vi.mocked(callOpenRouter)).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not inject a healing message when response is valid JSON", async () => {
+    vi.mocked(callOpenRouter).mockResolvedValueOnce(noToolResponse('{"answer": 42}'));
+
+    const logs: string[] = [];
+    const { opts, emitted } = loopOpts({
+      response_format: { type: "json_object" },
+      onLog: (_s, msg) => logs.push(msg),
+    });
+
+    await runAgentLoop(opts);
+
+    expect(resultEvent(emitted).subtype).toBe("success");
+    expect(logs.some((l) => l.includes("JSON healing"))).toBe(false);
+    expect(vi.mocked(callOpenRouter)).toHaveBeenCalledTimes(1);
+  });
+
+  it("caps healing at one attempt (does not heal infinitely)", async () => {
+    // All three turns return invalid JSON — should only heal once then stop
+    vi.mocked(callOpenRouter)
+      .mockResolvedValueOnce(noToolResponse("bad json 1"))
+      .mockResolvedValueOnce(noToolResponse("bad json 2"))  // still invalid after heal
+      .mockResolvedValueOnce(noToolResponse("bad json 3"));
+
+    const logs: string[] = [];
+    const { opts, emitted } = loopOpts({
+      response_format: { type: "json_object" },
+      maxTurns: 5,
+      onLog: (_s, msg) => logs.push(msg),
+    });
+
+    await runAgentLoop(opts);
+
+    // Healing logged exactly once
+    const healingLogs = logs.filter((l) => l.includes("JSON healing"));
+    expect(healingLogs).toHaveLength(1);
+    // Loop eventually exits (max_turns or success path)
+    expect(resultEvent(emitted)).toBeDefined();
+  });
+
+  it("does not heal when response_format is not set", async () => {
+    vi.mocked(callOpenRouter).mockResolvedValueOnce(noToolResponse("plain text response"));
+
+    const logs: string[] = [];
+    const { opts } = loopOpts({ onLog: (_s, msg) => logs.push(msg) });
+
+    await runAgentLoop(opts);
+
+    expect(logs.some((l) => l.includes("JSON healing"))).toBe(false);
   });
 });

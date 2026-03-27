@@ -1,34 +1,31 @@
-import { callOpenRouter } from "./openrouter.js";
+import { callOpenRouter, callDirect, shouldUseDirect } from "./openrouter.js";
 import type { OpenRouterCallOptions, OpenRouterCallResult } from "./types.js";
+import { recordProviderSuccess, recordProviderError } from "./provider-health.js";
 
-// Errors that should not be retried — auth failures, malformed requests, etc.
-const FATAL_PATTERNS = [
-  /\b401\b/,
-  /\b403\b/,
-  /unauthorized/i,
-  /forbidden/i,
-  /invalid.{0,20}api.{0,20}key/i,
-  /\b400\b.*bad.request/i,
-];
+function classifyError(result: { httpStatus?: number; errorMessage?: string }): "fatal" | "rotate" | "retry" {
+  // Classify by HTTP status code first (authoritative)
+  const status = result.httpStatus;
+  if (status === 401 || status === 403) return "fatal";
+  if (status === 400) return "fatal"; // bad request — retrying won't help
+  if (status === 402) return "fatal"; // payment required
+  if (status === 404) return "fatal"; // model not found
+  if (status === 429) return "rotate"; // rate limit — try another model/provider
+  if (status === 503) return "rotate"; // overloaded
+  if (status === 500 || status === 502 || status === 504) return "retry"; // transient server error
 
-// Errors that indicate rate-limiting or temporary unavailability — after the
-// first retry on the same model, we rotate to the next fallback model if one
-// is available in opts.models.
-const MODEL_ROTATE_PATTERNS = [
-  /\b429\b/,   // Too Many Requests (rate limit)
-  /\b503\b/,   // Service Unavailable (provider down)
-  /rate.{0,10}limit/i,
-  /too.many.requests/i,
-  /service.{0,10}unavailable/i,
-  /overloaded/i,
-];
-
-function isFatal(message: string): boolean {
-  return FATAL_PATTERNS.some((p) => p.test(message));
+  // Fallback: regex on message string for cases where status is missing
+  const msg = (result.errorMessage ?? "").toLowerCase();
+  if (/unauthorized|forbidden|invalid.*key|bad request/i.test(msg)) return "fatal";
+  if (/rate.?limit|too many|overloaded|capacity/i.test(msg)) return "rotate";
+  return "retry";
 }
 
-function shouldRotateModel(message: string): boolean {
-  return MODEL_ROTATE_PATTERNS.some((p) => p.test(message));
+function isFatal(result: { httpStatus?: number; errorMessage?: string }): boolean {
+  return classifyError(result) === "fatal";
+}
+
+function shouldRotateModel(result: { httpStatus?: number; errorMessage?: string }): boolean {
+  return classifyError(result) === "rotate";
 }
 
 function sleep(ms: number): Promise<void> {
@@ -68,31 +65,48 @@ export async function callWithRetry(
       model: currentModel(),
     };
 
+    const attemptStart = Date.now();
     try {
-      const result = await callOpenRouter(callOpts);
+      const result = shouldUseDirect(callOpts.model)
+        ? await callDirect(callOpts)
+        : await callOpenRouter(callOpts);
 
       // Clean response — return immediately
-      if (!result.isError) return result;
+      if (!result.isError) {
+        recordProviderSuccess(callOpts.model, "unknown", Date.now() - attemptStart);
+        return result;
+      }
 
-      const errMsg = result.errorMessage ?? "stream error";
+      const errInfo = { httpStatus: result.httpStatus, errorMessage: result.errorMessage ?? "stream error" };
+      const errMsg = errInfo.errorMessage;
 
       // Fatal errors — surface immediately without retrying
-      if (isFatal(errMsg)) return result;
+      if (isFatal(errInfo)) {
+        recordProviderError(callOpts.model ?? "unknown", "unknown", Date.now() - attemptStart);
+        return result;
+      }
+
+      recordProviderError(callOpts.model ?? "unknown", "unknown", Date.now() - attemptStart);
 
       // Out of total retries — surface the error
       if (attempt >= maxRetries) return result;
 
       // Check whether to rotate model (429/503 after first retry on this model)
       const fallbackModels = opts.models ?? [];
-      if (shouldRotateModel(errMsg) && retriedCurrentModel && modelIndex < fallbackModels.length) {
+      if (shouldRotateModel(errInfo) && retriedCurrentModel && modelIndex < fallbackModels.length) {
+        const prevModel = currentModel();
         modelIndex++;
         retriedCurrentModel = false;
         onLog?.(
-          `[orager] rate-limit/unavailable on model "${currentModel() !== opts.model ? (fallbackModels[modelIndex - 2] ?? opts.model) : opts.model}", falling back to "${currentModel()}" (attempt ${attempt + 1}/${maxRetries + 1})\n`,
+          `[orager] rate-limit/unavailable on model "${prevModel}", falling back to "${currentModel()}" (attempt ${attempt + 1}/${maxRetries + 1})\n`,
         );
+      } else if (shouldRotateModel(errInfo) && retriedCurrentModel && modelIndex >= fallbackModels.length && fallbackModels.length > 0) {
+        // All fallback models exhausted — surface the error immediately
+        onLog?.(`[orager] all ${fallbackModels.length + 1} models exhausted on rotate-class error — giving up\n`);
+        return result; // surface the last error
       } else {
         retriedCurrentModel = true;
-        const backoffMs = 1000 * 2 ** attempt;
+        const backoffMs = Math.min(1000 * 2 ** attempt, 60_000);
         onLog?.(
           `[orager] retryable stream error on "${currentModel()}" (attempt ${attempt + 1}/${maxRetries + 1}): ${errMsg} — retrying in ${backoffMs}ms\n`,
         );
@@ -101,21 +115,29 @@ export async function callWithRetry(
       attempt++;
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
+      const errInfo = { errorMessage: errMsg };
+
+      recordProviderError(callOpts.model ?? "unknown", "unknown", Date.now() - attemptStart);
 
       // Fatal or out of retries — rethrow
-      if (isFatal(errMsg) || attempt >= maxRetries) throw err;
+      if (isFatal(errInfo) || attempt >= maxRetries) throw err;
 
       // Check whether to rotate model
       const fallbackModels = opts.models ?? [];
-      if (shouldRotateModel(errMsg) && retriedCurrentModel && modelIndex < fallbackModels.length) {
+      if (shouldRotateModel(errInfo) && retriedCurrentModel && modelIndex < fallbackModels.length) {
+        const prevModel = currentModel();
         modelIndex++;
         retriedCurrentModel = false;
         onLog?.(
-          `[orager] rate-limit/unavailable on model "${currentModel() !== opts.model ? (fallbackModels[modelIndex - 2] ?? opts.model) : opts.model}", falling back to "${currentModel()}" (attempt ${attempt + 1}/${maxRetries + 1})\n`,
+          `[orager] rate-limit/unavailable on model "${prevModel}", falling back to "${currentModel()}" (attempt ${attempt + 1}/${maxRetries + 1})\n`,
         );
+      } else if (shouldRotateModel(errInfo) && retriedCurrentModel && modelIndex >= fallbackModels.length && fallbackModels.length > 0) {
+        // All fallback models exhausted — surface the error immediately
+        onLog?.(`[orager] all ${fallbackModels.length + 1} models exhausted on rotate-class error — giving up\n`);
+        throw err;
       } else {
         retriedCurrentModel = true;
-        const backoffMs = 1000 * 2 ** attempt;
+        const backoffMs = Math.min(1000 * 2 ** attempt, 60_000);
         onLog?.(
           `[orager] retryable error on "${currentModel()}" (attempt ${attempt + 1}/${maxRetries + 1}): ${errMsg} — retrying in ${backoffMs}ms\n`,
         );

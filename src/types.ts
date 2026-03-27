@@ -5,9 +5,21 @@ export interface SystemMessage {
   content: string;
 }
 
+export interface UserMessageContentText {
+  type: "text";
+  text: string;
+}
+
+export interface UserMessageContentImageUrl {
+  type: "image_url";
+  image_url: { url: string; detail?: "auto" | "low" | "high" };
+}
+
+export type UserMessageContentBlock = UserMessageContentText | UserMessageContentImageUrl;
+
 export interface UserMessage {
   role: "user";
-  content: string;
+  content: string | UserMessageContentBlock[];
 }
 
 export interface AssistantMessage {
@@ -30,6 +42,11 @@ export interface ToolParameterProperty {
   type: string;
   description?: string;
   enum?: string[];
+  /** For array types: schema of each item. */
+  items?: ToolParameterProperty | { type: string; properties?: Record<string, ToolParameterProperty>; required?: string[] };
+  /** For object types: nested property definitions. */
+  properties?: Record<string, ToolParameterProperty>;
+  required?: string[];
 }
 
 export interface ToolParameterSchema {
@@ -65,11 +82,20 @@ export interface ToolResult {
   toolCallId: string;
   content: string;
   isError: boolean;
+  /** Optional image URL to include alongside the text result. */
+  imageUrl?: string;
 }
 
 export interface ToolExecuteOptions {
   /** If set, file-path operations must resolve inside this directory. */
   sandboxRoot?: string;
+  bashPolicy?: BashPolicy;
+  /**
+   * Current agent session ID. Passed to stateful tools (e.g., browser) so
+   * multiple concurrent daemon runs maintain independent state.
+   */
+  sessionId?: string;
+  [key: string]: unknown;
 }
 
 export interface ToolExecutor {
@@ -83,6 +109,22 @@ export interface ToolExecutor {
 }
 
 // ── Session types ───────────────────────────────────────────────────────────
+
+export interface SessionSummary {
+  sessionId: string;
+  model: string;
+  createdAt: string;
+  updatedAt: string;
+  turnCount: number;
+  cwd: string;
+  trashed: boolean;
+}
+
+export interface PruneResult {
+  deleted: number;
+  kept: number;
+  errors: number;
+}
 
 export interface SessionData {
   sessionId: string;
@@ -98,6 +140,23 @@ export interface SessionData {
   summarized?: boolean;
   /** Origin of this session. Informational only — used to diagnose concurrent access. */
   source?: "cli" | "daemon" | "mcp";
+  /** Schema version for forward-compatible migrations. Always written as CURRENT_SESSION_SCHEMA_VERSION. */
+  schemaVersion?: number;
+  /**
+   * Set when the run ended early to ask for approval.
+   * Cleared when the session is resumed and the approval is resolved.
+   */
+  pendingApproval?: {
+    toolCallId: string;
+    toolName: string;
+    input: Record<string, unknown>;
+    /** The full assistant message from the turn that triggered approval. Needed to re-inject on resume. */
+    assistantMessage: AssistantMessage;
+    /** All tool calls from that assistant turn. */
+    toolCalls: ToolCall[];
+    /** ISO timestamp when the approval question was posed — used to log elapsed wait time on resume. */
+    questionedAt?: string;
+  } | null;
 }
 
 // ── stream-json emit types (must match what paperclip's parse.ts expects) ───
@@ -129,6 +188,12 @@ export interface EmitAssistantToolUseBlock {
 
 export interface EmitAssistantEvent {
   type: "assistant";
+  /**
+   * True when text/thinking content was already emitted as text_delta /
+   * thinking_delta events. Consumers should skip re-rendering text blocks
+   * to avoid duplicating streamed content in the UI.
+   */
+  streamed?: boolean;
   message: {
     role: "assistant";
     content: Array<
@@ -146,12 +211,23 @@ export interface EmitToolEvent {
     tool_use_id: string;
     content: string;
     is_error?: boolean;
+    image_url?: string;
   }>;
+}
+
+/** Per-tool execution metrics for a single run. */
+export interface ToolMetric {
+  /** Total number of times this tool was invoked. */
+  calls: number;
+  /** Number of invocations that returned isError: true. */
+  errors: number;
+  /** Total wall-clock milliseconds spent executing this tool. */
+  totalMs: number;
 }
 
 export interface EmitResultEvent {
   type: "result";
-  subtype: "success" | "error_max_turns" | "error_max_cost" | "error" | "interrupted";
+  subtype: "success" | "error_max_turns" | "error_max_cost" | "error" | "error_circuit_open" | "interrupted" | "error_cancelled" | "error_tool_budget";
   result: string;
   session_id: string;
   finish_reason: string | null;
@@ -164,13 +240,50 @@ export interface EmitResultEvent {
   total_cost_usd: number;
   /** Number of agent turns completed in this run. */
   turnCount?: number;
+  /** Per-tool call counts, error counts, and total execution time for this run. */
+  toolMetrics?: Record<string, ToolMetric>;
+  filesChanged?: string[];
+}
+
+export interface EmitQuestionEvent {
+  type: "question";
+  /** Human-readable description of what needs approval. */
+  prompt: string;
+  /** The choices the user can pick from. */
+  choices: Array<{ key: string; label: string; description?: string }>;
+  /** ID of the tool call that triggered this question. */
+  toolCallId: string;
+  /** Name of the tool that needs approval. */
+  toolName: string;
+}
+
+/**
+ * Streaming text delta — emitted as each token arrives from the LLM.
+ * Consumers can render these incrementally without waiting for the full
+ * assistant turn to complete.
+ */
+export interface EmitTextDeltaEvent {
+  type: "text_delta";
+  delta: string;
+}
+
+/**
+ * Streaming thinking/reasoning delta — emitted per chunk for models that
+ * expose internal reasoning (DeepSeek R1, o1/o3 extended thinking, etc.).
+ */
+export interface EmitThinkingDeltaEvent {
+  type: "thinking_delta";
+  delta: string;
 }
 
 export type EmitEvent =
   | EmitInitEvent
   | EmitAssistantEvent
   | EmitToolEvent
-  | EmitResultEvent;
+  | EmitResultEvent
+  | EmitQuestionEvent
+  | EmitTextDeltaEvent
+  | EmitThinkingDeltaEvent;
 
 // ── OpenRouter API types ─────────────────────────────────────────────────────
 
@@ -236,8 +349,14 @@ export interface OpenRouterProviderRouting {
   data_collection?: "allow" | "deny";
   /** Restrict to Zero Data Retention providers only. */
   zdr?: boolean;
-  /** Allowlist of provider slugs for this request. */
+  /**
+   * Allowlist of provider slugs for this request.
+   * @deprecated The OpenRouter API may use `allow` instead of `only` — check current docs.
+   * Use `allow` for forward compatibility.
+   */
   only?: string[];
+  /** Allowlist of provider slugs for this request (preferred over `only`). */
+  allow?: string[];
   /** Blocklist of provider slugs for this request. */
   ignore?: string[];
   /** Filter by quantization level: int4, int8, fp4, fp6, fp8, fp16, bf16, fp32. */
@@ -317,7 +436,7 @@ export interface OpenRouterCallOptions {
   /** OpenRouter-specific: dynamic token filtering. */
   top_a?: number;
   seed?: number;
-  max_tokens?: number;
+  max_completion_tokens?: number;
   stop?: string[];
   logit_bias?: Record<string, number>;
   logprobs?: boolean;
@@ -347,6 +466,10 @@ export interface OpenRouterCallOptions {
   // Plugins (e.g. response-healing)
   plugins?: Array<{ id: string; enabled?: boolean }>;
 
+  /** When true, explicitly disables OpenRouter's server-side context compression plugin.
+   * Should be set when the caller handles summarization itself. */
+  disableContextCompression?: boolean;
+
   // Infrastructure
   signal?: AbortSignal;
   onChunk?: (chunk: OpenRouterStreamChunk) => void;
@@ -369,6 +492,23 @@ export interface OpenRouterCallResult {
   /** True when OpenRouter returned a mid-stream error chunk. */
   isError: boolean;
   errorMessage?: string;
+  /** HTTP status code of the failed response, when isError is true. */
+  httpStatus?: number;
+  /** OpenRouter generation ID — used to fetch actual cost/provider from /api/v1/generation */
+  generationId?: string;
+}
+
+export interface GenerationMeta {
+  id: string;
+  model: string;
+  providerName: string;
+  /** Actual USD cost charged for this generation */
+  totalCost: number;
+  /** Cache discount applied (USD saved) */
+  cacheDiscount: number;
+  nativeTokensPrompt: number;
+  nativeTokensCompletion: number;
+  latencyMs: number;
 }
 
 // ── Dynamic turn context ─────────────────────────────────────────────────────
@@ -387,10 +527,31 @@ export interface TurnContext {
   messages: Message[];
 }
 
+/**
+ * A rule evaluated before each agent turn to dynamically switch models.
+ * Rules are evaluated in order; the first matching rule wins.
+ * Lower priority than an explicit `onTurnStart` override.
+ */
+export interface TurnModelRule {
+  /** The model to switch to when this rule matches. */
+  model: string;
+  /** Match when turn number >= afterTurn (0-indexed). */
+  afterTurn?: number;
+  /** Match when cumulative cost > costAbove USD. */
+  costAbove?: number;
+  /** Match when cumulative prompt tokens > tokensAbove. */
+  tokensAbove?: number;
+  /**
+   * When true, apply this rule for one turn only then stop matching it.
+   * Default: false (sticky — applies every turn once matched).
+   */
+  once?: boolean;
+}
+
 /** Per-turn overrides that `onTurnStart` may return to adjust the API call. */
 export interface TurnCallOverrides {
   model?: string;
-  max_tokens?: number;
+  max_completion_tokens?: number;
   temperature?: number;
   top_p?: number;
   top_k?: number;
@@ -407,7 +568,6 @@ export interface CliOptions {
   addDirs: string[];
   maxTurns: number;
   maxRetries: number;
-  forceResume: boolean;
   dangerouslySkipPermissions: boolean;
   verbose: boolean;
   outputFormat: "stream-json" | "text";
@@ -473,6 +633,86 @@ export interface CliOptions {
   summarizeAt?: number;
   /** Model to use for summarization. */
   summarizeModel?: string;
+  /**
+   * When summarizing, keep the last N assistant turns intact and only summarize
+   * the older messages. 0 or undefined = summarize everything (default behavior).
+   */
+  summarizeKeepRecentTurns?: number;
+  /** Turn model routing rules (from config file). */
+  turnModelRules?: TurnModelRule[];
+  /** Structured prompt content for multimodal inputs (from config file). */
+  promptContent?: UserMessageContentBlock[];
+  /** Answer to a pending approval from a previous run. */
+  approvalAnswer?: { choiceKey: string; toolCallId: string } | null;
+  /** When set to "question", approval prompts emit a question event and terminate the run. */
+  approvalMode?: "tty" | "question";
+  /** Named agent profile preset to apply (e.g. "code-review", "bug-fix"). */
+  profile?: string;
+  /** Path to orager settings file (default: ~/.orager/settings.json). */
+  settingsFile?: string;
+  /** Resume the session even if its stored cwd doesn't match the current cwd. */
+  forceResume?: boolean;
+  /** MCP servers to connect to. Key is the server name (tool prefix: mcp__<name>__<tool>). */
+  mcpServers?: Record<string, { command: string; args?: string[]; env?: Record<string, string> }>;
+  /**
+   * MCP server names that must successfully connect before the run starts.
+   * Names must match keys in `mcpServers`.
+   */
+  requireMcpServers?: string[];
+  /**
+   * Per-tool execution timeout overrides (milliseconds).
+   * Key is the tool name; value is the timeout in ms.
+   * Example: { "bash": 30000, "web_fetch": 20000 }
+   */
+  toolTimeouts?: Record<string, number>;
+  /**
+   * Maximum depth of nested spawn_agent calls. Default 3. Set to 0 to disable
+   * subagent spawning entirely.
+   */
+  maxSpawnDepth?: number;
+  /**
+   * Maximum number of consecutive turns with identical tool-call signatures
+   * before the loop injects a "you appear to be stuck" warning.
+   * Default 5. Set to 0 to disable.
+   */
+  maxIdenticalToolCallTurns?: number;
+  /**
+   * When true, terminate the run immediately if any single tool exceeds the
+   * consecutive-failure budget (5 consecutive errors). Default false (logs warning and resets).
+   */
+  toolErrorBudgetHardStop?: boolean;
+}
+
+// ── Bash policy ──────────────────────────────────────────────────────────────
+
+/**
+ * Policy controlling what the bash tool is allowed to do.
+ * All restrictions are advisory — they run in-process and cannot replace
+ * OS-level sandboxing, but catch common accidental misuse patterns.
+ */
+export interface BashPolicy {
+  /**
+   * Commands to block. Each entry is matched against the first word of the
+   * command string (case-insensitive). Defaults to [] (no blocking).
+   * Example: ["curl", "wget", "ssh", "nc", "socat"]
+   */
+  blockedCommands?: string[];
+  /**
+   * Env var key patterns to strip from the bash subprocess environment.
+   * Matched case-insensitively against the key name.
+   * Example: ["SSH_AUTH_SOCK", "AWS_", "GITHUB_TOKEN"]
+   */
+  stripEnvKeys?: string[];
+  /**
+   * When true, the bash subprocess only sees the keys listed in `allowedEnvKeys`
+   * plus PATH, HOME, USER, SHELL, LANG, TERM, and PWD.
+   * Overrides `stripEnvKeys` when set.
+   */
+  isolateEnv?: boolean;
+  /**
+   * Keys to preserve when `isolateEnv` is true. Defaults to [].
+   */
+  allowedEnvKeys?: string[];
 }
 
 // ── Agent loop options ───────────────────────────────────────────────────────
@@ -511,6 +751,12 @@ export interface AgentLoopOptions {
   useFinishTool?: boolean;
   /** Stop the loop when cumulative cost exceeds this amount (USD). */
   maxCostUsd?: number;
+  /**
+   * Soft cost limit in USD. When total cost exceeds this value the agent logs a
+   * warning but continues running. Useful for alerting without hard-stopping.
+   * Must be less than maxCostUsd to be meaningful.
+   */
+  maxCostUsdSoft?: number;
   /** Cost per input token in USD (used to track total_cost_usd). */
   costPerInputToken?: number;
   /** Cost per output token in USD (used to track total_cost_usd). */
@@ -554,6 +800,190 @@ export interface AgentLoopOptions {
   summarizeAt?: number;
   /** Model to use for summarization (defaults to opts.model) */
   summarizeModel?: string;
+  /**
+   * When summarizing, keep the last N assistant turns intact and only summarize
+   * the older messages. 0 or undefined = summarize everything (default behavior).
+   */
+  summarizeKeepRecentTurns?: number;
+  /**
+   * Custom system prompt for the summarization call.
+   * Overrides the built-in SUMMARIZE_PROMPT constant.
+   * Useful for domain-specific summaries (e.g. "focus on file paths modified").
+   */
+  summarizePrompt?: string;
+  /**
+   * When summarization fails and the cooldown is active, fall back to hard
+   * truncation: keep the system prompt + the last N messages.
+   * Default: 40. Set to 0 to disable fallback truncation.
+   */
+  summarizeFallbackKeep?: number;
+  /**
+   * Timeout in milliseconds for TTY-mode approval prompts.
+   * After this duration the prompt auto-denies. Default: 5 minutes.
+   * Has no effect when approvalMode is "question".
+   */
+  approvalTimeoutMs?: number;
+  /** Per-turn model routing rules. Evaluated before each API call; first match wins. */
+  turnModelRules?: TurnModelRule[];
+  /** Structured first-message content for multimodal prompts. Overrides the text `prompt` field. */
+  promptContent?: UserMessageContentBlock[];
+  /**
+   * Answer to a pending approval from a previous run.
+   * When set and the session has a pendingApproval, the loop resolves
+   * the approval with this answer instead of prompting.
+   */
+  approvalAnswer?: { choiceKey: string; toolCallId: string } | null;
+  /**
+   * When set to "question", approval prompts emit a question event and terminate
+   * the run instead of blocking on TTY. Default: "tty".
+   */
+  approvalMode?: "tty" | "question";
+  /**
+   * Per-tool execution timeout overrides (milliseconds).
+   * Key is the tool name; value is the timeout in ms.
+   * Tools without an entry use no timeout (run until completion).
+   * Example: { "bash": 30000, "web_fetch": 20000 }
+   */
+  toolTimeouts?: Record<string, number>;
+  /**
+   * Optional AbortSignal to cancel the agent loop mid-run.
+   * When the signal fires, the current turn completes and the loop exits cleanly
+   * with a "error_cancelled" result event.
+   */
+  abortSignal?: AbortSignal;
+  /**
+   * Policy restricting what the bash tool can do (command blocklist, env isolation).
+   * When omitted, no bash restrictions apply.
+   */
+  bashPolicy?: BashPolicy;
+
+  /**
+   * Maximum depth of nested spawn_agent calls. Default 3. Set to 0 to disable
+   * subagent spawning entirely.
+   */
+  maxSpawnDepth?: number;
+
+  /**
+   * Internal — current spawn depth. Set automatically by the spawn_agent tool.
+   * Do not set this manually.
+   */
+  _spawnDepth?: number;
+
+  /**
+   * Features required for this run. If the selected model does not support all
+   * listed features, a warning is logged but the run still proceeds.
+   * Values: "vision" | "extendedThinking" | "toolUse" | "jsonMode"
+   */
+  requiredCapabilities?: Array<"vision" | "extendedThinking" | "toolUse" | "jsonMode">;
+
+  /**
+   * Maximum number of consecutive turns with identical tool-call signatures
+   * before the loop injects a "you appear to be stuck" warning and breaks.
+   * Default 5. Set to 0 to disable.
+   */
+  maxIdenticalToolCallTurns?: number;
+
+  /**
+   * When true, track files written or deleted during the run and include
+   * them in result events as `filesChanged`. Default false.
+   */
+  trackFileChanges?: boolean;
+
+  /**
+   * URL to POST the result event to when the run completes (any subtype).
+   * The request body is the JSON-serialized result event.
+   * Failures are silently ignored.
+   */
+  webhookUrl?: string;
+
+  /**
+   * When true, wraps each tool result in XML tags identifying the source tool.
+   * Helps the model resist prompt injection attacks from malicious tool outputs.
+   * Example: <tool_result name="web_fetch" url="...">content</tool_result>
+   * Default: TRUE (opt out with false if you need raw tool output).
+   */
+  tagToolOutputs?: boolean;
+
+  /**
+   * When true, automatically gather and prepend git status, recent commits,
+   * and directory context to the first user message. Default false.
+   */
+  injectContext?: boolean;
+
+  /**
+   * When true, terminate the run immediately if any single tool exceeds the
+   * consecutive-failure budget (5 consecutive errors). Default false (logs a
+   * warning and resets the counter, allowing the run to continue).
+   */
+  toolErrorBudgetHardStop?: boolean;
+
+  /**
+   * Internal: list of ancestor session IDs for spawn-cycle detection.
+   * Set automatically when spawning sub-agents; do not set manually.
+   */
+  _parentSessionIds?: string[];
+
+  /**
+   * When true (default), reads CLAUDE.md and ORAGER.md from the cwd hierarchy
+   * and injects them into the system prompt.
+   */
+  readProjectInstructions?: boolean;
+
+  /** MCP servers to connect to. Key is the server name (used as tool prefix mcp__<name>__<tool>). */
+  mcpServers?: Record<string, { command: string; args?: string[]; env?: Record<string, string> }>;
+
+  /**
+   * MCP server names that must successfully connect before the run starts.
+   * If any named server fails to connect, the run emits an error result immediately.
+   * Names must match keys in `mcpServers`.
+   */
+  requireMcpServers?: string[];
+
+  /** Shell hooks to run on lifecycle events and tool calls. */
+  hooks?: import("./hooks.js").HookConfig;
+
+  /**
+   * Timeout in milliseconds for each hook invocation. Default: 10 000.
+   * Individual hooks that exceed this are killed and treated as failures.
+   */
+  hookTimeoutMs?: number;
+
+  /**
+   * What to do when a hook exits non-zero or times out.
+   * - "ignore" — silently discard the failure (default)
+   * - "warn"   — log to stderr and continue (same as previous behaviour)
+   * - "fail"   — terminate the run with an error result
+   */
+  hookErrorMode?: "ignore" | "warn" | "fail";
+
+  /** Path to orager settings file (default: ~/.orager/settings.json). */
+  settingsFile?: string;
+
+  /**
+   * When true, starts the loop in plan mode: only readonly tools are available
+   * until the model calls exit_plan_mode. Default false.
+   */
+  planMode?: boolean;
+
+  /**
+   * Requested response format. When set to `{ type: "json_object" }`, the loop
+   * will attempt to parse the assistant's text response as JSON and, if parsing
+   * fails, inject a one-shot healing message asking the model to retry with
+   * valid JSON. Healing is capped at one attempt per run.
+   */
+  response_format?: OpenRouterResponseFormat;
+
+  /**
+   * When true, add the browser automation tools (browser_navigate,
+   * browser_screenshot, browser_click, browser_type, browser_key,
+   * browser_scroll, browser_close) to the agent's tool set.
+   *
+   * Requires the `playwright` package and Chromium to be installed:
+   *   npm install playwright && npx playwright install chromium
+   *
+   * Default: false (browser tools are not loaded unless explicitly enabled).
+   */
+  enableBrowserTools?: boolean;
 }
 
 // ── Permission types ─────────────────────────────────────────────────────────

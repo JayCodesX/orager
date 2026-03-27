@@ -360,9 +360,49 @@ The file is **read once and immediately deleted** before any API calls. Write it
   "parallel_tool_calls": true,
   "reasoningExclude": true,
   "sort": "latency",
-  "require_parameters": true
+  "require_parameters": true,
+  "summarizeAt": 0.8,
+  "summarizeModel": "deepseek/deepseek-chat-v3-0324"
 }
 ```
+
+### Per-turn model routing (config file only)
+
+Use `turnModelRules` to switch models dynamically mid-session based on turn number, cost, or token count. Rules are evaluated before each API call; the first match wins.
+
+```json
+{
+  "model": "deepseek/deepseek-chat-v3-0324",
+  "turnModelRules": [
+    { "afterTurn": 5, "model": "anthropic/claude-sonnet-4-6" },
+    { "costAbove": 0.02, "model": "deepseek/deepseek-r1", "once": true }
+  ]
+}
+```
+
+| Field | Description |
+|---|---|
+| `model` | Model to switch to when this rule matches |
+| `afterTurn` | Match when turn ≥ this value (0-indexed) |
+| `costAbove` | Match when cumulative cost > this USD value |
+| `tokensAbove` | Match when cumulative prompt tokens > this count |
+| `once` | Apply for one turn only, then stop matching (default: false) |
+
+### Multimodal prompts (config file only)
+
+Use `promptContent` to pass image URLs alongside the text prompt. Any vision-capable model on OpenRouter will receive the images as part of the first user message.
+
+```json
+{
+  "model": "openai/gpt-4o",
+  "promptContent": [
+    { "type": "text", "text": "Fix the layout bug shown in this screenshot" },
+    { "type": "image_url", "image_url": { "url": "https://cdn.example.com/screenshot.png" } }
+  ]
+}
+```
+
+The Paperclip adapter populates `promptContent` automatically when the execution context includes image attachments.
 
 ---
 

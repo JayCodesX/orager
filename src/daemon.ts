@@ -28,12 +28,33 @@ import { runAgentLoop } from "./loop.js";
 import { mintJwt, verifyJwt, loadOrCreateSigningKey, KEY_PATH } from "./jwt.js";
 import { callOpenRouter } from "./openrouter.js";
 import type { EmitEvent, AgentLoopOptions } from "./types.js";
+import { ensureSessionsDirPermissions, pruneOldSessions, listSessions, searchSessions } from "./session.js";
+import { getAllProviderStats, getDegradedProviders } from "./provider-health.js";
+import { getRateLimitState } from "./rate-limit-tracker.js";
+import { initTelemetry } from "./telemetry.js";
+import { checkAndLogApiKeyHealth, fetchApiKeyInfo } from "./openrouter-key.js";
+import type { ApiKeyInfo } from "./openrouter-key.js";
+import { openRouterCircuitBreaker } from "./circuit-breaker.js";
 
 // ── Port file ─────────────────────────────────────────────────────────────────
 // Written on startup so clients (adapter) can discover the port without config.
 
 const PORT_FILE = path.join(os.homedir(), ".orager", "daemon.port");
 const PID_FILE = path.join(os.homedir(), ".orager", "daemon.pid");
+
+// ── Cached API key info (for /metrics endpoint) ───────────────────────────────
+let _cachedKeyInfo: { info: ApiKeyInfo | null; fetchedAt: number } | null = null;
+const KEY_INFO_TTL_MS = 5 * 60 * 1000;
+
+async function getCachedKeyInfo(apiKey: string): Promise<ApiKeyInfo | null> {
+  const now = Date.now();
+  if (_cachedKeyInfo && now - _cachedKeyInfo.fetchedAt < KEY_INFO_TTL_MS) {
+    return _cachedKeyInfo.info;
+  }
+  const info = await fetchApiKeyInfo(apiKey).catch(() => null);
+  _cachedKeyInfo = { info, fetchedAt: now };
+  return info;
+}
 
 async function writePortFile(port: number): Promise<void> {
   await fs.mkdir(path.dirname(PORT_FILE), { recursive: true });
@@ -61,12 +82,26 @@ export async function readDaemonPort(): Promise<number | null> {
  * (stale port file cleanup).
  */
 async function acquirePidLock(port: number): Promise<void> {
+  const pidData = JSON.stringify({ pid: process.pid, port });
+
+  // Ensure the directory exists before any file operations
+  await fs.mkdir(path.dirname(PID_FILE), { recursive: true });
+
+  // Try exclusive atomic write first — succeeds if no lock file exists
+  try {
+    await fs.writeFile(PID_FILE, pidData, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    return; // Successfully acquired
+  } catch (writeErr) {
+    const code = (writeErr as NodeJS.ErrnoException).code;
+    if (code !== "EEXIST") throw writeErr; // Unexpected error
+  }
+
+  // File exists — check if the existing process is alive
   try {
     const existing = await fs.readFile(PID_FILE, "utf8");
     const parsed = JSON.parse(existing) as { pid: number; port: number };
     try {
-      process.kill(parsed.pid, 0); // signal 0 = existence check, no actual signal
-      // If we reach here, the process is alive
+      process.kill(parsed.pid, 0); // signal 0 = existence check
       throw new Error(
         `[orager daemon] already running (PID ${parsed.pid}, port ${parsed.port}). ` +
         `Stop it first with: kill ${parsed.pid}`
@@ -74,26 +109,34 @@ async function acquirePidLock(port: number): Promise<void> {
     } catch (killErr) {
       const code = (killErr as NodeJS.ErrnoException).code;
       if (code === "EPERM") {
-        // Process alive but we lack permission to signal it
         throw new Error(
           `[orager daemon] appears to be running (PID ${parsed.pid}). Stop it first.`
         );
       }
-      // ESRCH = no such process — PID is stale, proceed (fixes #6)
+      // ESRCH = process not found, or the error we threw above — if it's our own error, rethrow
+      if ((killErr as Error).message?.includes("orager daemon")) throw killErr;
+      // Stale lock — process is dead, remove and re-acquire atomically
     }
   } catch (readErr) {
-    // File missing or unparseable — proceed
-    const message = (readErr as Error).message ?? "";
-    if (message.includes("already running") || message.includes("appears to be running")) {
-      throw readErr;
+    if ((readErr as Error).message?.includes("orager daemon")) throw readErr;
+    // File is unreadable/malformed — treat as stale
+  }
+
+  // Remove stale lock and write exclusively
+  await fs.unlink(PID_FILE).catch(() => {});
+  try {
+    await fs.writeFile(PID_FILE, pidData, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  } catch {
+    // Another process raced us — check again
+    const existing2 = await fs.readFile(PID_FILE, "utf8").catch(() => "{}");
+    const parsed2 = JSON.parse(existing2) as { pid?: number; port?: number };
+    if (parsed2.pid && parsed2.pid !== process.pid) {
+      throw new Error(
+        `[orager daemon] race: another daemon started (PID ${parsed2.pid}). ` +
+        `Only one daemon can run at a time.`
+      );
     }
   }
-  await fs.mkdir(path.dirname(PID_FILE), { recursive: true });
-  await fs.writeFile(
-    PID_FILE,
-    JSON.stringify({ pid: process.pid, port }),
-    { encoding: "utf8", mode: 0o600 },
-  );
 }
 
 async function releasePidLock(): Promise<void> {
@@ -104,8 +147,51 @@ async function releasePidLock(): Promise<void> {
 
 export interface DaemonRunRequest {
   prompt: string;
+  /** Structured multimodal content for the first user message (optional). */
+  promptContent?: unknown[];
   /** Full AgentLoopOptions minus apiKey (key comes from env on daemon side). */
   opts: Omit<AgentLoopOptions, "apiKey" | "onEmit" | "onLog">;
+}
+
+/** Allowlist of AgentLoopOptions fields that callers are permitted to set via daemon /run. */
+const ALLOWED_DAEMON_OPTS = new Set([
+  "model", "models", "maxTurns", "prompt", "systemPrompt", "appendSystemPrompt",
+  "cwd", "sessionId", "forceNewSession", "summarizeAt", "summarizeModel",
+  "temperature", "top_p", "top_k", "seed", "stop", "maxTokens",
+  "reasoning", "provider", "transforms", "preset", "site_url", "site_name",
+  "profile", "planMode", "tagToolOutputs", "trackFileChanges",
+  "maxIdenticalToolCallTurns", "webhookUrl", "useFinishTool",
+  "enableBrowserTools", "parallel_tool_calls", "tool_choice",
+  "response_format", "frequency_penalty", "presence_penalty",
+  "repetition_penalty", "min_p", "maxCostUsdSoft",
+  "addDirs", "maxRetries", "verbose", "forceResume", "approvalMode",
+  "approvalAnswer", "approvalTimeoutMs", "mcpServers", "requireMcpServers",
+  "toolTimeouts", "maxSpawnDepth", "toolErrorBudgetHardStop",
+  "summarizeKeepRecentTurns", "summarizePrompt", "summarizeFallbackKeep",
+  "turnModelRules", "promptContent", "siteUrl", "siteName",
+  "costPerInputToken", "costPerOutputToken", "maxCostUsd",
+  "hooks", "hooksEnabled", "source",
+]);
+
+function sanitizeDaemonRunOpts(raw: Record<string, unknown>): Record<string, unknown> {
+  const safe: Record<string, unknown> = {};
+  const rejected: string[] = [];
+  for (const [k, v] of Object.entries(raw)) {
+    if (ALLOWED_DAEMON_OPTS.has(k)) {
+      safe[k] = v;
+    } else {
+      rejected.push(k);
+    }
+  }
+  if (rejected.length > 0) {
+    process.stderr.write(`[orager daemon] WARNING: ignoring disallowed opts fields from caller: ${rejected.join(", ")}\n`);
+  }
+  // Security-sensitive fields: never allow callers to override sandboxRoot or requireApproval
+  delete safe["sandboxRoot"];
+  delete safe["requireApproval"];
+  delete safe["bashPolicy"];
+  delete safe["dangerouslySkipPermissions"];
+  return safe;
 }
 
 // ── Daemon server ─────────────────────────────────────────────────────────────
@@ -117,6 +203,8 @@ export interface DaemonStartOptions {
   idleTimeoutMs?: number;
   /** Per-request timeout in ms. Default 5 min. */
   requestTimeoutMs?: number;
+  /** Max concurrent runs per agent ID. Default 2. Prevents one agent from starving all others. */
+  perAgentMaxConcurrent?: number;
   /** API key (from env). */
   apiKey: string;
   /** Model for cache-warming and keep-alive pings. */
@@ -126,11 +214,17 @@ export interface DaemonStartOptions {
 }
 
 export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void> {
+  // Mark process as daemon mode so approval.ts skips TTY prompts
+  process.env.ORAGER_DAEMON_MODE = "1";
+
+  await initTelemetry("orager-daemon");
+
   const {
     port = 3456,
     maxConcurrent = 3,
     idleTimeoutMs = 30 * 60 * 1000,
     requestTimeoutMs = 5 * 60 * 1000,
+    perAgentMaxConcurrent = 2,
     apiKey,
     model,
   } = daemonOpts;
@@ -139,6 +233,9 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
   process.stderr.write(`[orager daemon] signing key loaded from ${KEY_PATH}\n`);
 
   let activeRuns = 0;
+  const activeRunsByAgent = new Map<string, number>();
+  // Track AbortControllers by runId for cancellation
+  const activeRunControllers = new Map<string, AbortController>();
   let draining = false;
   let completedRuns = 0;
   let errorRuns = 0;
@@ -166,7 +263,7 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
         apiKey,
         model,
         messages: [{ role: "user", content: "ping" }],
-        max_tokens: 1,
+        max_completion_tokens: 1,
       });
       process.stderr.write(`[orager daemon] cache warmed (model: ${model})\n`);
     } catch {
@@ -191,7 +288,7 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
           apiKey,
           model: m,
           messages: [{ role: "user", content: "ping" }],
-          max_tokens: 1,
+          max_completion_tokens: 1,
         }).catch(() => {});
       }
       process.stderr.write(`[orager daemon] keep-alive ping sent (${usedModels.size} model(s))\n`);
@@ -213,7 +310,8 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
    */
   async function checkCredits(key: string): Promise<void> {
     try {
-      const res = await fetch("https://openrouter.ai/api/v1/auth/key", {
+      const openrouterBase = (process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1").replace(/\/$/, "");
+      const res = await fetch(`${openrouterBase}/auth/key`, {
         headers: { Authorization: `Bearer ${key}` },
         signal: AbortSignal.timeout(5000),
       });
@@ -264,25 +362,141 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
       return;
     }
 
-    // Metrics endpoint
+    // Metrics endpoint — requires valid JWT (same as /run) to avoid exposing
+    // internal state (dbPath, provider health, activeRunsByAgent) to unauthenticated callers
     if (req.method === "GET" && req.url === "/metrics") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({
-        activeRuns,
-        maxConcurrent,
-        completedRuns,
-        errorRuns,
-        draining,
-        uptimeMs: Date.now() - daemonStartedAt,
-        model,
-        usedModels: Array.from(usedModels),
-      }));
+      const metricsAuthHeader = req.headers["authorization"] ?? "";
+      const metricsToken = metricsAuthHeader.startsWith("Bearer ") ? metricsAuthHeader.slice(7) : "";
+      if (!metricsToken) {
+        res.writeHead(401);
+        res.end();
+        return;
+      }
+      try {
+        verifyJwt(metricsToken, signingKey);
+      } catch {
+        res.writeHead(403);
+        res.end();
+        return;
+      }
+      void (async () => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          activeRuns,
+          maxConcurrent,
+          completedRuns,
+          errorRuns,
+          draining,
+          uptimeMs: Date.now() - daemonStartedAt,
+          model,
+          usedModels: Array.from(usedModels),
+          activeRunsByAgent: Object.fromEntries(activeRunsByAgent),
+          providerHealth: getAllProviderStats(),
+          degradedProviders: getDegradedProviders(),
+          dbBackend: process.env["ORAGER_DB_PATH"] ? "sqlite" : "filesystem",
+          dbPath: process.env["ORAGER_DB_PATH"] ?? null,
+          rateLimit: getRateLimitState(),
+          keyInfo: await getCachedKeyInfo(apiKey),
+        }));
+      })();
       return;
     }
 
     // Run endpoint
     if (req.method === "POST" && req.url === "/run") {
       handleRun(req, res);
+      return;
+    }
+
+    // GET /sessions — list sessions (paginated, sorted by updatedAt DESC)
+    // GET /sessions?limit=N&offset=N — pagination
+    // GET /sessions/search?q=... — full-text search
+    if (req.method === "GET" && req.url?.startsWith("/sessions")) {
+      const sessAuthHeader = req.headers["authorization"] ?? "";
+      const sessToken = sessAuthHeader.startsWith("Bearer ") ? sessAuthHeader.slice(7) : "";
+      if (!sessToken) { res.writeHead(401); res.end(); return; }
+      try { verifyJwt(sessToken, signingKey); } catch { res.writeHead(403); res.end(); return; }
+
+      void (async () => {
+        try {
+          const parsedUrl = new URL(req.url!, `http://127.0.0.1`);
+          const pathname = parsedUrl.pathname;
+
+          // GET /sessions/search?q=...
+          if (pathname === "/sessions/search") {
+            const q = parsedUrl.searchParams.get("q") ?? "";
+            const limit = Math.min(parseInt(parsedUrl.searchParams.get("limit") ?? "20", 10), 100);
+            if (!q.trim()) {
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "q parameter is required" }));
+              return;
+            }
+            const results = await searchSessions(q.trim(), limit);
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ sessions: results, total: results.length, query: q }));
+            return;
+          }
+
+          // GET /sessions/:sessionId — single session summary
+          const sessionIdMatch = pathname.match(/^\/sessions\/([^/]+)$/);
+          if (sessionIdMatch) {
+            const sessionId = sessionIdMatch[1]!;
+            // Validate session ID to prevent path traversal (alphanumeric + hyphens only)
+            if (!/^[a-zA-Z0-9_-]{1,128}$/.test(sessionId)) {
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "invalid session id format" }));
+              return;
+            }
+            const all = await listSessions();
+            const session = all.find((s) => s.sessionId === sessionId);
+            if (!session) {
+              res.writeHead(404, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "session not found" }));
+              return;
+            }
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify(session));
+            return;
+          }
+
+          // GET /sessions — paginated list
+          if (pathname === "/sessions") {
+            const limit = Math.min(parseInt(parsedUrl.searchParams.get("limit") ?? "50", 10), 200);
+            const offset = Math.max(parseInt(parsedUrl.searchParams.get("offset") ?? "0", 10), 0);
+            const all = await listSessions();
+            const page = all.slice(offset, offset + limit);
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ sessions: page, total: all.length, limit, offset }));
+            return;
+          }
+
+          res.writeHead(404); res.end();
+        } catch (err) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+        }
+      })();
+      return;
+    }
+
+    // POST /runs/:runId/cancel
+    if (req.method === "POST" && req.url?.startsWith("/runs/") && req.url.endsWith("/cancel")) {
+      const runId = req.url.slice("/runs/".length, -"/cancel".length);
+      // Validate UUID format before using as a Map key to prevent path-injection attacks
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(runId)) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid run id format" }));
+        return;
+      }
+      const controller = activeRunControllers.get(runId);
+      if (!controller) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "run not found" }));
+        return;
+      }
+      controller.abort();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, runId }));
       return;
     }
 
@@ -322,6 +536,22 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
       return;
     }
 
+    // ── Per-agent concurrency gate ───────────────────────────────────────
+    // Prevents a single agent from monopolising all available slots.
+    const agentSlots = activeRunsByAgent.get(agentId) ?? 0;
+    if (agentSlots >= perAgentMaxConcurrent) {
+      res.writeHead(429, { "Retry-After": "10" });
+      res.end(JSON.stringify({ error: `per-agent concurrency limit (${perAgentMaxConcurrent}) exceeded` }));
+      auditLog({
+        timestamp: new Date().toISOString(),
+        agentId,
+        durationMs: 0,
+        status: "rejected",
+        statusCode: 429,
+      });
+      return;
+    }
+
     // ── Concurrency gate ────────────────────────────────────────────────────
     if (activeRuns >= maxConcurrent) {
       res.writeHead(503, { "Retry-After": "5" });
@@ -331,10 +561,38 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
     }
 
     // ── Parse body ──────────────────────────────────────────────────────────
+    const MAX_REQUEST_BODY_BYTES = 50 * 1024 * 1024; // 50 MB
     let body = "";
-    req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+    let bodySize = 0;
+    let bodyTooLarge = false;
 
-    req.on("end", () => {
+    let runCounted = false;
+    let agentCountDecremented = false;
+    function decrementAgentCount() {
+      if (agentCountDecremented) return;
+      agentCountDecremented = true;
+      const cur = activeRunsByAgent.get(agentId) ?? 1;
+      if (cur <= 1) activeRunsByAgent.delete(agentId);
+      else activeRunsByAgent.set(agentId, cur - 1);
+    }
+    req.on("data", (chunk: Buffer) => {
+      bodySize += chunk.length;
+      if (bodySize > MAX_REQUEST_BODY_BYTES) {
+        bodyTooLarge = true;
+        req.destroy(); // stop reading
+        return;
+      }
+      body += chunk.toString();
+    });
+
+    req.on("end", () => { void (async () => {
+      if (bodyTooLarge) {
+        if (!res.destroyed) {
+          res.writeHead(413);
+          res.end(JSON.stringify({ error: "request body too large (max 50 MB)" }));
+        }
+        return;
+      }
       let runReq: DaemonRunRequest;
       try {
         runReq = JSON.parse(body) as DaemonRunRequest;
@@ -354,8 +612,17 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
       const { allowedCwdPrefixes } = daemonOpts;
       if (allowedCwdPrefixes && allowedCwdPrefixes.length > 0) {
         const reqCwd = runReq.opts?.cwd ?? "";
+        // Resolve symlinks before prefix-matching to prevent symlink bypass attacks
+        // (e.g. /tmp/mylink → /etc would otherwise pass a prefix check for /tmp).
+        let canonicalCwd = reqCwd;
+        try {
+          canonicalCwd = await fs.realpath(reqCwd);
+        } catch {
+          // Path doesn't exist yet — fall back to raw path; mkdir will fail later if needed
+          canonicalCwd = reqCwd;
+        }
         const allowed = allowedCwdPrefixes.some(
-          (prefix) => reqCwd === prefix || reqCwd.startsWith(prefix + "/"),
+          (prefix) => canonicalCwd === prefix || canonicalCwd.startsWith(prefix + "/"),
         );
         if (!allowed) {
           res.writeHead(403);
@@ -370,6 +637,8 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
       lastRealRequestAt = Date.now();
 
       activeRuns++;
+      activeRunsByAgent.set(agentId, (activeRunsByAgent.get(agentId) ?? 0) + 1);
+      runCounted = true;
       if (activeRuns >= maxConcurrent) {
         process.stderr.write(`[orager daemon] warning: at max concurrent runs (${activeRuns}/${maxConcurrent})\n`);
       }
@@ -380,22 +649,51 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
       });
 
       // ── Per-request timeout ─────────────────────────────────────────────
+      const runId = crypto.randomUUID();
+      const abortController = new AbortController();
+      activeRunControllers.set(runId, abortController);
+
+      // Abort the agent loop if the client disconnects mid-stream so we don't
+      // waste resources running to completion for a gone caller.
+      res.on("close", () => {
+        if (runCounted && !timedOut) abortController.abort();
+      });
+
       let timedOut = false;
       const timeoutHandle = setTimeout(() => {
         timedOut = true;
+        abortController.abort();
         res.write(
           JSON.stringify({ type: "result", subtype: "error", result: "Request timed out", session_id: "", finish_reason: null, usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 }, total_cost_usd: 0 }) + "\n",
         );
         res.end();
         activeRuns--;
+        decrementAgentCount();
         auditLog({ timestamp: new Date().toISOString(), agentId, durationMs: Date.now() - startTime, status: "timeout", statusCode: 200 });
       }, requestTimeoutMs);
 
       // ── Execute run ─────────────────────────────────────────────────────
+
+      const safeOpts = sanitizeDaemonRunOpts(runReq.opts as unknown as Record<string, unknown>);
       const loopOpts: AgentLoopOptions = {
-        ...runReq.opts,
+        // Secure defaults — callers cannot override these via the request opts
+        dangerouslySkipPermissions: false,
+        verbose: false,
+        ...safeOpts,
         prompt: runReq.prompt,
+        promptContent: (() => {
+          if (!Array.isArray(runReq.promptContent)) return undefined;
+          // Validate each element has a known type and no unexpected fields
+          const validated = (runReq.promptContent as unknown[]).filter((item): item is { type: string } => {
+            if (!item || typeof item !== "object") return false;
+            const t = (item as Record<string, unknown>).type;
+            // Only allow text and image_url content types
+            return t === "text" || t === "image_url";
+          });
+          return validated.length > 0 ? validated as AgentLoopOptions["promptContent"] : undefined;
+        })(),
         apiKey,
+        abortSignal: abortController.signal,
         onEmit: (event: EmitEvent) => {
           if (!timedOut && !res.destroyed) {
             res.write(JSON.stringify(event) + "\n");
@@ -404,7 +702,23 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
         onLog: (stream, chunk) => {
           if (stream === "stderr") process.stderr.write(chunk);
         },
-      };
+      } as AgentLoopOptions;
+
+      // Only check circuit breaker for OpenRouter calls (direct Anthropic path bypasses it)
+      const isDirectPath = typeof runReq.opts?.model === "string" && runReq.opts.model.startsWith("anthropic/") && !!process.env.ANTHROPIC_API_KEY?.trim();
+      if (!isDirectPath && openRouterCircuitBreaker.isOpen()) {
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          type: "result",
+          subtype: "error_circuit_open",
+          result: "OpenRouter API circuit breaker is open due to sustained failures. Retry in " + Math.ceil(openRouterCircuitBreaker.retryInMs / 1000) + "s.",
+          session_id: "",
+          turn_count: 0,
+          total_cost_usd: 0,
+          exit_code: 1,
+        }));
+        return;
+      }
 
       runAgentLoop(loopOpts)
         .catch((err: unknown) => {
@@ -417,24 +731,37 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
           errorRuns++;
         })
         .finally(() => {
+          activeRunControllers.delete(runId);
           if (!timedOut) {
             clearTimeout(timeoutHandle);
             if (!res.destroyed) res.end();
-            auditLog({ timestamp: new Date().toISOString(), agentId, durationMs: Date.now() - startTime, status: timedOut ? "timeout" : "ok", statusCode: 200 });
+            auditLog({ timestamp: new Date().toISOString(), agentId, durationMs: Date.now() - startTime, status: "ok", statusCode: 200 });
+            activeRuns--;
+            decrementAgentCount();
           }
-          activeRuns--;
           completedRuns++;
         });
-    });
+    })(); });
 
     req.on("error", () => {
-      activeRuns--;
+      if (runCounted) {
+        activeRuns--;
+        decrementAgentCount();
+      }
       res.destroy();
     });
   }
 
   // ── Start server ────────────────────────────────────────────────────────────
   await acquirePidLock(port);
+  await ensureSessionsDirPermissions();
+
+  // Non-blocking API key health check at startup
+  checkAndLogApiKeyHealth(
+    apiKey,
+    (msg) => process.stderr.write(msg),
+  ).catch(() => {}); // fire-and-forget
+
   await new Promise<void>((resolve, reject) => {
     server.listen(port, "127.0.0.1", () => resolve());
     server.on("error", reject);
@@ -448,8 +775,21 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
 
   // Warm cache on startup (Phase 4c)
   await warmCache();
-  await checkCredits(apiKey);
   startKeepAlive();
+
+  // ── Session auto-prune ─────────────────────────────────────────────────────
+  // Prune sessions older than 30 days once at startup and then every 24 hours.
+  // Runs fire-and-forget so they never delay request handling.
+  const SESSION_PRUNE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+  const runSessionPrune = (): void => {
+    pruneOldSessions(SESSION_PRUNE_TTL_MS).then((result) => {
+      if (result.deleted > 0) {
+        process.stderr.write(`[orager daemon] pruned ${result.deleted} old session(s) (kept ${result.kept})\n`);
+      }
+    }).catch(() => {});
+  };
+  runSessionPrune();
+  setInterval(runSessionPrune, 24 * 60 * 60 * 1000).unref();
 
   // Graceful shutdown
   process.on("SIGTERM", async () => {

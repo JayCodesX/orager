@@ -2,35 +2,136 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import type { SessionData } from "./types.js";
+import type { SessionData, SessionSummary, PruneResult } from "./types.js";
+import type { SessionStore } from "./session-store.js";
 
-export const SESSIONS_DIR = path.join(os.homedir(), ".orager", "sessions");
+/** Increment when SessionData structure changes in a breaking way. */
+export const CURRENT_SESSION_SCHEMA_VERSION = 1;
+
+/** Apply any pending schema migrations to a loaded session. Returns the (possibly mutated) data. */
+export function migrateSession(data: SessionData): SessionData {
+  const v = data.schemaVersion ?? 0;
+  // v0 → v1: no structural changes yet; just stamp the version
+  if (v < 1) {
+    data.schemaVersion = 1;
+  }
+  return data;
+}
+
+export type { SessionSummary, PruneResult };
+
+export const SESSIONS_DIR =
+  process.env["ORAGER_SESSIONS_DIR"] ?? path.join(os.homedir(), ".orager", "sessions");
 
 function sessionPath(sessionId: string): string {
   return path.join(SESSIONS_DIR, `${sessionId}.json`);
 }
 
-export async function saveSession(data: SessionData): Promise<void> {
-  await fs.mkdir(SESSIONS_DIR, { recursive: true });
-  const target = sessionPath(data.sessionId);
-  const tmp = `${target}.${process.pid}.tmp`;
-  try {
-    await fs.writeFile(tmp, JSON.stringify(data, null, 2), { encoding: "utf8", mode: 0o600 });
-    await fs.rename(tmp, target);
-  } catch (err) {
-    await fs.unlink(tmp).catch(() => {});
-    throw err;
+function lockPath(sessionId: string): string {
+  return path.join(SESSIONS_DIR, `${sessionId}.run.lock`);
+}
+
+// ── Session resume locking ────────────────────────────────────────────────────
+//
+// Prevents two concurrent processes from resuming the same session simultaneously
+// (e.g. two Paperclip wake events arriving in quick succession).
+// Uses an exclusive-create lock file (O_EXCL = atomic).
+// Lock files older than LOCK_STALE_MS are treated as stale and overwritten.
+
+const LOCK_STALE_MS = 5 * 60 * 1000; // 5 minutes
+
+// ── Store factory ─────────────────────────────────────────────────────────────
+//
+// Returns the SQLite store when ORAGER_DB_PATH is set, otherwise the
+// file-based store. The choice is made once per process and cached.
+
+let _storeCache: SessionStore | null = null;
+let _storeCachePromise: Promise<SessionStore> | null = null;
+
+async function getStore(): Promise<SessionStore> {
+  if (_storeCache) return _storeCache;
+  if (_storeCachePromise) return _storeCachePromise;
+
+  const dbPath = process.env["ORAGER_DB_PATH"];
+  if (dbPath) {
+    _storeCachePromise = import("./session-sqlite.js").then((m) => {
+      _storeCache = new m.SqliteSessionStore(dbPath);
+      return _storeCache as SessionStore;
+    });
+    return _storeCachePromise;
   }
+
+  _storeCache = _makeFileStore();
+  return _storeCache;
+}
+
+// ── Per-session write serialisation ──────────────────────────────────────────
+//
+// If the same session is saved concurrently (e.g. summarisation fires while the
+// approval flow is also writing), the last write wins and neither file is
+// corrupted — but the intermediate write is silently discarded.  We chain saves
+// for the same session ID so they are always serialised.
+//
+// The queue stores a "settled" promise (i.e. one that has already had .catch()
+// applied) so a failed save never blocks subsequent ones.
+
+const _saveQueues = new Map<string, Promise<void>>();
+
+async function _fileSave(data: SessionData): Promise<void> {
+  const { sessionId } = data;
+
+  const doSave = async (): Promise<void> => {
+    await fs.mkdir(SESSIONS_DIR, { recursive: true, mode: 0o700 });
+    const target = sessionPath(sessionId);
+    // Include pid + timestamp in the tmp name to avoid cross-process collisions
+    const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      const toWrite = { ...data, schemaVersion: CURRENT_SESSION_SCHEMA_VERSION };
+      await fs.writeFile(tmp, JSON.stringify(toWrite, null, 2), { encoding: "utf8", mode: 0o600 });
+      await fs.rename(tmp, target);
+    } catch (err) {
+      await fs.unlink(tmp).catch(() => {});
+      throw err;
+    }
+  };
+
+  // Run after any in-flight save for this session, regardless of its outcome.
+  const prev = _saveQueues.get(sessionId) ?? Promise.resolve();
+  const next = prev.then(doSave, doSave);
+
+  // Store a non-rejecting version in the queue so failures don't block future saves.
+  const settled = next.catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[orager] WARNING: session save failed for ${sessionId}: ${msg}\n`);
+  });
+  _saveQueues.set(sessionId, settled);
+  // Clean up the Map entry once this save completes, only if no newer save
+  // has been queued for this session in the meantime.
+  void settled.then(() => {
+    if (_saveQueues.get(sessionId) === settled) _saveQueues.delete(sessionId);
+  });
+  // Hard cap: if the queue grows beyond 1000 entries (shouldn't happen in normal use),
+  // evict the oldest 200 to prevent unbounded growth.
+  if (_saveQueues.size > 1000) {
+    let evicted = 0;
+    for (const key of _saveQueues.keys()) {
+      _saveQueues.delete(key);
+      if (++evicted >= 200) break;
+    }
+  }
+
+  return next;
 }
 
 /**
  * Load a session by ID. Returns null if the session does not exist or has
  * been marked as trashed (trashed sessions are skipped on resume).
  */
-export async function loadSession(sessionId: string): Promise<SessionData | null> {
+async function _fileLoad(sessionId: string): Promise<SessionData | null> {
   try {
     const raw = await fs.readFile(sessionPath(sessionId), "utf8");
     const data = JSON.parse(raw) as SessionData;
+    migrateSession(data);
     if (data.trashed) return null;
     return data;
   } catch {
@@ -42,16 +143,17 @@ export async function loadSession(sessionId: string): Promise<SessionData | null
  * Load a session regardless of its trashed status. Used for management
  * commands (list, delete) that need to see all sessions including trashed ones.
  */
-export async function loadSessionRaw(sessionId: string): Promise<SessionData | null> {
+async function _fileLoadRaw(sessionId: string): Promise<SessionData | null> {
   try {
     const raw = await fs.readFile(sessionPath(sessionId), "utf8");
-    return JSON.parse(raw) as SessionData;
+    const data = JSON.parse(raw) as SessionData;
+    return migrateSession(data);
   } catch {
     return null;
   }
 }
 
-export async function deleteSession(sessionId: string): Promise<void> {
+async function _fileDelete(sessionId: string): Promise<void> {
   try {
     await fs.unlink(sessionPath(sessionId));
   } catch (err: unknown) {
@@ -61,50 +163,7 @@ export async function deleteSession(sessionId: string): Promise<void> {
   }
 }
 
-/**
- * Mark a session as trashed. It will be preserved on disk but skipped on
- * resume. Use listSessions() to review trashed sessions, deleteSession() to
- * permanently remove them.
- */
-export async function trashSession(sessionId: string): Promise<boolean> {
-  const data = await loadSessionRaw(sessionId);
-  if (!data) return false;
-  await saveSession({ ...data, trashed: true });
-  return true;
-}
-
-/**
- * Restore a trashed session so it can be resumed again.
- */
-export async function restoreSession(sessionId: string): Promise<boolean> {
-  const data = await loadSessionRaw(sessionId);
-  if (!data) return false;
-  const { trashed: _removed, ...rest } = data;
-  await saveSession(rest as SessionData);
-  return true;
-}
-
-export function newSessionId(): string {
-  return crypto.randomUUID();
-}
-
-// ── Session listing ───────────────────────────────────────────────────────────
-
-export interface SessionSummary {
-  sessionId: string;
-  model: string;
-  createdAt: string;
-  updatedAt: string;
-  turnCount: number;
-  cwd: string;
-  trashed: boolean;
-}
-
-/**
- * List all sessions. Returns summaries sorted by updatedAt descending (most
- * recent first). Includes trashed sessions so they can be reviewed and deleted.
- */
-export async function listSessions(): Promise<SessionSummary[]> {
+async function _fileList(): Promise<SessionSummary[]> {
   let entries: string[];
   try {
     entries = await fs.readdir(SESSIONS_DIR);
@@ -118,7 +177,7 @@ export async function listSessions(): Promise<SessionSummary[]> {
   for (const entry of entries) {
     if (!entry.endsWith(".json")) continue;
     const sessionId = entry.slice(0, -5);
-    const data = await loadSessionRaw(sessionId);
+    const data = await _fileLoadRaw(sessionId);
     if (!data) continue;
     summaries.push({
       sessionId: data.sessionId,
@@ -136,19 +195,7 @@ export async function listSessions(): Promise<SessionSummary[]> {
   );
 }
 
-// ── Pruning ───────────────────────────────────────────────────────────────────
-
-export interface PruneResult {
-  deleted: number;
-  kept: number;
-  errors: number;
-}
-
-/**
- * Delete session files that haven't been modified in more than `olderThanMs`
- * milliseconds. Returns counts of deleted, kept, and errored files.
- */
-export async function pruneOldSessions(olderThanMs: number): Promise<PruneResult> {
+async function _filePrune(olderThanMs: number): Promise<PruneResult> {
   const cutoff = Date.now() - olderThanMs;
   let deleted = 0;
   let kept = 0;
@@ -179,6 +226,204 @@ export async function pruneOldSessions(olderThanMs: number): Promise<PruneResult
   }
 
   return { deleted, kept, errors };
+}
+
+async function _fileDeleteTrash(): Promise<PruneResult> {
+  const sessions = await _fileList();
+  const trashed = sessions.filter((s) => s.trashed);
+  let deleted = 0;
+  let errors = 0;
+
+  for (const s of trashed) {
+    try {
+      await _fileDelete(s.sessionId);
+      deleted++;
+    } catch {
+      errors++;
+    }
+  }
+
+  return { deleted, kept: sessions.length - trashed.length, errors };
+}
+
+/**
+ * Acquire an advisory resume lock for a session.
+ *
+ * Returns a `release()` function.  Always call `release()` in a `finally`
+ * block — it is idempotent and safe to call multiple times.
+ *
+ * Throws if a fresh (non-stale) lock already exists, indicating another
+ * process is actively resuming this session.
+ */
+async function _fileAcquireLock(sessionId: string): Promise<() => Promise<void>> {
+  await fs.mkdir(SESSIONS_DIR, { recursive: true, mode: 0o700 });
+  const lp = lockPath(sessionId);
+  const lockData = JSON.stringify({ pid: process.pid, at: Date.now(), host: os.hostname() });
+
+  try {
+    // O_EXCL = atomic exclusive create — fails with EEXIST if lock already exists
+    const fd = await fs.open(lp, "wx");
+    await fd.writeFile(lockData, "utf8");
+    await fd.close();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+
+    // Lock already exists — check if it's stale
+    try {
+      let existing: { at?: number; pid?: number } = {};
+      try {
+        existing = JSON.parse(await fs.readFile(lp, "utf8")) as { at?: number; pid?: number };
+      } catch {
+        // Corrupted lock file — treat as stale
+        existing = { at: 0 };
+      }
+      const age = Date.now() - (existing.at ?? 0);
+      if (age < LOCK_STALE_MS) {
+        throw new Error(
+          `Session ${sessionId} is already being resumed by PID ${existing.pid ?? "unknown"} on host ${(existing as { host?: string }).host ?? "unknown"}. ` +
+          `If this is wrong, delete ${lp} and retry.`,
+        );
+      }
+      // Stale lock — delete then re-acquire atomically
+      await fs.unlink(lp).catch(() => {});
+      try {
+        const fd2 = await fs.open(lp, "wx");
+        await fd2.writeFile(lockData, "utf8");
+        await fd2.close();
+      } catch (retryErr) {
+        if ((retryErr as NodeJS.ErrnoException).code === "EEXIST") {
+          throw new Error(
+            `Session ${sessionId} is already being resumed (concurrent lock race). Retry in a moment.`,
+          );
+        }
+        throw retryErr;
+      }
+    } catch (innerErr) {
+      if ((innerErr as Error).message?.includes("already being resumed")) throw innerErr;
+      // Can't read lock file — delete then re-acquire atomically
+      await fs.unlink(lp).catch(() => {});
+      try {
+        const fd2 = await fs.open(lp, "wx");
+        await fd2.writeFile(lockData, "utf8");
+        await fd2.close();
+      } catch (retryErr) {
+        if ((retryErr as NodeJS.ErrnoException).code === "EEXIST") {
+          throw new Error(
+            `Session ${sessionId} is already being resumed (concurrent lock race). Retry in a moment.`,
+          );
+        }
+        throw retryErr;
+      }
+    }
+  }
+
+  let released = false;
+  return async () => {
+    if (released) return;
+    released = true;
+    await fs.unlink(lp).catch(() => {});
+  };
+}
+
+function _makeFileStore(): SessionStore {
+  return {
+    save:        _fileSave,
+    load:        _fileLoad,
+    loadRaw:     _fileLoadRaw,
+    delete:      _fileDelete,
+    list:        _fileList,
+    prune:       _filePrune,
+    deleteTrash: _fileDeleteTrash,
+    acquireLock: _fileAcquireLock,
+  };
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+export async function saveSession(data: SessionData): Promise<void> {
+  return (await getStore()).save(data);
+}
+
+export async function loadSession(sessionId: string): Promise<SessionData | null> {
+  return (await getStore()).load(sessionId);
+}
+
+export async function loadSessionRaw(sessionId: string): Promise<SessionData | null> {
+  return (await getStore()).loadRaw(sessionId);
+}
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  return (await getStore()).delete(sessionId);
+}
+
+export async function listSessions(): Promise<SessionSummary[]> {
+  return (await getStore()).list();
+}
+
+export async function pruneOldSessions(olderThanMs: number): Promise<PruneResult> {
+  return (await getStore()).prune(olderThanMs);
+}
+
+export async function deleteTrashedSessions(): Promise<PruneResult> {
+  return (await getStore()).deleteTrash();
+}
+
+export async function acquireSessionLock(sessionId: string): Promise<() => Promise<void>> {
+  return (await getStore()).acquireLock(sessionId);
+}
+
+/**
+ * Mark a session as trashed. It will be preserved on disk but skipped on
+ * resume. Use listSessions() to review trashed sessions, deleteSession() to
+ * permanently remove them.
+ */
+export async function trashSession(sessionId: string): Promise<boolean> {
+  const data = await loadSessionRaw(sessionId);
+  if (!data) return false;
+  await saveSession({ ...data, trashed: true });
+  return true;
+}
+
+/**
+ * Restore a trashed session so it can be resumed again.
+ */
+export async function restoreSession(sessionId: string): Promise<boolean> {
+  const data = await loadSessionRaw(sessionId);
+  if (!data) return false;
+  const { trashed: _removed, ...rest } = data;
+  await saveSession(rest as SessionData);
+  return true;
+}
+
+export function newSessionId(): string {
+  return crypto.randomUUID();
+}
+
+/**
+ * Search sessions by a text query.
+ *
+ * For the SQLite backend: uses FTS5 full-text search.
+ * For the file backend: loads all sessions and does a simple string match
+ * against model, cwd, and the first 2000 chars of the serialized data.
+ *
+ * Returns matching session summaries sorted by relevance (SQLite) or
+ * updatedAt desc (file backend).
+ */
+export async function searchSessions(query: string, limit = 20): Promise<SessionSummary[]> {
+  const store = await getStore();
+  // If the store has a search method (SQLite), use it
+  if ("search" in store && typeof (store as { search?: unknown }).search === "function") {
+    return (store as { search: (q: string, limit: number) => SessionSummary[] }).search(query, limit);
+  }
+  // File backend: scan all sessions
+  const all = await store.list();
+  const q = query.toLowerCase();
+  const matches = all.filter((s) =>
+    s.model.toLowerCase().includes(q) ||
+    s.cwd.toLowerCase().includes(q) ||
+    s.sessionId.toLowerCase().includes(q),
+  );
+  return matches.slice(0, limit);
 }
 
 /**
@@ -239,22 +484,16 @@ export async function rollbackSession(
 }
 
 /**
- * Delete all sessions currently marked as trashed.
+ * Check and fix permissions on the sessions directory.
+ * Should be called at daemon startup. Logs warnings for any issues found.
+ * Best-effort: failures are non-fatal.
  */
-export async function deleteTrashedSessions(): Promise<PruneResult> {
-  const sessions = await listSessions();
-  const trashed = sessions.filter((s) => s.trashed);
-  let deleted = 0;
-  let errors = 0;
-
-  for (const s of trashed) {
-    try {
-      await deleteSession(s.sessionId);
-      deleted++;
-    } catch {
-      errors++;
-    }
+export async function ensureSessionsDirPermissions(): Promise<void> {
+  try {
+    await fs.mkdir(SESSIONS_DIR, { recursive: true, mode: 0o700 });
+    // Tighten permissions if directory already exists with wrong mode
+    await fs.chmod(SESSIONS_DIR, 0o700);
+  } catch {
+    // Non-fatal
   }
-
-  return { deleted, kept: sessions.length - trashed.length, errors };
 }

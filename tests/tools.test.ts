@@ -135,7 +135,10 @@ describe("read_file tool", () => {
 
     const result = await readFileTool.execute({ path: filePath }, tmpDir);
     expect(result.isError).toBe(false);
-    expect(result.content).toBe("line one\nline two\nline three");
+    // Full-file reads include line numbers
+    expect(result.content).toContain("line one");
+    expect(result.content).toContain("line two");
+    expect(result.content).toContain("line three");
   });
 
   it("returns isError: true for non-existent file", async () => {
@@ -205,7 +208,8 @@ describe("sandbox enforcement", () => {
     await fs.writeFile(filePath, "secret", "utf-8");
     const result = await readFileTool.execute({ path: filePath }, tmpDir, { sandboxRoot: tmpDir });
     expect(result.isError).toBe(false);
-    expect(result.content).toBe("secret");
+    // Full-file reads include line numbers
+    expect(result.content).toContain("secret");
   });
 
   it("read_file blocks access outside sandbox root", async () => {

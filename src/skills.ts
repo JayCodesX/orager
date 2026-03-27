@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import type { ToolExecutor, ToolParameterSchema, ToolResult } from "./types.js";
@@ -10,7 +11,9 @@ import type { ToolExecutor, ToolParameterSchema, ToolResult } from "./types.js";
 // Skills from each dir are cached independently so a change in one dir does
 // not evict other dirs.
 
-const SKILLS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+// 30-minute TTL — skills change rarely; the mtime key already handles
+// invalidation when a SKILL.md is edited, so a long TTL is safe.
+const SKILLS_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 interface SkillsCacheEntry {
   skills: SkillEntry[];
@@ -21,6 +24,27 @@ interface SkillsCacheEntry {
 
 // Keyed by the skills root path (dir + "/.orager/skills")
 const skillsCache = new Map<string, SkillsCacheEntry>();
+
+// Skills cache invalidation via fs.watch
+const _watchedDirs = new Set<string>();
+
+function watchSkillsDir(dir: string, invalidate: () => void): void {
+  if (_watchedDirs.has(dir)) return;
+  try {
+    const watcher = fsSync.watch(dir, { recursive: false }, (event, filename) => {
+      if (filename?.endsWith(".md") || filename?.endsWith(".yaml") || filename?.endsWith(".yml")) {
+        invalidate();
+      }
+    });
+    watcher.on("error", () => {
+      // fs.watch not supported on this platform — fall back to TTL
+      _watchedDirs.delete(dir);
+    });
+    _watchedDirs.add(dir);
+  } catch {
+    // fs.watch unavailable — silently fall back to TTL
+  }
+}
 
 /** Build a mtime key by stat-ing every SKILL.md under the given skillsRoot. */
 async function buildMtimeKey(skillsRoot: string, skillDirs: string[]): Promise<string> {
@@ -146,6 +170,13 @@ export async function loadSkillsFromDirs(addDirs: string[]): Promise<SkillEntry[
       now - cached.loadedAt < SKILLS_CACHE_TTL_MS
     ) {
       // Cache hit — use cached skills for this dir
+      // Register a fs.watch listener to invalidate cache on file changes
+      watchSkillsDir(skillsRoot, () => {
+        const entry = skillsCache.get(skillsRoot);
+        if (entry) {
+          skillsCache.set(skillsRoot, { ...entry, loadedAt: 0 });
+        }
+      });
       skills.push(...cached.skills);
       continue;
     }
@@ -176,6 +207,13 @@ export async function loadSkillsFromDirs(addDirs: string[]): Promise<SkillEntry[
 
     // Store the freshly loaded skills in the cache
     skillsCache.set(skillsRoot, { skills: dirSkills, loadedAt: now, mtimeKey });
+    // Register a fs.watch listener to invalidate cache on file changes
+    watchSkillsDir(skillsRoot, () => {
+      const entry = skillsCache.get(skillsRoot);
+      if (entry) {
+        skillsCache.set(skillsRoot, { ...entry, loadedAt: 0 });
+      }
+    });
     skills.push(...dirSkills);
   }
 
@@ -203,7 +241,8 @@ export function buildSkillsSystemPrompt(skills: SkillEntry[]): string {
   for (const skill of promptSkills) {
     const body = stripFrontmatter(skill.content);
     if (body) {
-      // Include the full skill body (already contains its own headings)
+      // Include the skill name label followed by the full skill body
+      lines.push(`**${skill.name}**`);
       lines.push(body, "");
     } else if (skill.description) {
       lines.push(`### ${skill.name}`, "", skill.description, "");
@@ -278,6 +317,40 @@ function interpolate(template: string, input: Record<string, unknown>): string {
 }
 
 /**
+ * Validate tool input against a skill's declared parameter schema.
+ * Returns an error message string on failure, or null if valid.
+ */
+function validateSkillInput(
+  input: Record<string, unknown>,
+  schema: ToolParameterSchema | undefined,
+): string | null {
+  if (!schema) return null;
+
+  for (const key of schema.required ?? []) {
+    const val = input[key];
+    if (val === undefined || val === null || val === "") {
+      return `Missing required parameter: '${key}'`;
+    }
+  }
+
+  for (const [key, def] of Object.entries(schema.properties)) {
+    const val = input[key];
+    if (val === undefined) continue;
+    // Only check primitive types (skip object/array)
+    if (def.type && def.type !== "object" && def.type !== "array") {
+      if (typeof val !== def.type) {
+        return `Parameter '${key}' must be type ${def.type}, got ${typeof val}`;
+      }
+    }
+    if (def.enum && !def.enum.includes(String(val))) {
+      return `Parameter '${key}' must be one of: ${def.enum.join(", ")}`;
+    }
+  }
+
+  return null;
+}
+
+/**
  * Returns `ToolExecutor` instances for skills that have an `exec` field.
  * Tool names are normalised: dashes are replaced with underscores.
  */
@@ -294,11 +367,32 @@ export function buildSkillTools(skills: SkillEntry[]): ToolExecutor[] {
         },
       },
       async execute(input: Record<string, unknown>, cwd: string): Promise<ToolResult> {
+        const validationError = validateSkillInput(input, skill.parameters);
+        if (validationError) {
+          return { toolCallId: "", content: validationError, isError: true };
+        }
         const cmd = interpolate(skill.exec!, input);
+
+        // Detect any unreplaced placeholders (e.g. {{param}} not in input)
+        const unreplaced = [...cmd.matchAll(/\{\{(\w+)\}\}/g)].map((m) => m[1]);
+        if (unreplaced.length > 0) {
+          return {
+            toolCallId: "",
+            content: `Skill '${skill.name}': unreplaced placeholder(s) in exec template: ${unreplaced.map((p) => `{{${p}}}`).join(", ")}. Check that all required parameters are provided.`,
+            isError: true,
+          };
+        }
+
         const { stdout, stderr, exitCode } = await runShell(cmd, cwd);
         let content = stdout;
         if (stderr) content += (content ? "\n" : "") + `[stderr] ${stderr}`;
         if (!content) content = exitCode === 0 ? "(no output)" : `exited with code ${exitCode}`;
+        const MAX_SKILL_OUTPUT_CHARS = 50_000;
+        if (content.length > MAX_SKILL_OUTPUT_CHARS) {
+          content =
+            content.slice(0, MAX_SKILL_OUTPUT_CHARS) +
+            `\n[skill output truncated at ${MAX_SKILL_OUTPUT_CHARS} chars]`;
+        }
         return { toolCallId: "", content, isError: exitCode !== 0 };
       },
     }));

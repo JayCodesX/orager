@@ -1,0 +1,150 @@
+/**
+ * MCP client — connects to external MCP servers and exposes their tools
+ * as ToolExecutor instances for injection into the agent loop.
+ *
+ * Server config is read from ~/.orager/config.json under "mcpServers",
+ * using the same schema as Claude Desktop / claude_desktop_config.json.
+ *
+ * Each server's tools are exposed as mcp__<serverName>__<toolName>.
+ */
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import type { ToolExecutor, ToolParameterSchema } from "./types.js";
+
+const MCP_TOOL_TIMEOUT_MS = 30_000;
+const MAX_MCP_RESULT_CHARS = 50_000;
+
+// Env var prefixes that can hijack subprocess behaviour — strip them from
+// user-supplied MCP server env configs to prevent sandbox escapes.
+const UNSAFE_ENV_PREFIXES = ["LD_", "DYLD_", "NODE_", "PYTHON", "RUBYOPT", "PERL5"];
+
+function sanitizeMcpEnv(
+  env: Record<string, string> | undefined,
+  serverName: string,
+): Record<string, string> | undefined {
+  if (!env) return undefined;
+  const safe: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (UNSAFE_ENV_PREFIXES.some((p) => k.toUpperCase().startsWith(p))) {
+      process.stderr.write(
+        `[orager] WARNING: MCP server '${serverName}' env var '${k}' rejected — unsafe prefix\n`,
+      );
+      continue;
+    }
+    safe[k] = v;
+  }
+  return Object.keys(safe).length > 0 ? safe : undefined;
+}
+
+export interface McpServerConfig {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+export interface McpClientHandle {
+  tools: ToolExecutor[];
+  close(): Promise<void>;
+}
+
+export async function connectMcpServer(
+  name: string,
+  config: McpServerConfig,
+): Promise<McpClientHandle> {
+  const transport = new StdioClientTransport({
+    command: config.command,
+    args: config.args ?? [],
+    env: sanitizeMcpEnv(config.env, name),
+  });
+
+  const client = new Client({ name: "orager", version: "1.0.0" });
+  await (() => {
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race([
+      client.connect(transport),
+      new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(
+          () => reject(new Error(`MCP server '${name}' connection timed out after 10s`)),
+          10_000,
+        );
+      }),
+    ]).finally(() => {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    });
+  })();
+
+  const { tools: rawTools } = await client.listTools();
+
+  const tools: ToolExecutor[] = rawTools.map((t) => ({
+    definition: {
+      type: "function" as const,
+      function: {
+        name: `mcp__${name}__${t.name}`,
+        description: t.description ?? "",
+        parameters: (t.inputSchema as ToolParameterSchema) ?? { type: "object", properties: {} },
+      },
+    },
+    async execute(input: Record<string, unknown>) {
+      try {
+        // Enforce per-call timeout — a hanging MCP server must not block the agent indefinitely.
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        const result = await Promise.race([
+          client.callTool({ name: t.name, arguments: input }),
+          new Promise<never>((_, reject) => {
+            timeoutHandle = setTimeout(
+              () => reject(new Error(`MCP tool '${t.name}' timed out after ${MCP_TOOL_TIMEOUT_MS / 1000}s`)),
+              MCP_TOOL_TIMEOUT_MS,
+            );
+          }),
+        ]).finally(() => {
+          if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+        });
+
+        let content = Array.isArray(result.content)
+          ? result.content.map((c: { type: string; text?: string }) => c.type === "text" ? c.text ?? "" : JSON.stringify(c)).join("\n")
+          : String(result.content ?? "");
+
+        // Cap result size to prevent memory exhaustion from runaway MCP servers.
+        if (content.length > MAX_MCP_RESULT_CHARS) {
+          content = content.slice(0, MAX_MCP_RESULT_CHARS) +
+            `\n[MCP result truncated at ${MAX_MCP_RESULT_CHARS} chars]`;
+        }
+
+        return { toolCallId: "", content, isError: result.isError === true };
+      } catch (err) {
+        return {
+          toolCallId: "",
+          content: `MCP tool error: ${err instanceof Error ? err.message : String(err)}`,
+          isError: true,
+        };
+      }
+    },
+  }));
+
+  return {
+    tools,
+    async close() {
+      await client.close().catch(() => {});
+    },
+  };
+}
+
+export async function connectAllMcpServers(
+  servers: Record<string, McpServerConfig>,
+  onLog?: (msg: string) => void,
+): Promise<McpClientHandle[]> {
+  const entries = Object.entries(servers);
+  const results = await Promise.all(
+    entries.map(async ([name, config]) => {
+      try {
+        const handle = await connectMcpServer(name, config);
+        onLog?.(`[orager] MCP: connected to '${name}' (${handle.tools.length} tools)\n`);
+        return handle;
+      } catch (err) {
+        onLog?.(`[orager] WARNING: MCP server '${name}' failed to connect: ${err instanceof Error ? err.message : String(err)}\n`);
+        return null;
+      }
+    }),
+  );
+  return results.filter((h): h is McpClientHandle => h !== null);
+}

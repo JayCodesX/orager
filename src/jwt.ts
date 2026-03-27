@@ -20,7 +20,7 @@ function parseBase64url(input: string): string {
 
 // ── Token expiry ──────────────────────────────────────────────────────────────
 
-const TOKEN_TTL_SECONDS = 300; // 5 minutes — matches Anthropic cache TTL
+const TOKEN_TTL_SECONDS = 900; // 15 minutes — long enough to cover daemon retry-after waits
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -67,8 +67,13 @@ export function verifyJwt(token: string, signingKey: string): JwtClaims {
     .update(data)
     .digest("base64url");
 
-  // Constant-time comparison to prevent timing attacks
-  if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
+  // Constant-time comparison to prevent timing attacks.
+  // timingSafeEqual throws on unequal-length buffers, which would leak the
+  // expected signature length via a thrown exception. Guard with a length check
+  // that returns the same error message regardless of the failure mode.
+  const sigBuf = Buffer.from(sig, "base64url");
+  const expectedBuf = Buffer.from(expected, "base64url");
+  if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
     throw new Error("Invalid JWT signature");
   }
 
@@ -79,8 +84,11 @@ export function verifyJwt(token: string, signingKey: string): JwtClaims {
     throw new Error("JWT payload is not valid JSON");
   }
 
-  if (claims.exp < Math.floor(Date.now() / 1000)) {
-    throw new Error("JWT has expired");
+  if (typeof claims.exp !== "number" || !Number.isFinite(claims.exp) || claims.exp < Math.floor(Date.now() / 1000)) {
+    throw new Error("JWT has expired or has invalid exp claim");
+  }
+  if (typeof claims.iat !== "number" || !Number.isFinite(claims.iat)) {
+    throw new Error("JWT has invalid iat claim");
   }
   if (claims.scope !== "run") {
     throw new Error("JWT scope must be 'run'");

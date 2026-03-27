@@ -12,9 +12,12 @@ import {
   deleteSession,
   listSessions,
   rollbackSession,
+  searchSessions,
 } from "./session.js";
-import type { CliOptions, EmitResultEvent } from "./types.js";
+import type { CliOptions, EmitResultEvent, TurnModelRule, UserMessageContentBlock, AgentLoopOptions } from "./types.js";
 import { startDaemon } from "./daemon.js";
+import { applyProfileAsync } from "./profiles.js";
+import { initTelemetry } from "./telemetry.js";
 
 // ── Stdin reading ────────────────────────────────────────────────────────────
 
@@ -285,6 +288,24 @@ function parseArgs(argv: string[]): CliOptions {
         opts.summarizeModel = argv[++i];
         break;
       }
+      case "--summarize-keep-recent-turns": {
+        const n = parseInt(argv[++i], 10);
+        if (!isNaN(n) && n >= 0) opts.summarizeKeepRecentTurns = n;
+        break;
+      }
+      case "--approval-mode": {
+        const v = argv[++i];
+        if (v === "tty" || v === "question") opts.approvalMode = v;
+        break;
+      }
+      case "--profile": {
+        opts.profile = argv[++i];
+        break;
+      }
+      case "--settings-file": {
+        opts.settingsFile = argv[++i];
+        break;
+      }
       case "--prune-sessions": {
         // handled in main before loop
         break;
@@ -438,6 +459,24 @@ async function handleRollbackSession(argv: string[]): Promise<void> {
   process.exit(0);
 }
 
+async function handleSearchSessions(argv: string[]): Promise<void> {
+  const idx = argv.indexOf("--search-sessions");
+  const query = argv[idx + 1] ?? "";
+  if (!query) {
+    process.stderr.write("orager: --search-sessions requires a query string.\n");
+    process.exit(1);
+  }
+  const results = await searchSessions(query);
+  if (results.length === 0) {
+    process.stdout.write(`No sessions found matching: ${query}\n`);
+  } else {
+    for (const s of results) {
+      process.stdout.write(`${s.sessionId}  ${s.model}  ${s.updatedAt.slice(0, 10)}  ${s.cwd}\n`);
+    }
+  }
+  process.exit(0);
+}
+
 async function handleDeleteTrashed(): Promise<void> {
   const result = await deleteTrashedSessions();
   process.stdout.write(
@@ -525,18 +564,82 @@ interface ConfigFileSchema {
   maxCostUsd?: number;
   costPerInputToken?: number;
   costPerOutputToken?: number;
-  requireApproval?: boolean;
-  requireApprovalFor?: string;
+  /** "all" or list of tool names — replaces old boolean requireApproval + requireApprovalFor */
+  requireApproval?: "all" | string[];
   toolsFiles?: string[];
   systemPromptFile?: string;
   outputFormat?: string;
+  summarizeAt?: number;
+  summarizeModel?: string;
+  summarizeKeepRecentTurns?: number;
+  turnModelRules?: unknown[]; // TurnModelRule[] — kept as unknown[] to avoid circular import
+  promptContent?: unknown[]; // UserMessageContentBlock[]
+  approvalAnswer?: { choiceKey: string; toolCallId: string } | null;
+  approvalMode?: "tty" | "question";
+  profile?: string;
+  settingsFile?: string;
+  forceResume?: boolean;
+  /** MCP servers — complex object, passed via globalThis not argv */
+  mcpServers?: Record<string, { command: string; args?: string[]; env?: Record<string, string> }>;
+  requireMcpServers?: string[];
+  toolTimeouts?: Record<string, number>;
+  maxSpawnDepth?: number;
+  maxIdenticalToolCallTurns?: number;
+  toolErrorBudgetHardStop?: boolean;
+  /** Response format for JSON healing — complex object, passed via globalThis not argv */
+  response_format?: { type: string; json_schema?: Record<string, unknown> };
+  /** Shell hooks for lifecycle events — complex object, passed via globalThis not argv */
+  hooks?: Record<string, string>;
+  planMode?: boolean;
+  injectContext?: boolean;
+  tagToolOutputs?: boolean;
+  readProjectInstructions?: boolean;
+  summarizePrompt?: string;
+  summarizeFallbackKeep?: number;
+  webhookUrl?: string;
+  /** Bash policy — complex object, passed via globalThis not argv */
+  bashPolicy?: Record<string, unknown>;
+  trackFileChanges?: boolean;
+  enableBrowserTools?: boolean;
+  maxCostUsdSoft?: number;
+  approvalTimeoutMs?: number;
+  hookTimeoutMs?: number;
+  hookErrorMode?: "ignore" | "warn" | "fail";
 }
 
 /**
  * Read the config file at `filePath`, delete it immediately, and return
  * an argv fragment equivalent to the flags the config represents.
  */
-async function loadConfigFile(filePath: string): Promise<string[]> {
+async function loadConfigFile(filePath: string): Promise<{
+  args: string[];
+  turnModelRules?: unknown[];
+  promptContent?: unknown[];
+  approvalAnswer?: { choiceKey: string; toolCallId: string } | null;
+  approvalMode?: "tty" | "question";
+  mcpServers?: Record<string, { command: string; args?: string[]; env?: Record<string, string> }>;
+  requireMcpServers?: string[];
+  toolTimeouts?: Record<string, number>;
+  maxSpawnDepth?: number;
+  maxIdenticalToolCallTurns?: number;
+  toolErrorBudgetHardStop?: boolean;
+  response_format?: { type: string; json_schema?: Record<string, unknown> };
+  hooks?: Record<string, string>;
+  planMode?: boolean;
+  injectContext?: boolean;
+  tagToolOutputs?: boolean;
+  readProjectInstructions?: boolean;
+  summarizePrompt?: string;
+  summarizeFallbackKeep?: number;
+  webhookUrl?: string;
+  bashPolicy?: Record<string, unknown>;
+  trackFileChanges?: boolean;
+  enableBrowserTools?: boolean;
+  maxCostUsdSoft?: number;
+  approvalTimeoutMs?: number;
+  hookTimeoutMs?: number;
+  hookErrorMode?: "ignore" | "warn" | "fail";
+}> {
   let raw: string;
   try {
     raw = await fs.readFile(filePath, "utf8");
@@ -612,20 +715,100 @@ async function loadConfigFile(filePath: string): Promise<string[]> {
   if (cfg.maxCostUsd !== undefined) args.push("--max-cost-usd", String(cfg.maxCostUsd));
   if (cfg.costPerInputToken !== undefined) args.push("--cost-per-input-token", String(cfg.costPerInputToken));
   if (cfg.costPerOutputToken !== undefined) args.push("--cost-per-output-token", String(cfg.costPerOutputToken));
-  if (cfg.requireApprovalFor) args.push("--require-approval-for", cfg.requireApprovalFor);
-  else if (cfg.requireApproval) args.push("--require-approval");
+  if (cfg.requireApproval === "all") {
+    args.push("--require-approval");
+  } else if (Array.isArray(cfg.requireApproval) && cfg.requireApproval.length > 0) {
+    args.push("--require-approval-for", cfg.requireApproval.join(","));
+  }
+  if (cfg.forceResume) args.push("--force-resume");
+  if (cfg.profile) args.push("--profile", cfg.profile);
+  if (cfg.settingsFile) args.push("--settings-file", cfg.settingsFile);
   if (Array.isArray(cfg.toolsFiles)) {
     for (const f of cfg.toolsFiles) args.push("--tools-file", f);
   }
   if (cfg.systemPromptFile) args.push("--system-prompt-file", cfg.systemPromptFile);
   if (cfg.outputFormat) args.push("--output-format", cfg.outputFormat);
+  if (cfg.summarizeAt !== undefined) args.push("--summarize-at", String(cfg.summarizeAt));
+  if (cfg.summarizeModel) args.push("--summarize-model", cfg.summarizeModel);
+  if (cfg.summarizeKeepRecentTurns !== undefined) args.push("--summarize-keep-recent-turns", String(cfg.summarizeKeepRecentTurns));
 
-  return args;
+  const result: {
+    args: string[];
+    turnModelRules?: unknown[];
+    promptContent?: unknown[];
+    approvalAnswer?: { choiceKey: string; toolCallId: string } | null;
+    approvalMode?: "tty" | "question";
+    mcpServers?: Record<string, { command: string; args?: string[]; env?: Record<string, string> }>;
+    requireMcpServers?: string[];
+    toolTimeouts?: Record<string, number>;
+    maxSpawnDepth?: number;
+    maxIdenticalToolCallTurns?: number;
+    toolErrorBudgetHardStop?: boolean;
+    response_format?: { type: string; json_schema?: Record<string, unknown> };
+    hooks?: Record<string, string>;
+    planMode?: boolean;
+    injectContext?: boolean;
+    tagToolOutputs?: boolean;
+    readProjectInstructions?: boolean;
+    summarizePrompt?: string;
+    summarizeFallbackKeep?: number;
+    webhookUrl?: string;
+    bashPolicy?: Record<string, unknown>;
+    trackFileChanges?: boolean;
+    enableBrowserTools?: boolean;
+    maxCostUsdSoft?: number;
+    approvalTimeoutMs?: number;
+    hookTimeoutMs?: number;
+    hookErrorMode?: "ignore" | "warn" | "fail";
+  } = { args };
+  if (Array.isArray(cfg.turnModelRules) && cfg.turnModelRules.length > 0) {
+    result.turnModelRules = cfg.turnModelRules;
+  }
+  if (Array.isArray(cfg.promptContent) && cfg.promptContent.length > 0) {
+    result.promptContent = cfg.promptContent;
+  }
+  if (cfg.approvalAnswer !== undefined) {
+    result.approvalAnswer = cfg.approvalAnswer;
+  }
+  if (cfg.approvalMode !== undefined) {
+    result.approvalMode = cfg.approvalMode;
+  }
+  if (cfg.mcpServers && typeof cfg.mcpServers === "object") {
+    result.mcpServers = cfg.mcpServers;
+  }
+  if (Array.isArray(cfg.requireMcpServers) && cfg.requireMcpServers.length > 0) {
+    result.requireMcpServers = cfg.requireMcpServers;
+  }
+  if (cfg.toolTimeouts && typeof cfg.toolTimeouts === "object") {
+    result.toolTimeouts = cfg.toolTimeouts as Record<string, number>;
+  }
+  if (cfg.maxSpawnDepth !== undefined) result.maxSpawnDepth = cfg.maxSpawnDepth;
+  if (cfg.maxIdenticalToolCallTurns !== undefined) result.maxIdenticalToolCallTurns = cfg.maxIdenticalToolCallTurns;
+  if (cfg.toolErrorBudgetHardStop !== undefined) result.toolErrorBudgetHardStop = cfg.toolErrorBudgetHardStop;
+  if (cfg.response_format && typeof cfg.response_format.type === "string") result.response_format = cfg.response_format;
+  if (cfg.hooks && typeof cfg.hooks === "object") result.hooks = cfg.hooks as Record<string, string>;
+  if (cfg.planMode !== undefined) result.planMode = cfg.planMode;
+  if (cfg.injectContext !== undefined) result.injectContext = cfg.injectContext;
+  if (cfg.tagToolOutputs !== undefined) result.tagToolOutputs = cfg.tagToolOutputs;
+  if (cfg.readProjectInstructions !== undefined) result.readProjectInstructions = cfg.readProjectInstructions;
+  if (cfg.summarizePrompt) result.summarizePrompt = cfg.summarizePrompt;
+  if (cfg.summarizeFallbackKeep !== undefined) result.summarizeFallbackKeep = cfg.summarizeFallbackKeep;
+  if (cfg.webhookUrl) result.webhookUrl = cfg.webhookUrl;
+  if (cfg.bashPolicy && typeof cfg.bashPolicy === "object") result.bashPolicy = cfg.bashPolicy as Record<string, unknown>;
+  if (cfg.trackFileChanges !== undefined) result.trackFileChanges = cfg.trackFileChanges;
+  if (cfg.enableBrowserTools !== undefined) result.enableBrowserTools = cfg.enableBrowserTools;
+  if (cfg.maxCostUsdSoft !== undefined) result.maxCostUsdSoft = cfg.maxCostUsdSoft;
+  if (cfg.approvalTimeoutMs !== undefined) result.approvalTimeoutMs = cfg.approvalTimeoutMs;
+  if (cfg.hookTimeoutMs !== undefined) result.hookTimeoutMs = cfg.hookTimeoutMs;
+  if (cfg.hookErrorMode !== undefined) result.hookErrorMode = cfg.hookErrorMode;
+  return result;
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
+  await initTelemetry();
+
   let argv = process.argv.slice(2);
 
   // ── Daemon mode ─────────────────────────────────────────────────────────────
@@ -668,6 +851,7 @@ async function main(): Promise<void> {
 
   // Session management commands — no API key needed
   if (argv.includes("--list-sessions"))    { await handleListSessions();         return; }
+  if (argv.includes("--search-sessions"))  { await handleSearchSessions(argv);  return; }
   if (argv.includes("--trash-session"))    { await handleTrashSession(argv);    return; }
   if (argv.includes("--restore-session"))  { await handleRestoreSession(argv);  return; }
   if (argv.includes("--delete-session"))   { await handleDeleteSession(argv);   return; }
@@ -689,8 +873,87 @@ async function main(): Promise<void> {
     }
     // Remove --config-file and its path from argv, then inject the expanded flags
     const remaining = [...argv.slice(0, cfIdx), ...argv.slice(cfIdx + 2)];
-    const configArgs = await loadConfigFile(cfPath);
-    argv = [...remaining, ...configArgs];
+    const cfResult = await loadConfigFile(cfPath);
+    argv = [...remaining, ...cfResult.args];
+    // Store extras for later — they can't be represented as argv tokens
+    if (cfResult.turnModelRules) {
+      (globalThis as Record<string, unknown>).__oragerTurnModelRules = cfResult.turnModelRules;
+    }
+    if (cfResult.promptContent) {
+      (globalThis as Record<string, unknown>).__oragerPromptContent = cfResult.promptContent;
+    }
+    if (cfResult.approvalAnswer !== undefined) {
+      (globalThis as Record<string, unknown>).__oragerApprovalAnswer = cfResult.approvalAnswer;
+    }
+    if (cfResult.approvalMode !== undefined) {
+      (globalThis as Record<string, unknown>).__oragerApprovalMode = cfResult.approvalMode;
+    }
+    if (cfResult.mcpServers) {
+      (globalThis as Record<string, unknown>).__oragerMcpServers = cfResult.mcpServers;
+    }
+    if (cfResult.requireMcpServers) {
+      (globalThis as Record<string, unknown>).__oragerRequireMcpServers = cfResult.requireMcpServers;
+    }
+    if (cfResult.toolTimeouts) {
+      (globalThis as Record<string, unknown>).__oragerToolTimeouts = cfResult.toolTimeouts;
+    }
+    if (cfResult.maxSpawnDepth !== undefined) {
+      (globalThis as Record<string, unknown>).__oragerMaxSpawnDepth = cfResult.maxSpawnDepth;
+    }
+    if (cfResult.maxIdenticalToolCallTurns !== undefined) {
+      (globalThis as Record<string, unknown>).__oragerMaxIdenticalToolCallTurns = cfResult.maxIdenticalToolCallTurns;
+    }
+    if (cfResult.toolErrorBudgetHardStop !== undefined) {
+      (globalThis as Record<string, unknown>).__oragerToolErrorBudgetHardStop = cfResult.toolErrorBudgetHardStop;
+    }
+    if (cfResult.response_format) {
+      (globalThis as Record<string, unknown>).__oragerResponseFormat = cfResult.response_format;
+    }
+    if (cfResult.hooks) {
+      (globalThis as Record<string, unknown>).__oragerHooks = cfResult.hooks;
+    }
+    if (cfResult.planMode !== undefined) {
+      (globalThis as Record<string, unknown>).__oragerPlanMode = cfResult.planMode;
+    }
+    if (cfResult.injectContext !== undefined) {
+      (globalThis as Record<string, unknown>).__oragerInjectContext = cfResult.injectContext;
+    }
+    if (cfResult.tagToolOutputs !== undefined) {
+      (globalThis as Record<string, unknown>).__oragerTagToolOutputs = cfResult.tagToolOutputs;
+    }
+    if (cfResult.readProjectInstructions !== undefined) {
+      (globalThis as Record<string, unknown>).__oragerReadProjectInstructions = cfResult.readProjectInstructions;
+    }
+    if (cfResult.summarizePrompt) {
+      (globalThis as Record<string, unknown>).__oragerSummarizePrompt = cfResult.summarizePrompt;
+    }
+    if (cfResult.summarizeFallbackKeep !== undefined) {
+      (globalThis as Record<string, unknown>).__oragerSummarizeFallbackKeep = cfResult.summarizeFallbackKeep;
+    }
+    if (cfResult.webhookUrl) {
+      (globalThis as Record<string, unknown>).__oragerWebhookUrl = cfResult.webhookUrl;
+    }
+    if (cfResult.bashPolicy) {
+      (globalThis as Record<string, unknown>).__oragerBashPolicy = cfResult.bashPolicy;
+    }
+    if (cfResult.trackFileChanges !== undefined) {
+      (globalThis as Record<string, unknown>).__oragerTrackFileChanges = cfResult.trackFileChanges;
+    }
+    if (cfResult.enableBrowserTools !== undefined) {
+      (globalThis as Record<string, unknown>).__oragerEnableBrowserTools = cfResult.enableBrowserTools;
+    }
+    if (cfResult.maxCostUsdSoft !== undefined) {
+      (globalThis as Record<string, unknown>).__oragerMaxCostUsdSoft = cfResult.maxCostUsdSoft;
+    }
+    if (cfResult.approvalTimeoutMs !== undefined) {
+      (globalThis as Record<string, unknown>).__oragerApprovalTimeoutMs = cfResult.approvalTimeoutMs;
+    }
+    if (cfResult.hookTimeoutMs !== undefined) {
+      (globalThis as Record<string, unknown>).__oragerHookTimeoutMs = cfResult.hookTimeoutMs;
+    }
+    if (cfResult.hookErrorMode !== undefined) {
+      (globalThis as Record<string, unknown>).__oragerHookErrorMode = cfResult.hookErrorMode;
+    }
   }
 
   // Resolve API key
@@ -765,7 +1028,60 @@ async function main(): Promise<void> {
       }
     : undefined;
 
-  await runAgentLoop({
+  // ── CLI output tracking ─────────────────────────────────────────────────────
+  const runStart = Date.now();
+  let cliTurn = 0;
+  let cliTurnStart = Date.now();
+
+  function makeOnEmit(baseEmit: typeof emit) {
+    return (event: Parameters<typeof emit>[0]) => {
+      baseEmit(event);
+
+      if (event.type === "assistant") {
+        // Start timing this turn
+        if (cliTurn === 0) cliTurnStart = Date.now();
+        else cliTurnStart = Date.now();
+      }
+
+      if (event.type === "tool") {
+        // A turn completed (tool calls were executed)
+        const elapsed = ((Date.now() - cliTurnStart) / 1000).toFixed(1);
+        // We don't have per-turn cost here — show what we have from result
+        process.stderr.write(
+          `\r[turn ${cliTurn + 1} | ${elapsed}s]\x1b[K\n`,
+        );
+        cliTurn++;
+        cliTurnStart = Date.now();
+      }
+
+      if (event.type === "result") {
+        const totalElapsedS = Math.round((Date.now() - runStart) / 1000);
+        const promptTokens = event.usage.input_tokens;
+        const completionTokens = event.usage.output_tokens;
+        const cachedTokens = event.usage.cache_read_input_tokens;
+        const totalTokens = promptTokens + completionTokens;
+        const cachedPct = totalTokens > 0
+          ? Math.round((cachedTokens / totalTokens) * 100)
+          : 0;
+        const cost = event.total_cost_usd;
+        const sessionShort = event.session_id.slice(0, 8);
+
+        process.stderr.write(
+          `\r\x1b[K` +
+          `─────────────────────────────────────\n` +
+          `  Turns:    ${event.turnCount ?? cliTurn}\n` +
+          `  Tokens:   ${promptTokens.toLocaleString()} prompt / ${completionTokens.toLocaleString()} completion\n` +
+          `  Cached:   ${cachedTokens.toLocaleString()} (${cachedPct}%)\n` +
+          `  Cost:     ~$${cost.toFixed(4)}\n` +
+          `  Duration: ${totalElapsedS}s\n` +
+          `  Session:  ${sessionShort}...\n` +
+          `─────────────────────────────────────\n`,
+        );
+      }
+    };
+  }
+
+  let loopOpts: AgentLoopOptions = {
     prompt,
     model: opts.model,
     apiKey,
@@ -777,7 +1093,7 @@ async function main(): Promise<void> {
     cwd: process.cwd(),
     dangerouslySkipPermissions: opts.dangerouslySkipPermissions,
     verbose: opts.verbose,
-    onEmit: emit,
+    onEmit: makeOnEmit(emit),
     onLog: (stream, chunk) => {
       if (stream === "stderr") process.stderr.write(chunk);
     },
@@ -809,7 +1125,41 @@ async function main(): Promise<void> {
     appendSystemPrompt,
     summarizeAt: opts.summarizeAt,
     summarizeModel: opts.summarizeModel,
-  });
+    summarizeKeepRecentTurns: opts.summarizeKeepRecentTurns,
+    turnModelRules: (globalThis as Record<string, unknown>).__oragerTurnModelRules as TurnModelRule[] | undefined,
+    promptContent: (globalThis as Record<string, unknown>).__oragerPromptContent as UserMessageContentBlock[] | undefined,
+    approvalAnswer: ((globalThis as Record<string, unknown>).__oragerApprovalAnswer as { choiceKey: string; toolCallId: string } | null | undefined) ?? opts.approvalAnswer ?? null,
+    approvalMode: ((globalThis as Record<string, unknown>).__oragerApprovalMode as "tty" | "question" | undefined) ?? opts.approvalMode,
+    settingsFile: opts.settingsFile,
+    mcpServers: (globalThis as Record<string, unknown>).__oragerMcpServers as AgentLoopOptions["mcpServers"] | undefined,
+    requireMcpServers: (globalThis as Record<string, unknown>).__oragerRequireMcpServers as string[] | undefined,
+    toolTimeouts: (globalThis as Record<string, unknown>).__oragerToolTimeouts as Record<string, number> | undefined,
+    maxSpawnDepth: (globalThis as Record<string, unknown>).__oragerMaxSpawnDepth as number | undefined ?? opts.maxSpawnDepth,
+    maxIdenticalToolCallTurns: (globalThis as Record<string, unknown>).__oragerMaxIdenticalToolCallTurns as number | undefined ?? opts.maxIdenticalToolCallTurns,
+    toolErrorBudgetHardStop: (globalThis as Record<string, unknown>).__oragerToolErrorBudgetHardStop as boolean | undefined ?? opts.toolErrorBudgetHardStop,
+    response_format: (globalThis as Record<string, unknown>).__oragerResponseFormat as AgentLoopOptions["response_format"] | undefined,
+    hooks: (globalThis as Record<string, unknown>).__oragerHooks as AgentLoopOptions["hooks"] | undefined,
+    planMode: (globalThis as Record<string, unknown>).__oragerPlanMode as boolean | undefined,
+    injectContext: (globalThis as Record<string, unknown>).__oragerInjectContext as boolean | undefined,
+    tagToolOutputs: (globalThis as Record<string, unknown>).__oragerTagToolOutputs as boolean | undefined,
+    readProjectInstructions: (globalThis as Record<string, unknown>).__oragerReadProjectInstructions as boolean | undefined,
+    summarizePrompt: (globalThis as Record<string, unknown>).__oragerSummarizePrompt as string | undefined,
+    summarizeFallbackKeep: (globalThis as Record<string, unknown>).__oragerSummarizeFallbackKeep as number | undefined,
+    webhookUrl: (globalThis as Record<string, unknown>).__oragerWebhookUrl as string | undefined,
+    bashPolicy: (globalThis as Record<string, unknown>).__oragerBashPolicy as AgentLoopOptions["bashPolicy"] | undefined,
+    trackFileChanges: (globalThis as Record<string, unknown>).__oragerTrackFileChanges as boolean | undefined,
+    enableBrowserTools: (globalThis as Record<string, unknown>).__oragerEnableBrowserTools as boolean | undefined,
+    maxCostUsdSoft: (globalThis as Record<string, unknown>).__oragerMaxCostUsdSoft as number | undefined,
+    approvalTimeoutMs: (globalThis as Record<string, unknown>).__oragerApprovalTimeoutMs as number | undefined,
+    hookTimeoutMs: (globalThis as Record<string, unknown>).__oragerHookTimeoutMs as number | undefined,
+    hookErrorMode: (globalThis as Record<string, unknown>).__oragerHookErrorMode as AgentLoopOptions["hookErrorMode"] | undefined,
+  };
+
+  if (opts.profile) {
+    loopOpts = await applyProfileAsync(opts.profile, loopOpts);
+  }
+
+  await runAgentLoop(loopOpts);
 }
 
 main().catch((err: unknown) => {

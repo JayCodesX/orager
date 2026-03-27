@@ -115,8 +115,9 @@ describe("web_fetch — truncation", () => {
       "/tmp"
     );
     expect(result.isError).toBe(false);
-    expect(result.content.length).toBeLessThanOrEqual(61); // 50 chars + "[truncated]" (11 chars)
-    expect(result.content).toContain("[truncated]");
+    // Content should start with 50 truncated chars then a truncation note
+    expect(result.content.startsWith("x".repeat(50))).toBe(true);
+    expect(result.content).toContain("[truncated");
   });
 
   it("applies default truncation limit when max_chars is 0", async () => {

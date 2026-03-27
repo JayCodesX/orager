@@ -171,20 +171,26 @@ describe("callOpenRouter — happy path", () => {
 });
 
 describe("callOpenRouter — error handling", () => {
-  it("throws for non-ok HTTP response (401)", async () => {
+  it("returns isError:true with httpStatus for non-ok HTTP response (401)", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(new Response("Unauthorized", { status: 401, statusText: "Unauthorized" }))
     );
-    await expect(callOpenRouter(CALL_OPTS)).rejects.toThrow("OpenRouter error 401");
+    const result = await callOpenRouter(CALL_OPTS);
+    expect(result.isError).toBe(true);
+    expect(result.httpStatus).toBe(401);
+    expect(result.errorMessage).toContain("OpenRouter error 401");
   });
 
-  it("throws for non-ok HTTP response (500)", async () => {
+  it("returns isError:true with httpStatus for non-ok HTTP response (500)", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(new Response("Server Error", { status: 500, statusText: "Internal Server Error" }))
     );
-    await expect(callOpenRouter(CALL_OPTS)).rejects.toThrow("500");
+    const result = await callOpenRouter(CALL_OPTS);
+    expect(result.isError).toBe(true);
+    expect(result.httpStatus).toBe(500);
+    expect(result.errorMessage).toContain("500");
   });
 
   it("throws when response has no body", async () => {
@@ -218,18 +224,18 @@ describe("callOpenRouter — error handling", () => {
     expect(result.errorMessage).toContain("error");
   });
 
-  it("slices error body to 500 chars in the thrown error", async () => {
+  it("slices error body to 500 chars in the error message", async () => {
     const longBody = "x".repeat(1000);
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(new Response(longBody, { status: 500, statusText: "Internal Server Error" }))
     );
-    let caught: Error | undefined;
-    await callOpenRouter(CALL_OPTS).catch((e: unknown) => { caught = e as Error; });
-    expect(caught).toBeDefined();
-    expect(caught!.message).toContain("500");
+    const result = await callOpenRouter(CALL_OPTS);
+    expect(result.isError).toBe(true);
+    expect(result.errorMessage).toBeDefined();
+    expect(result.errorMessage!).toContain("500");
     // Strip the "OpenRouter error 500 …: " prefix; remaining body must be ≤ 500 chars
-    const bodyPart = caught!.message.replace(/^[^:]+:\s*/, "");
+    const bodyPart = result.errorMessage!.replace(/^[^:]+:\s*/, "");
     expect(bodyPart.length).toBeLessThanOrEqual(500);
   });
 

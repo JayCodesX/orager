@@ -8,6 +8,7 @@ const MAX_OUTPUT_CHARS = 50_000;
 export const readFileTool: ToolExecutor = {
   definition: {
     type: "function",
+    readonly: true,
     function: {
       name: "read_file",
       description: "Read the contents of a file. Returns the file content as text.",
@@ -98,7 +99,11 @@ export const readFileTool: ToolExecutor = {
         })
         .join("\n");
     } else {
-      content = raw;
+      // Full-file read: always include line numbers for easier reference
+      const lines = raw.split("\n");
+      content = lines
+        .map((line, i) => `${String(i + 1).padStart(6)}→ ${line}`)
+        .join("\n");
     }
 
     if (content.length > MAX_OUTPUT_CHARS) {

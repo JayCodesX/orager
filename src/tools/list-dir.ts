@@ -5,11 +5,17 @@ import { assertPathAllowed } from "../sandbox.js";
 
 const MAX_ENTRIES = 200;
 const MAX_DEPTH = 4;
-const SKIP_DIRS = new Set(["node_modules", ".git", "dist", ".next"]);
+const SKIP_DIRS = new Set([
+  "node_modules", ".git", "dist", ".next",
+  "build", "__pycache__", ".venv", "venv", ".tox",
+  "target", "out", "coverage", ".cache", ".parcel-cache",
+  "__snapshots__", ".pytest_cache", "vendor",
+]);
 
 export const listDirTool: ToolExecutor = {
   definition: {
     type: "function",
+    readonly: true,
     function: {
       name: "list_dir",
       description: "List files and directories at a path.",
@@ -23,7 +29,7 @@ export const listDirTool: ToolExecutor = {
           recursive: {
             type: "boolean",
             description:
-              "If true, list recursively (max depth 4, skips node_modules/.git/dist/.next)",
+              "If true, list recursively (max depth 4, skips node_modules/.git/dist/.next/build/__pycache__/.venv/venv/target/out/coverage/vendor and similar)",
           },
         },
         required: ["path"],

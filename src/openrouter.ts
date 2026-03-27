@@ -7,9 +7,13 @@ import type {
   OpenRouterCallOptions,
   OpenRouterCallResult,
   AnthropicCacheControl,
+  GenerationMeta,
 } from "./types.js";
+import { updateRateLimitState } from "./rate-limit-tracker.js";
+import { trace } from "@opentelemetry/api";
 
-const ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_BASE = (process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1").replace(/\/$/, "");
+const ENDPOINT = `${OPENROUTER_BASE}/chat/completions`;
 const NEWLINE_RE = /\r?\n/;
 
 // ── Anthropic prompt cache helpers ────────────────────────────────────────────
@@ -130,6 +134,7 @@ interface ParseState {
   responseModel: string;
   finishReason: string | null;
   streamError: string | null;
+  generationId: string | null;
   onChunk?: (chunk: OpenRouterStreamChunk) => void;
 }
 
@@ -152,6 +157,11 @@ function processLine(line: string, state: ParseState): void {
   }
 
   state.onChunk?.(chunk);
+
+  // Capture the generation ID from the first chunk that carries it
+  if (chunk.id && !state.generationId) {
+    state.generationId = chunk.id;
+  }
 
   // Mid-stream error: OpenRouter sends finish_reason:"error" + top-level error object
   if (chunk.error) {
@@ -224,7 +234,7 @@ export async function callOpenRouter(
   opts: OpenRouterCallOptions
 ): Promise<OpenRouterCallResult> {
   const { apiKey, model, signal, onChunk } = opts;
-  const maxTokens = opts.max_tokens;
+  const maxTokens = opts.max_completion_tokens;
 
   // Apply Anthropic-specific prompt cache breakpoints when the model is
   // anthropic/*.  For all other models messages and tools are passed as-is
@@ -247,7 +257,7 @@ export async function callOpenRouter(
   }
 
   if (maxTokens !== undefined) {
-    body.max_tokens = maxTokens;
+    body.max_completion_tokens = maxTokens;
   }
 
   // Sampling — only include if explicitly set
@@ -280,13 +290,28 @@ export async function callOpenRouter(
   if (opts.transforms !== undefined && opts.transforms.length > 0) body.transforms = opts.transforms;
   // Fallback models
   if (opts.models !== undefined && opts.models.length > 0) body.models = opts.models;
-  // Plugins (e.g. response-healing)
+  // OTEL trace ID — injected into OpenRouter metadata for correlation
+  body.metadata = (() => {
+    const span = trace.getActiveSpan();
+    const traceId = span?.spanContext().traceId;
+    return traceId ? { trace_id: traceId } : undefined;
+  })();
+  // Plugins (e.g. response-healing, context-compression)
   // When response_format is set (structured outputs), add response-healing by default
   // unless the caller has already supplied an explicit plugins array.
-  if (opts.plugins !== undefined && opts.plugins.length > 0) {
-    body.plugins = opts.plugins;
-  } else if (opts.response_format !== undefined) {
-    body.plugins = [{ id: "response-healing" }];
+  const plugins = (() => {
+    const base = opts.plugins ?? (opts.response_format !== undefined ? [{ id: "response-healing" }] : []);
+    if (opts.disableContextCompression) {
+      // Only add the disable entry if not already present
+      const hasEntry = base.some((p: { id: string }) => p.id === "context-compression");
+      if (!hasEntry) {
+        return [...base, { id: "context-compression", enabled: false }];
+      }
+    }
+    return base.length > 0 ? base : undefined;
+  })();
+  if (plugins !== undefined) {
+    body.plugins = plugins;
   }
 
   const headers: Record<string, string> = {
@@ -309,10 +334,22 @@ export async function callOpenRouter(
 
   if (!response.ok) {
     const errorBody = await response.text().catch(() => "(unreadable)");
-    throw new Error(
-      `OpenRouter error ${response.status} ${response.statusText}: ${errorBody.slice(0, 500)}`
-    );
+    return {
+      content: "",
+      reasoning: "",
+      toolCalls: [],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      cachedTokens: 0,
+      cacheWriteTokens: 0,
+      model,
+      finishReason: null,
+      isError: true,
+      httpStatus: response.status,
+      errorMessage: `OpenRouter error ${response.status} ${response.statusText}: ${errorBody.slice(0, 500)}`,
+    };
   }
+
+  updateRateLimitState(response.headers);
 
   if (!response.body) {
     throw new Error("OpenRouter response has no body");
@@ -331,6 +368,7 @@ export async function callOpenRouter(
     responseModel: model,
     finishReason: null,
     streamError: null,
+    generationId: null,
     onChunk,
   };
 
@@ -373,5 +411,236 @@ export async function callOpenRouter(
     finishReason: state.finishReason,
     isError: state.streamError !== null,
     errorMessage: state.streamError ?? undefined,
+    generationId: state.generationId ?? undefined,
   };
+}
+
+// ── Direct Anthropic API path ─────────────────────────────────────────────────
+// When model is `anthropic/*` and ANTHROPIC_API_KEY env var is set, calls the
+// Anthropic API directly, bypassing OpenRouter.
+//
+// Benefits:
+//   - Eliminates OpenRouter hop: ~50-150ms latency reduction per turn
+//   - No OpenRouter markup (5-15% cost saving)
+//   - Eliminates OpenRouter as SPOF for Anthropic models
+//
+// The Anthropic OpenAI-compatible endpoint accepts the same request format and
+// returns the same SSE stream format, so we reuse processLine() and the
+// existing parseState machinery with only the following differences:
+//   - Endpoint: https://api.anthropic.com/v1/chat/completions
+//   - Auth: x-api-key header instead of Authorization: Bearer
+//   - Extra headers: anthropic-version, anthropic-beta (prompt caching)
+//   - Model name: strip "anthropic/" prefix (e.g. anthropic/claude-opus-4-6 → claude-opus-4-6)
+//   - generationId: Anthropic doesn't return a generation ID, so fire-and-forget
+//     cost metadata is unavailable; usage tokens from the stream are used instead.
+
+const ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/chat/completions";
+const ANTHROPIC_VERSION = "2023-06-01";
+
+export async function callDirect(
+  opts: OpenRouterCallOptions
+): Promise<OpenRouterCallResult> {
+  const { model, signal, onChunk } = opts;
+  const apiKey = process.env.ANTHROPIC_API_KEY ?? opts.apiKey;
+  const maxTokens = opts.max_completion_tokens;
+
+  // Strip the "anthropic/" prefix for the Anthropic API
+  const anthropicModel = model.startsWith("anthropic/") ? model.slice("anthropic/".length) : model;
+
+  // Apply Anthropic prompt cache breakpoints (same logic as OpenRouter path)
+  const { messages, tools } = applyAnthropicCacheControl(model, opts.messages, opts.tools);
+
+  const body: Record<string, unknown> = {
+    model: anthropicModel,
+    messages,
+    stream: true,
+    stream_options: { include_usage: true },
+  };
+
+  if (tools && tools.length > 0) body.tools = tools;
+  if (maxTokens !== undefined) body.max_completion_tokens = maxTokens;
+  if (opts.temperature !== undefined) body.temperature = opts.temperature;
+  if (opts.top_p !== undefined) body.top_p = opts.top_p;
+  if (opts.top_k !== undefined) body.top_k = opts.top_k;
+  if (opts.tool_choice !== undefined) body.tool_choice = opts.tool_choice;
+  if (opts.parallel_tool_calls !== undefined) body.parallel_tool_calls = opts.parallel_tool_calls;
+  if (opts.response_format !== undefined) body.response_format = opts.response_format;
+  if (opts.stop !== undefined && opts.stop.length > 0) body.stop = opts.stop;
+  if (opts.seed !== undefined) body.seed = opts.seed;
+  if (opts.frequency_penalty !== undefined) body.frequency_penalty = opts.frequency_penalty;
+  if (opts.presence_penalty !== undefined) body.presence_penalty = opts.presence_penalty;
+  if (opts.min_p !== undefined) body.min_p = opts.min_p;
+  if (opts.reasoning !== undefined) body.reasoning = opts.reasoning;
+  if (opts.structured_outputs !== undefined) body.structured_outputs = opts.structured_outputs;
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "x-api-key": apiKey,
+    "anthropic-version": ANTHROPIC_VERSION,
+    // Enable extended thinking + prompt caching betas
+    "anthropic-beta": "prompt-caching-2024-07-31,interleaved-thinking-2025-05-14",
+  };
+
+  const response = await fetch(ANTHROPIC_ENDPOINT, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => "(unreadable)");
+    return {
+      content: "",
+      reasoning: "",
+      toolCalls: [],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      cachedTokens: 0,
+      cacheWriteTokens: 0,
+      model: anthropicModel,
+      finishReason: null,
+      isError: true,
+      httpStatus: response.status,
+      errorMessage: `Anthropic API error ${response.status} ${response.statusText}: ${errorBody.slice(0, 500)}`,
+    };
+  }
+
+  updateRateLimitState(response.headers);
+
+  if (!response.body) {
+    throw new Error("Anthropic API response has no body");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+
+  const state: ParseState = {
+    contentParts: [],
+    reasoningParts: [],
+    toolCallMap: new Map(),
+    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    cachedTokens: 0,
+    cacheWriteTokens: 0,
+    responseModel: anthropicModel,
+    finishReason: null,
+    streamError: null,
+    generationId: null, // Anthropic direct doesn't return a generation ID
+    onChunk,
+  };
+
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split(NEWLINE_RE);
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      processLine(line, state);
+    }
+  }
+
+  for (const line of buffer.split(NEWLINE_RE)) {
+    processLine(line, state);
+  }
+
+  const toolCalls: ToolCall[] = Array.from(state.toolCallMap.entries())
+    .sort(([a], [b]) => a - b)
+    .filter(([, acc]) => acc.id !== "" && acc.function.name !== "")
+    .map(([, acc]) => ({
+      id: acc.id,
+      type: "function" as const,
+      function: { name: acc.function.name, arguments: acc.function.arguments },
+    }));
+
+  if (state.streamError) {
+    return {
+      content: state.contentParts.join(""),
+      reasoning: state.reasoningParts.join(""),
+      toolCalls,
+      usage: state.usage,
+      cachedTokens: state.cachedTokens,
+      cacheWriteTokens: state.cacheWriteTokens,
+      model: state.responseModel,
+      finishReason: state.finishReason,
+      isError: true,
+      httpStatus: 200,
+      errorMessage: state.streamError,
+      generationId: undefined,
+    };
+  }
+
+  return {
+    content: state.contentParts.join(""),
+    reasoning: state.reasoningParts.join(""),
+    toolCalls,
+    usage: state.usage,
+    cachedTokens: state.cachedTokens,
+    cacheWriteTokens: state.cacheWriteTokens,
+    model: state.responseModel,
+    finishReason: state.finishReason,
+    isError: false,
+    generationId: undefined, // no generation metadata for direct calls
+  };
+}
+
+/**
+ * Returns true if the given model should use the direct Anthropic API path.
+ * Requires ANTHROPIC_API_KEY env var AND the model to start with "anthropic/".
+ */
+export function shouldUseDirect(model: string): boolean {
+  return (
+    !!process.env.ANTHROPIC_API_KEY?.trim() &&
+    model.startsWith("anthropic/")
+  );
+}
+
+/**
+ * Fetch generation metadata from OpenRouter after a completed turn.
+ * Fire-and-forget safe — never throws.
+ */
+export async function fetchGenerationMeta(
+  apiKey: string,
+  generationId: string,
+): Promise<GenerationMeta | null> {
+  try {
+    const res = await fetch(
+      `${OPENROUTER_BASE}/generation?id=${encodeURIComponent(generationId)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "HTTP-Referer": "https://paperclip.ai",
+        },
+        signal: AbortSignal.timeout(8_000),
+      },
+    );
+    if (!res.ok) return null;
+    const json = await res.json() as {
+      data?: {
+        id?: string;
+        model?: string;
+        provider_name?: string;
+        total_cost?: number;
+        cache_discount?: number;
+        native_tokens_prompt?: number;
+        native_tokens_completion?: number;
+        latency?: number;
+      };
+    };
+    const d = json.data;
+    if (!d) return null;
+    return {
+      id: d.id ?? generationId,
+      model: d.model ?? "",
+      providerName: d.provider_name ?? "unknown",
+      totalCost: d.total_cost ?? 0,
+      cacheDiscount: d.cache_discount ?? 0,
+      nativeTokensPrompt: d.native_tokens_prompt ?? 0,
+      nativeTokensCompletion: d.native_tokens_completion ?? 0,
+      latencyMs: d.latency ?? 0,
+    };
+  } catch {
+    return null;
+  }
 }
