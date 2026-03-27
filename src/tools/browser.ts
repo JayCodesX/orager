@@ -71,11 +71,16 @@ process.on("exit", () => {
   }
 });
 
-// SIGTERM: Playwright cleanup for graceful daemon shutdown (exit handler is sync-only)
-process.once("SIGTERM", () => {
+// SIGTERM: async Playwright cleanup for graceful daemon shutdown.
+// A 5s keepalive timeout forces exit if browser.close() hangs.
+process.on("SIGTERM", () => {
+  const forceExit = setTimeout(() => process.exit(0), 5_000);
   void Promise.all(
     Array.from(_sessions.keys()).map((sid) => closeSession(sid).catch(() => {}))
-  ).then(() => process.exit(0));
+  ).then(() => {
+    clearTimeout(forceExit);
+    process.exit(0);
+  });
 });
 
 async function getPlaywright(): Promise<{ chromium: { launch(opts: Record<string, unknown>): Promise<PBrowser> } }> {

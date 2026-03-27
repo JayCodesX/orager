@@ -5,9 +5,7 @@ import { editFileTool } from "./edit.js";
 import { editFilesTool } from "./edit-files.js";
 import { listDirTool } from "./list-dir.js";
 import { globTool } from "./glob.js";
-import { searchFilesTool } from "./search-files.js";
 import { grepTool } from "./grep.js";
-import { gitTool } from "./git.js";
 import { webFetchTool } from "./web-fetch.js";
 import { webSearchTool } from "./web-search.js";
 import { deleteFileTool, moveFileTool, createDirTool } from "./file-ops.js";
@@ -26,9 +24,7 @@ export const ALL_TOOLS: ToolExecutor[] = [
   editFilesTool,
   listDirTool,
   globTool,
-  searchFilesTool,
   grepTool,
-  gitTool,
   webFetchTool,
   webSearchTool,
   deleteFileTool,
@@ -43,4 +39,4 @@ export function getToolByName(name: string): ToolExecutor | undefined {
   return ALL_TOOLS.find((t) => t.definition.function.name === name);
 }
 
-export { bashTool, readFileTool, writeFileTool, strReplaceTool, editFileTool, editFilesTool, listDirTool, globTool, searchFilesTool, grepTool, gitTool, webFetchTool, webSearchTool, deleteFileTool, moveFileTool, createDirTool, finishTool, notebookReadTool, notebookEditTool, toolAliases, BROWSER_TOOLS };
+export { bashTool, readFileTool, writeFileTool, strReplaceTool, editFileTool, editFilesTool, listDirTool, globTool, grepTool, webFetchTool, webSearchTool, deleteFileTool, moveFileTool, createDirTool, finishTool, notebookReadTool, notebookEditTool, toolAliases, BROWSER_TOOLS };

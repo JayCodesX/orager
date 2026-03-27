@@ -36,7 +36,7 @@ export const grepTool: ToolExecutor = {
       description:
         "Search for a pattern in files using ripgrep (rg) or grep. " +
         "Returns matching lines with file paths and line numbers. " +
-        "Faster than search_files for simple pattern matching; respects .gitignore when using rg.",
+        "Supports context lines (-C), file glob filtering, and case-insensitive mode; respects .gitignore when using rg.",
       parameters: {
         type: "object",
         properties: {

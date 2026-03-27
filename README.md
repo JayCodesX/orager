@@ -132,8 +132,8 @@ Every tool was written to give the agent the same capabilities a developer has a
 | `read_file` | Reads any file with optional line-range slicing. Separate from `bash` so the agent doesn't need shell quoting and the platform can audit file reads independently of command execution. |
 | `write_file` | Creates or fully overwrites a file. Used when generating new files from scratch. |
 | `str_replace` | Targeted in-place string replacement — finds an exact string and replaces it. Safer than rewriting an entire file; fails explicitly if the target string isn't found or isn't unique. |
-| `edit_file` | Batch version of `str_replace` — applies multiple `{ old_string, new_string }` pairs to a single file in one call, reducing round-trips on complex edits. |
-| `edit_files` | Multi-file batch editor — applies edits across several files in a single tool call. Built for large refactors where a single concept spans many files. |
+| `edit_file` | Batch version of `str_replace` — applies multiple `{ old_string, new_string }` pairs to a single file in one call, reducing round-trips on complex edits. Respects `--sandbox-root`. |
+| `edit_files` | Multi-file batch editor — applies edits across several files in a single tool call. Built for large refactors where a single concept spans many files. All edits are validated before any file is written; if a write fails mid-way, already-written files are rolled back to their original content. Respects `--sandbox-root`. |
 | `list_dir` | Recursive directory listing that automatically skips `node_modules`, `.git`, `dist`, and other noise directories. Gives the agent a clean map of a project without overwhelming it with irrelevant paths. |
 | `glob` | Pattern-based file finder (`**/*.ts`, `src/**/*.test.js`). Faster and more precise than `list_dir` when the agent knows the shape of what it's looking for. |
 | `delete_file` | Deletes a single file. Explicit tool rather than `bash rm` so deletions are auditable and sandboxed by `--sandbox-root`. |
@@ -144,15 +144,13 @@ Every tool was written to give the agent the same capabilities a developer has a
 
 | Tool | Why it exists |
 |---|---|
-| `grep` | Regex search across files — returns matching lines with file path, line number, and surrounding context. Backed by ripgrep semantics. The agent's primary tool for navigating large codebases without reading every file. |
-| `search_files` | Broader file-content search with richer context window configuration. Complements `grep` for cases where more surrounding lines are needed to understand a match. |
+| `grep` | Regex search across files — returns matching lines with file path, line number, and surrounding context. Backed by ripgrep semantics. Supports context lines, file glob filtering, and case-insensitive mode. The agent's primary tool for navigating large codebases without reading every file. |
 
 ### Shell
 
 | Tool | Why it exists |
 |---|---|
-| `bash` | Runs arbitrary shell commands with a configurable timeout, SIGTERM → SIGKILL escalation, and a command blocklist (`blockedCommands` in bashPolicy). The most powerful tool and the most audited — every invocation goes through the approval flow if configured. Supports process group kill to clean up subprocesses. |
-| `git` | Git operations via a structured interface rather than raw bash. Limits scope to standard git commands (status, diff, log, commit, push, etc.) and sanitizes inputs to reduce injection risk. Built because `bash` + git is the most common combined use case and making it explicit improves audit logs. |
+| `bash` | Runs arbitrary shell commands with a configurable timeout, SIGTERM → SIGKILL escalation, and a command blocklist (`blockedCommands` in bashPolicy). The most powerful tool and the most audited — every invocation goes through the approval flow if configured. Supports process group kill to clean up subprocesses. Git operations are done through `bash` directly. |
 
 ### Web
 
@@ -174,7 +172,7 @@ The browser tools give the agent a real Chromium instance for tasks that can't b
 | `browser_key` | Sends keyboard events (Enter, Tab, Escape, arrow keys, etc.). Handles interactions that don't map to click+type. |
 | `browser_scroll` | Scrolls the page by a pixel amount or to a CSS selector. Needed for infinite-scroll pages, sticky headers, and lazy-loaded content. |
 | `browser_execute` | Executes arbitrary JavaScript in the page context. The escape hatch for interactions no other browser tool supports. |
-| `browser_close` | Explicitly closes a named browser session to free memory. Sessions also close automatically on SIGTERM. |
+| `browser_close` | Explicitly closes a named browser session to free memory. Sessions also close automatically on SIGTERM with a 5-second forced-exit timeout to prevent hangs if Playwright's `close()` stalls. |
 
 ### Notebooks
 
@@ -228,6 +226,8 @@ Custom profiles can be defined in `~/.orager/profiles/` as JSON or YAML files wi
 | `--verbose` | Log extra debug info to stderr |
 | `--config-file <path>` | Load all options from a JSON file (file is deleted immediately after read) |
 | `--profile <name>` | Apply a built-in or custom profile preset |
+| `--timeout-sec <n>` | Total run timeout in seconds (`0` = unlimited). Composed with any caller-supplied `abortSignal` via `AbortSignal.any()`. |
+| `--require-env <VARS>` | Comma-separated env var names that must be set. Run fails immediately with a clear error if any are missing. |
 
 ### Tools & permissions
 
@@ -401,7 +401,7 @@ If the agent calls the same tool(s) with identical arguments for `maxIdenticalTo
 
 ### Model fallback rotation
 
-On 429 or 503, orager rotates to the next model in the `--model-fallback` chain before exhausting retries.
+On 429 or 503, orager first tries the next API key in the pool (if `apiKeys` contains more than one entry) before escalating to the next model in the `--model-fallback` chain. Key rotation happens mid-run — on the first rate-limit hit per model, the next key is tried immediately rather than failing the whole run. Each model gets one key-rotation attempt before the model itself is rotated. Once all fallback models are exhausted, the last error is returned.
 
 ---
 
@@ -433,6 +433,9 @@ Pass all options as JSON instead of CLI args. The file is **read once and immedi
   "parallel_tool_calls": true,
   "reasoningExclude": true,
   "summarizeAt": 0.8,
+  "timeoutSec": 300,
+  "apiKeys": ["sk-or-key1", "sk-or-key2"],
+  "requiredEnvVars": ["GITHUB_TOKEN", "LINEAR_API_KEY"],
   "turnModelRules": [
     { "afterTurn": 5, "model": "anthropic/claude-sonnet-4-6" }
   ]
@@ -447,10 +450,13 @@ Pass all options as JSON instead of CLI args. The file is **read once and immedi
 {"type":"system","subtype":"init","model":"deepseek/...","session_id":"abc-123"}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I'll start by..."}]}}
 {"type":"tool","content":[{"type":"tool_result","tool_use_id":"call-1","content":"output\n","is_error":false}]}
+{"type":"warn","message":"[orager daemon] WARNING: ignoring disallowed opts fields from caller: sandboxRoot","dropped_opts":["sandboxRoot"]}
 {"type":"result","subtype":"success","result":"Done.","session_id":"abc-123","finish_reason":"stop","usage":{"input_tokens":1200,"output_tokens":340,"cache_read_input_tokens":800},"total_cost_usd":0.00004}
 ```
 
 `subtype`: `success` | `error_max_turns` | `error_max_cost` | `interrupted` | `error`
+
+The `warn` event is emitted at the start of a daemon run when the caller passes opts fields not on the `ALLOWED_DAEMON_OPTS` allowlist. The dropped field names are listed in `dropped_opts`. The same warning is written to daemon stderr and the structured log.
 
 ---
 
@@ -460,10 +466,10 @@ Pass all options as JSON instead of CLI args. The file is **read once and immedi
 src/
 ├── index.ts               CLI entry — arg parsing, session subcommands, main()
 ├── loop.ts                Agent loop — turns, tool execution, cost tracking, summarization
-├── loop-helpers.ts        Token estimation, context window lookup, session summarization, concurrency
+├── loop-helpers.ts        Token estimation, context window lookup, session summarization, concurrency, defaultTimeoutForModel
 ├── openrouter.ts          OpenRouter + direct Anthropic streaming API — SSE parsing, cache breakpoints
 ├── openrouter-model-meta.ts  Live model metadata (pricing, capabilities) from /api/v1/models
-├── retry.ts               Retry + model fallback rotation on 429/503
+├── retry.ts               Retry + API key pool rotation + model fallback rotation on 429/503
 ├── session.ts             Session persistence (JSON) — queue-serialized writes, lock file, pruning
 ├── approval.ts            Interactive TTY approval prompt — control-char sanitized display
 ├── hooks.ts               Pre/post tool call hooks — user-defined shell commands
@@ -482,18 +488,16 @@ src/
 ├── logger.ts              Structured JSON logger
 └── tools/
     ├── index.ts           Tool registry (ALL_TOOLS + BROWSER_TOOLS)
-    ├── bash.ts            bash — shell execution with blocklist + timeout
+    ├── bash.ts            bash — shell execution with blocklist + timeout (git via bash)
     ├── read-file.ts       read_file — file reading with line ranges
     ├── write-file.ts      write_file + str_replace
     ├── edit.ts            edit_file — batch replacements on one file
     ├── edit-files.ts      edit_files — batch replacements across multiple files
     ├── list-dir.ts        list_dir — recursive directory listing
     ├── glob.ts            glob — pattern-based file finding
-    ├── grep.ts            grep — regex content search
-    ├── search-files.ts    search_files — richer grep with more context options
-    ├── git.ts             git — structured git operations
+    ├── grep.ts            grep — regex content search with context, glob filter, case-insensitive
     ├── web-fetch.ts       web_fetch — HTTP with SSRF protection + redirect validation
-    ├── web-search.ts      web_search — DuckDuckGo search
+    ├── web-search.ts      web_search — DuckDuckGo search (no API key required)
     ├── file-ops.ts        delete_file + move_file + create_dir
     ├── browser.ts         browser_navigate/screenshot/click/type/key/scroll/execute/close
     ├── notebook.ts        notebook_read + notebook_edit
