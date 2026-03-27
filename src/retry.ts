@@ -54,15 +54,34 @@ export async function callWithRetry(
   // Tracks whether we've already retried the current model once before rotating.
   let retriedCurrentModel = false;
 
+  // Build the API key pool: primary key + any additional keys in opts.apiKeys.
+  // On the first rate-limit hit per model, the next key is tried before escalating
+  // to model rotation. This replaces the "blind retry same model" step with a
+  // "try a different credential" step that has a higher chance of success.
+  const _keyPool: string[] = (() => {
+    const extra = (opts.apiKeys ?? []).filter(
+      (k): k is string => typeof k === "string" && k.trim().length > 0,
+    );
+    const primary = opts.apiKey ?? "";
+    const all = primary && !extra.includes(primary) ? [primary, ...extra] : extra;
+    return all.length > 0 ? all : [primary];
+  })();
+  let _keyIndex = 0;
+
   function currentModel(): string {
     if (modelIndex === 0) return opts.model;
     return (opts.models ?? [])[modelIndex - 1] ?? opts.model;
+  }
+
+  function currentKey(): string {
+    return _keyPool[_keyIndex % _keyPool.length] ?? opts.apiKey;
   }
 
   while (true) {
     const callOpts: OpenRouterCallOptions = {
       ...opts,
       model: currentModel(),
+      apiKey: currentKey(),
     };
 
     const attemptStart = Date.now();
@@ -96,6 +115,7 @@ export async function callWithRetry(
       if (shouldRotateModel(errInfo) && retriedCurrentModel && modelIndex < fallbackModels.length) {
         const prevModel = currentModel();
         modelIndex++;
+        _keyIndex = 0; // reset key pool for the new model
         retriedCurrentModel = false;
         onLog?.(
           `[orager] rate-limit/unavailable on model "${prevModel}", falling back to "${currentModel()}" (attempt ${attempt + 1}/${maxRetries + 1})\n`,
@@ -105,6 +125,14 @@ export async function callWithRetry(
         onLog?.(`[orager] all ${fallbackModels.length + 1} models exhausted on rotate-class error — giving up\n`);
         return result; // surface the last error
       } else {
+        // First rate-limit hit for this model: rotate to next API key if available,
+        // then retry. Falls back to same key when only one key is configured.
+        if (shouldRotateModel(errInfo) && _keyPool.length > 1) {
+          _keyIndex = (_keyIndex + 1) % _keyPool.length;
+          onLog?.(
+            `[orager] rate-limit on "${currentModel()}", rotating to API key ${_keyIndex + 1}/${_keyPool.length} (attempt ${attempt + 1}/${maxRetries + 1})\n`,
+          );
+        }
         retriedCurrentModel = true;
         const backoffMs = Math.min(1000 * 2 ** attempt, 60_000);
         onLog?.(
@@ -127,6 +155,7 @@ export async function callWithRetry(
       if (shouldRotateModel(errInfo) && retriedCurrentModel && modelIndex < fallbackModels.length) {
         const prevModel = currentModel();
         modelIndex++;
+        _keyIndex = 0; // reset key pool for the new model
         retriedCurrentModel = false;
         onLog?.(
           `[orager] rate-limit/unavailable on model "${prevModel}", falling back to "${currentModel()}" (attempt ${attempt + 1}/${maxRetries + 1})\n`,
@@ -136,6 +165,12 @@ export async function callWithRetry(
         onLog?.(`[orager] all ${fallbackModels.length + 1} models exhausted on rotate-class error — giving up\n`);
         throw err;
       } else {
+        if (shouldRotateModel(errInfo) && _keyPool.length > 1) {
+          _keyIndex = (_keyIndex + 1) % _keyPool.length;
+          onLog?.(
+            `[orager] rate-limit on "${currentModel()}", rotating to API key ${_keyIndex + 1}/${_keyPool.length} (attempt ${attempt + 1}/${maxRetries + 1})\n`,
+          );
+        }
         retriedCurrentModel = true;
         const backoffMs = Math.min(1000 * 2 ** attempt, 60_000);
         onLog?.(

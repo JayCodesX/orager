@@ -473,6 +473,13 @@ export interface OpenRouterCallOptions {
   // Infrastructure
   signal?: AbortSignal;
   onChunk?: (chunk: OpenRouterStreamChunk) => void;
+
+  /**
+   * Additional API keys to rotate through on rate-limit (429/503) errors.
+   * Combined with `apiKey` to form a pool; `callWithRetry` tries the next key
+   * before falling back to model rotation.
+   */
+  apiKeys?: string[];
 }
 
 // ── OpenRouter call result ───────────────────────────────────────────────────
@@ -681,6 +688,12 @@ export interface CliOptions {
    * consecutive-failure budget (5 consecutive errors). Default false (logs warning and resets).
    */
   toolErrorBudgetHardStop?: boolean;
+  /** Run-level timeout in seconds. 0 = no timeout. */
+  timeoutSec?: number;
+  /** Additional API keys to rotate through on 429/503 errors. */
+  apiKeys?: string[];
+  /** Env var names that must be present before the loop starts. */
+  requiredEnvVars?: string[];
 }
 
 // ── Bash policy ──────────────────────────────────────────────────────────────
@@ -916,6 +929,28 @@ export interface AgentLoopOptions {
    * warning and resets the counter, allowing the run to continue).
    */
   toolErrorBudgetHardStop?: boolean;
+
+  /**
+   * Run-level timeout in seconds. When > 0, the loop aborts cleanly with an
+   * "error_cancelled" result event after this many seconds. Composed with
+   * `abortSignal` when both are provided.  0 or omitted = no timeout.
+   */
+  timeoutSec?: number;
+
+  /**
+   * Additional API keys to rotate through on rate-limit (429/503) errors.
+   * Combined with `apiKey` to form a pool; `callWithRetry` rotates the key
+   * on the first 429 before escalating to model rotation.
+   */
+  apiKeys?: string[];
+
+  /**
+   * Environment variable names that must be present and non-empty in
+   * `process.env` before the loop starts. Emits an error result immediately
+   * if any are missing — useful for fail-fast validation when specific tools
+   * need env vars (e.g. GITHUB_TOKEN for GitHub MCP).
+   */
+  requiredEnvVars?: string[];
 
   /**
    * Internal: list of ancestor session IDs for spawn-cycle detection.

@@ -79,6 +79,41 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   const fileSettings = await loadSettings(opts.settingsFile);
   const effectiveOpts = mergeSettings(opts, fileSettings);
 
+  // ── Required environment variable check ───────────────────────────────────
+  // Fail fast before any API calls when env vars required by tools are absent.
+  if (opts.requiredEnvVars && opts.requiredEnvVars.length > 0) {
+    const missing = opts.requiredEnvVars.filter(
+      (v) => typeof v === "string" && v.trim().length > 0 && !process.env[v.trim()],
+    );
+    if (missing.length > 0) {
+      onLog?.("stderr", `[orager] missing required environment variables: ${missing.join(", ")}\n`);
+      onEmit({
+        type: "result",
+        subtype: "error",
+        result: `Missing required environment variables: ${missing.join(", ")}`,
+        session_id: opts.sessionId ?? "",
+        finish_reason: null,
+        usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 },
+        total_cost_usd: 0,
+      });
+      return;
+    }
+  }
+
+  // ── Run-level timeout ──────────────────────────────────────────────────────
+  // Compose opts.abortSignal with a timeout signal derived from opts.timeoutSec.
+  // The resulting signal aborts at whichever fires first.
+  const _effectiveAbortSignal: AbortSignal | undefined = (() => {
+    const signals: AbortSignal[] = [];
+    if (opts.abortSignal) signals.push(opts.abortSignal);
+    if (opts.timeoutSec && opts.timeoutSec > 0) {
+      signals.push(AbortSignal.timeout(opts.timeoutSec * 1000));
+    }
+    if (signals.length === 0) return undefined;
+    if (signals.length === 1) return signals[0];
+    return AbortSignal.any(signals);
+  })();
+
   // Per-run circuit breaker — isolates circuit state between daemon runs so one
   // agent's failure streak doesn't block all subsequent runs in the same process.
   const circuitBreaker = new CircuitBreaker({ threshold: 3, resetAfterMs: 30_000 });
@@ -794,7 +829,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     // maxTurns <= 0 means unlimited
     while (maxTurns <= 0 || turn < maxTurns) {
       // ── Cancellation check ────────────────────────────────────────────────
-      if (opts.abortSignal?.aborted) {
+      if (_effectiveAbortSignal?.aborted) {
         onLog?.("stderr", "[orager] run cancelled via abort signal\n");
         log.warn("loop_cancelled", { sessionId, turn });
         await saveSession({
@@ -903,6 +938,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         async () => callWithRetry(
         {
           apiKey,
+          apiKeys: opts.apiKeys,
           model: turnOverrides.model ?? model,
           models: opts.models,
           // Pass the session ID so openrouter.ts can set X-Session-Id for

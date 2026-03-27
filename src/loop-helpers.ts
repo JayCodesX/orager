@@ -203,7 +203,8 @@ export async function fetchModelContextLengths(apiKey: string): Promise<void> {
 
   modelCacheFetchInFlight = (async () => {
     try {
-      const res = await fetch("https://openrouter.ai/api/v1/models", {
+      const openrouterBase = (process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1").replace(/\/$/, "");
+      const res = await fetch(`${openrouterBase}/models`, {
         headers: {
           Authorization: `Bearer ${apiKey}`,
           "HTTP-Referer": "https://paperclip.ai",
@@ -389,4 +390,23 @@ export function evaluateTurnModelRules(
     }
   }
   return undefined;
+}
+
+// ── Model-aware timeout heuristic ─────────────────────────────────────────────
+
+/**
+ * Returns a sensible default run-level timeout (in seconds) for the given model.
+ *
+ * Reasoning / thinking models (DeepSeek R1, o1, o3, extended-thinking) can take
+ * several minutes to produce a response. Fast chat models (Haiku, Flash, Mini,
+ * Turbo) are typically done in under two minutes. Everything else gets the
+ * standard 5-minute window.
+ *
+ * Returns 0 to indicate "no timeout" for unknown / custom model strings.
+ */
+export function defaultTimeoutForModel(model: string): number {
+  const lower = model.toLowerCase();
+  if (/\br1\b|deepseek-r1|\/o1|\/o3|thinking|reasoning/.test(lower)) return 600;
+  if (/haiku|flash|mini|turbo/.test(lower)) return 120;
+  return 300;
 }

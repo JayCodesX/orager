@@ -89,6 +89,16 @@ function parseArgs(argv: string[]): CliOptions {
         if (!isNaN(n) && n >= 0) opts.maxRetries = n;
         break;
       }
+      case "--timeout-sec": {
+        const n = parseFloat(argv[++i]);
+        if (!isNaN(n) && n >= 0) opts.timeoutSec = n;
+        break;
+      }
+      case "--require-env": {
+        const s = argv[++i];
+        if (s) opts.requiredEnvVars = s.split(",").map((v) => v.trim()).filter(Boolean);
+        break;
+      }
       case "--add-dir": {
         const dir = argv[++i];
         if (dir) opts.addDirs.push(dir);
@@ -605,6 +615,12 @@ interface ConfigFileSchema {
   approvalTimeoutMs?: number;
   hookTimeoutMs?: number;
   hookErrorMode?: "ignore" | "warn" | "fail";
+  /** Run-level timeout in seconds. 0 = no timeout. */
+  timeoutSec?: number;
+  /** Additional API keys to rotate through on 429/503 errors. */
+  apiKeys?: string[];
+  /** Env var names that must be present before the loop starts. */
+  requiredEnvVars?: string[];
 }
 
 /**
@@ -639,6 +655,9 @@ async function loadConfigFile(filePath: string): Promise<{
   approvalTimeoutMs?: number;
   hookTimeoutMs?: number;
   hookErrorMode?: "ignore" | "warn" | "fail";
+  timeoutSec?: number;
+  apiKeys?: string[];
+  requiredEnvVars?: string[];
 }> {
   let raw: string;
   try {
@@ -760,6 +779,9 @@ async function loadConfigFile(filePath: string): Promise<{
     approvalTimeoutMs?: number;
     hookTimeoutMs?: number;
     hookErrorMode?: "ignore" | "warn" | "fail";
+    timeoutSec?: number;
+    apiKeys?: string[];
+    requiredEnvVars?: string[];
   } = { args };
   if (Array.isArray(cfg.turnModelRules) && cfg.turnModelRules.length > 0) {
     result.turnModelRules = cfg.turnModelRules;
@@ -801,6 +823,19 @@ async function loadConfigFile(filePath: string): Promise<{
   if (cfg.approvalTimeoutMs !== undefined) result.approvalTimeoutMs = cfg.approvalTimeoutMs;
   if (cfg.hookTimeoutMs !== undefined) result.hookTimeoutMs = cfg.hookTimeoutMs;
   if (cfg.hookErrorMode !== undefined) result.hookErrorMode = cfg.hookErrorMode;
+  // timeoutSec is a simple scalar — push as a CLI flag so parseArgs picks it up
+  if (cfg.timeoutSec !== undefined && cfg.timeoutSec > 0) {
+    result.args.push("--timeout-sec", String(cfg.timeoutSec));
+  }
+  // apiKeys contains secrets — pass via globalThis to keep them out of argv
+  if (Array.isArray(cfg.apiKeys) && cfg.apiKeys.length > 0) {
+    result.apiKeys = cfg.apiKeys.filter((k): k is string => typeof k === "string" && k.trim().length > 0);
+  }
+  // requiredEnvVars are var names (not values) — push as CLI flags
+  if (Array.isArray(cfg.requiredEnvVars) && cfg.requiredEnvVars.length > 0) {
+    const names = cfg.requiredEnvVars.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
+    if (names.length > 0) result.args.push("--require-env", names.join(","));
+  }
   return result;
 }
 
@@ -953,6 +988,9 @@ async function main(): Promise<void> {
     }
     if (cfResult.hookErrorMode !== undefined) {
       (globalThis as Record<string, unknown>).__oragerHookErrorMode = cfResult.hookErrorMode;
+    }
+    if (cfResult.apiKeys && cfResult.apiKeys.length > 0) {
+      (globalThis as Record<string, unknown>).__oragerApiKeys = cfResult.apiKeys;
     }
   }
 
@@ -1153,6 +1191,9 @@ async function main(): Promise<void> {
     approvalTimeoutMs: (globalThis as Record<string, unknown>).__oragerApprovalTimeoutMs as number | undefined,
     hookTimeoutMs: (globalThis as Record<string, unknown>).__oragerHookTimeoutMs as number | undefined,
     hookErrorMode: (globalThis as Record<string, unknown>).__oragerHookErrorMode as AgentLoopOptions["hookErrorMode"] | undefined,
+    timeoutSec: opts.timeoutSec,
+    apiKeys: (globalThis as Record<string, unknown>).__oragerApiKeys as string[] | undefined,
+    requiredEnvVars: opts.requiredEnvVars,
   };
 
   if (opts.profile) {
