@@ -1,6 +1,92 @@
 # orager
 
-An agentic CLI that runs a multi-turn tool-calling loop backed by [OpenRouter](https://openrouter.ai) — works with any model available on the platform.
+A production-grade agentic CLI and daemon that runs multi-turn, tool-calling AI agent loops — built as the engine behind [Paperclip](https://paperclipai.com)'s OpenRouter adapter.
+
+---
+
+## Why we built this
+
+Paperclip agents need a runtime that can: receive a task, call an LLM repeatedly, execute tools against a real filesystem and the web, manage conversation history across long sessions, and stream structured events back to the platform — all without breaking the bank.
+
+The existing options were either too opinionated (Claude Code, which only speaks Anthropic), too bare-bones (raw LLM SDKs with no tool loop), or too slow (spinning up a new process for every single heartbeat).
+
+**orager was built to solve three specific problems:**
+
+1. **Model lock-in** — agents should run on any model (DeepSeek, GPT-4o, Gemini, Llama, Claude) without code changes. OpenRouter provides a unified API; orager speaks it fluently and adds a direct Anthropic fast-path when an `ANTHROPIC_API_KEY` is present.
+
+2. **Per-heartbeat startup cost** — a new Node.js process takes 50–200ms before it even starts thinking. For Paperclip agents that fire every 30 seconds, this is pure waste. The daemon mode keeps orager alive between runs, keeping all caches (LLM prompt cache, skill cache, tool result cache) warm.
+
+3. **Context management at scale** — agent sessions grow. Without summarization, a session that runs for hours will exceed any model's context window and fail. orager tracks token usage against the live model context size (fetched from OpenRouter's `/models` endpoint) and automatically summarizes when needed.
+
+---
+
+## Architecture
+
+```
+stdin / daemon /run request
+        │
+        ▼
+  loop.ts  — agent loop
+  ┌────────────────────────────────────────────────────────────────────┐
+  │  1. Load skills from --add-dir paths (mtime-fingerprinted cache)   │
+  │  2. Build system prompt (base + skills + appendSystemPrompt)       │
+  │  3. Apply Anthropic cache breakpoints (system / tools / history)   │
+  │  4. Set X-Session-Id header for OpenRouter sticky routing          │
+  │                                                                    │
+  │  TURN LOOP (up to --max-turns)                                     │
+  │  ┌──────────────────────────────────────────────────────────┐      │
+  │  │  callOpenRouter / callDirect (openrouter.ts)             │      │
+  │  │    → streams SSE, parses tool calls + text + reasoning   │      │
+  │  │    → accumulates usage (prompt / completion / cached)    │      │
+  │  │                                                          │      │
+  │  │  executeOne × N (parallel, up to 10 concurrent)         │      │
+  │  │    → check tool result cache (read-only, 30s TTL)        │      │
+  │  │    → run approval flow if required                       │      │
+  │  │    → execute tool, emit result                           │      │
+  │  │    → update metrics & file-change tracker               │      │
+  │  │                                                          │      │
+  │  │  after each turn:                                        │      │
+  │  │    → fetchGenerationMeta (cost tracking from OpenRouter) │      │
+  │  │    → check cost cap (maxCostUsd)                         │      │
+  │  │    → check context threshold (summarizeAt)               │      │
+  │  │    → save session to ~/.orager/sessions/<id>.json        │      │
+  │  └──────────────────────────────────────────────────────────┘      │
+  │                                                                    │
+  │  emit stream-json events → stdout / NDJSON response               │
+  └────────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+  {"type":"result","subtype":"success","result":"...","usage":{...}}
+```
+
+### Direct Anthropic fast-path
+
+When `ANTHROPIC_API_KEY` is set and the model starts with `anthropic/`, orager bypasses OpenRouter entirely and calls `https://api.anthropic.com/v1/chat/completions` directly. The OpenRouter model metadata fetch is skipped; the static fallback map (200k for all Claude 3+ models) is used instead.
+
+### Daemon mode
+
+```
+orager --serve --port 3456
+        │
+        ▼
+  daemon.ts  HTTP server on 127.0.0.1
+  ┌────────────────────────────────────────┐
+  │  POST /run   → runAgentLoop()          │
+  │  GET  /health                          │
+  │  GET  /metrics                         │
+  │  GET  /sessions                        │
+  │  GET  /sessions/:id                    │
+  │  GET  /sessions/search?q=              │
+  │  POST /drain                           │
+  │  All routes: HS256 JWT required        │
+  └────────────────────────────────────────┘
+        ↑
+  adapter reads ~/.orager/daemon.key
+  mints JWT { agentId, scope:"run", exp: now+5min }
+  sends Authorization: Bearer <jwt>
+```
+
+---
 
 ## Install
 
@@ -8,6 +94,16 @@ An agentic CLI that runs a multi-turn tool-calling loop backed by [OpenRouter](h
 npm install -g @paperclipai/orager
 export OPENROUTER_API_KEY=sk-or-...
 ```
+
+For the direct Anthropic path:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+# Use any anthropic/* model — no OpenRouter key needed
+orager --print - --model anthropic/claude-sonnet-4-6 <<< "Your task"
+```
+
+---
 
 ## Usage
 
@@ -19,55 +115,99 @@ echo "Refactor the auth module to use async/await" | orager \
   --max-turns 20
 ```
 
-Or via heredoc:
-
 ```bash
 orager --print - --output-format stream-json --model openai/gpt-4o <<< "Fix the failing tests"
 ```
 
 ---
 
-## How it works
+## Built-in tools
 
-```
-stdin (prompt)
-    │
-    ▼
-Agent loop (loop.ts)
-    │  loads skills from --add-dir paths (cached by mtime fingerprint)
-    │  builds system prompt + tool list
-    │  applies Anthropic cache breakpoints (anthropic/* models)
-    │  sets X-Session-Id for sticky OpenRouter routing
-    ▼
-callOpenRouter (openrouter.ts)   ← streams SSE from OpenRouter
-    │  accumulates text + reasoning + tool calls
-    │  reports usage (prompt/completion/cached tokens)
-    ▼
-executeOne (parallel, up to 10 concurrent)
-    │  checks tool result cache (read-only tools, 30s TTL)
-    │  runs approval flow if --require-approval is set
-    │  executes tool, updates cache
-    ▼
-messages.push(toolResults)
-    │  if context > summarizeAt threshold → summarizeSession()
-    │  if cost > maxCostUsd → stop
-    ▼
-emit stream-json events on stdout
-```
+Every tool was written to give the agent the same capabilities a developer has at a terminal. The design principle is: **one tool per clear action, no ambiguity about what it does or what it touches.**
+
+### File system
+
+| Tool | Why it exists |
+|---|---|
+| `read_file` | Reads any file with optional line-range slicing. Separate from `bash` so the agent doesn't need shell quoting and the platform can audit file reads independently of command execution. |
+| `write_file` | Creates or fully overwrites a file. Used when generating new files from scratch. |
+| `str_replace` | Targeted in-place string replacement — finds an exact string and replaces it. Safer than rewriting an entire file; fails explicitly if the target string isn't found or isn't unique. |
+| `edit_file` | Batch version of `str_replace` — applies multiple `{ old_string, new_string }` pairs to a single file in one call, reducing round-trips on complex edits. |
+| `edit_files` | Multi-file batch editor — applies edits across several files in a single tool call. Built for large refactors where a single concept spans many files. |
+| `list_dir` | Recursive directory listing that automatically skips `node_modules`, `.git`, `dist`, and other noise directories. Gives the agent a clean map of a project without overwhelming it with irrelevant paths. |
+| `glob` | Pattern-based file finder (`**/*.ts`, `src/**/*.test.js`). Faster and more precise than `list_dir` when the agent knows the shape of what it's looking for. |
+| `delete_file` | Deletes a single file. Explicit tool rather than `bash rm` so deletions are auditable and sandboxed by `--sandbox-root`. |
+| `move_file` | Renames or moves a file or directory. Handles both same-directory renames and cross-directory moves. |
+| `create_dir` | Creates a directory (and all missing parents). Exists separately from `bash mkdir` so it respects sandbox boundaries and shows up in the audit log. |
+
+### Search & navigation
+
+| Tool | Why it exists |
+|---|---|
+| `grep` | Regex search across files — returns matching lines with file path, line number, and surrounding context. Backed by ripgrep semantics. The agent's primary tool for navigating large codebases without reading every file. |
+| `search_files` | Broader file-content search with richer context window configuration. Complements `grep` for cases where more surrounding lines are needed to understand a match. |
+
+### Shell
+
+| Tool | Why it exists |
+|---|---|
+| `bash` | Runs arbitrary shell commands with a configurable timeout, SIGTERM → SIGKILL escalation, and a command blocklist (`blockedCommands` in bashPolicy). The most powerful tool and the most audited — every invocation goes through the approval flow if configured. Supports process group kill to clean up subprocesses. |
+| `git` | Git operations via a structured interface rather than raw bash. Limits scope to standard git commands (status, diff, log, commit, push, etc.) and sanitizes inputs to reduce injection risk. Built because `bash` + git is the most common combined use case and making it explicit improves audit logs. |
+
+### Web
+
+| Tool | Why it exists |
+|---|---|
+| `web_fetch` | Makes HTTP requests (GET, POST, PUT, PATCH, DELETE) and returns response text. Converts HTML to readable plain text automatically. Includes SSRF protection (blocks private IP ranges, validates every redirect hop). The agent's window to the outside web for reading docs, calling APIs, and posting webhooks. |
+| `web_search` | DuckDuckGo instant-answer search. Returns a list of `{ title, url, description }` results without requiring an API key. Lets the agent find URLs to then fetch with `web_fetch` — combining them gives full research capability. |
+
+### Browser (Playwright)
+
+The browser tools give the agent a real Chromium instance for tasks that can't be done with raw HTTP — JavaScript-heavy SPAs, login flows, visual inspection.
+
+| Tool | Why it exists |
+|---|---|
+| `browser_navigate` | Opens a URL in a named browser session. Sessions are keyed so the agent can maintain multiple browser windows across tool calls. |
+| `browser_screenshot` | Takes a screenshot and returns it as a base64 PNG or JPEG. Capped at 3MB with automatic quality reduction fallback. The agent's eyes — used to verify visual output, debug layout bugs, and confirm form submissions. |
+| `browser_click` | Clicks an element by CSS selector or absolute pixel coordinate. The primary action tool for navigating UI flows. |
+| `browser_type` | Types text into an input field. Used for form filling, search queries, and CLI-style web apps. |
+| `browser_key` | Sends keyboard events (Enter, Tab, Escape, arrow keys, etc.). Handles interactions that don't map to click+type. |
+| `browser_scroll` | Scrolls the page by a pixel amount or to a CSS selector. Needed for infinite-scroll pages, sticky headers, and lazy-loaded content. |
+| `browser_execute` | Executes arbitrary JavaScript in the page context. The escape hatch for interactions no other browser tool supports. |
+| `browser_close` | Explicitly closes a named browser session to free memory. Sessions also close automatically on SIGTERM. |
+
+### Notebooks
+
+| Tool | Why it exists |
+|---|---|
+| `notebook_read` | Reads a Jupyter `.ipynb` file and returns its cells as formatted text (code + outputs + markdown). Agents working on data science or ML projects need to read notebooks without a Jupyter server. |
+| `notebook_edit` | Applies structured edits to notebook cells — replace source, change cell type, insert or delete cells. Keeps the JSON structure valid so the notebook remains openable in Jupyter. |
+
+### Agent control
+
+| Tool | Why it exists |
+|---|---|
+| `finish` | The agent calls this to explicitly signal task completion when `--use-finish-tool` is set. Prevents the loop from running unnecessary turns after the task is done. |
+| `exit_plan_mode` | Used in plan mode — the agent calls this to transition from planning to execution. Keeps planning and doing as separate named phases. |
+| `todo_write` | Writes a structured task list (pending / in_progress / completed). Gives the agent persistent working memory for multi-step tasks within a session. |
+| `todo_read` | Reads the current task list back. Used to check progress, pick the next task, and mark items complete. |
 
 ---
 
-## Built-in tools
+## Profiles
 
-| Tool | Description |
-|---|---|
-| `bash` | Runs shell commands with SIGTERM → SIGKILL timeout |
-| `read_file` | Reads files with optional line ranges |
-| `write_file` | Creates or overwrites files |
-| `str_replace` | Targeted in-place string replacement |
-| `list_dir` | Lists directories recursively (skips `node_modules`, `.git`, `dist`) |
-| `web_fetch` | Fetches URLs over HTTPS, strips HTML tags |
-| `finish` | Signals the agent loop is complete (used with `--use-finish-tool`) |
+Profiles are opinionated presets that wire together system prompt, max turns, summarization threshold, tool output tagging, and loop-detection settings for common task types. Apply with `--profile <name>`.
+
+| Profile | Max turns | What it's optimized for |
+|---|---|---|
+| `code-review` | 20 | Read-only analysis — tools tagged, output trimmed, no file writes |
+| `bug-fix` | 30 | Iterative debugging — file change tracking, tagged outputs, summarizes at 70% context |
+| `research` | 25 | Web research — web_fetch + web_search focus, tagged tool outputs |
+| `refactor` | 50 | Large structural changes — full file change tracking, summarizes at 65% context |
+| `test-writer` | 30 | Test generation — file tracking, runs test commands after writes |
+| `devops` | 40 | Infrastructure and CI tasks — conservative bash policy, tagged outputs, summarizes at 70% |
+
+Custom profiles can be defined in `~/.orager/profiles/` as JSON or YAML files with optional `extends` inheritance from built-in profiles.
 
 ---
 
@@ -87,6 +227,7 @@ emit stream-json events on stdout
 | `--max-retries <n>` | API retries on transient errors (default: `3`) |
 | `--verbose` | Log extra debug info to stderr |
 | `--config-file <path>` | Load all options from a JSON file (file is deleted immediately after read) |
+| `--profile <name>` | Apply a built-in or custom profile preset |
 
 ### Tools & permissions
 
@@ -131,7 +272,7 @@ emit stream-json events on stdout
 | `--reasoning-max-tokens <n>` | Exact reasoning token budget |
 | `--reasoning-exclude` | Run reasoning internally but omit from response |
 
-> **Default:** Reasoning is excluded by default (`--reasoning-exclude`). Enable it with `--reasoning-effort medium` or by setting `reasoning.exclude: false` in your config.
+> Reasoning is excluded by default. Enable with `--reasoning-effort medium` or set `reasoning.exclude: false` in config.
 
 ### Provider routing
 
@@ -146,13 +287,13 @@ emit stream-json events on stdout
 | `--sort price\|throughput\|latency` | Provider selection strategy (default: `latency`) |
 | `--quantizations <list>` | Filter by quantization (e.g. `fp16,bf16`) |
 | `--transforms <list>` | Comma-separated transforms (e.g. `middle-out`) |
-| `--preset <slug>` | OpenRouter named preset (server-side routing/model config) |
+| `--preset <slug>` | OpenRouter named preset |
 
 ### Context management
 
 | Flag | Description |
 |---|---|
-| `--summarize-at <fraction>` | Trigger session summarization at this fraction of context window (e.g. `0.8`) |
+| `--summarize-at <fraction>` | Trigger summarization at this fraction of context window (e.g. `0.8`) |
 | `--summarize-model <id>` | Model to use for summarization (defaults to main model) |
 
 ### Parallel execution
@@ -173,14 +314,10 @@ emit stream-json events on stdout
 
 ## Daemon mode
 
-Run orager as a persistent HTTP server to eliminate Node.js startup overhead between runs. The daemon keeps skills caches, tool result caches, and LLM prompt caches warm across heartbeats.
+Run orager as a persistent HTTP server to eliminate Node.js startup overhead and keep all caches warm between runs.
 
 ```bash
-# Start the daemon (127.0.0.1 only — never exposed to the network)
 OPENROUTER_API_KEY=sk-or-... orager --serve --port 3456
-
-# Optional: tune concurrency and timeouts
-orager --serve --port 3456 --max-concurrent 5 --idle-timeout 60m --model deepseek/deepseek-chat-v3-0324
 ```
 
 ### Daemon flags
@@ -189,22 +326,18 @@ orager --serve --port 3456 --max-concurrent 5 --idle-timeout 60m --model deepsee
 |---|---|---|
 | `--serve` | — | Start in daemon mode |
 | `--port <n>` | `3456` | TCP port (always binds to 127.0.0.1) |
-| `--max-concurrent <n>` | `3` | Max simultaneous agent runs (503 if exceeded) |
+| `--max-concurrent <n>` | `3` | Max simultaneous agent runs (returns 503 if exceeded) |
 | `--idle-timeout <n>m\|h` | `30m` | Auto-exit after this period of inactivity |
-| `--model <id>` | default model | Model used for cache warming and keep-alive pings |
 
-### How the daemon is discovered
+### Security model
 
-On startup the daemon writes `~/.orager/daemon.port`. The Paperclip adapter reads this file (or uses `ORAGER_DAEMON_URL`) to route runs to the daemon automatically.
-
-### Security
-
-- Binds to `127.0.0.1` only — never `0.0.0.0`
-- Every `/run` request requires a **short-lived JWT** (HS256, 5-min TTL)
-- Signing key at `~/.orager/daemon.key` (chmod 600, auto-generated on first start)
-- Audit log per request: `timestamp`, `agentId`, `durationMs`, `status` — **never** prompt or response content
-- Max concurrent runs enforced at the server level (not just soft-checked)
-- Auto-idle shutdown limits attack window
+- Binds exclusively to `127.0.0.1` — never `0.0.0.0`
+- Every request requires a **short-lived HS256 JWT** (5-min TTL) signed with the key at `~/.orager/daemon.key` (chmod 600, auto-generated on first start)
+- PID lock file (`~/.orager/daemon.pid`) uses atomic `O_EXCL` creation to prevent duplicate daemon processes
+- Max concurrent runs enforced at server level
+- Audit log written to `~/.orager/audit.log` (mode 0600): every tool approval decision is recorded with timestamp, session ID, tool name, and decision — prompt content is never logged
+- `promptContent` structurally validated — only `text` and `image_url` content types accepted
+- Dangerous run options (`sandboxRoot`, `requireApproval`, `bashPolicy`, `dangerouslySkipPermissions`) are stripped from daemon requests and controlled server-side only
 
 ### JWT token flow
 
@@ -212,145 +345,85 @@ On startup the daemon writes `~/.orager/daemon.port`. The Paperclip adapter read
 adapter reads ~/.orager/daemon.key
 adapter mints JWT { agentId, scope: "run", exp: now+5min }
 adapter sends: Authorization: Bearer <jwt>
-daemon verifies signature + expiry on every request (constant-time compare)
-daemon logs: { timestamp, agentId, durationMs, status }
+daemon verifies signature + expiry (constant-time HMAC compare)
+daemon logs: { ts, sessionId, toolName, decision, mode, durationMs }
 ```
 
 ### Cache warming
 
-- **Startup warm-up (4c):** On daemon start, sends a 1-token no-op request to pre-warm the LLM prompt cache so the first real heartbeat hits cache immediately
-- **Keep-alive ping (4e):** Sends a lightweight 1-token ping every 4 minutes to maintain Anthropic's 5-minute cache TTL between heartbeat runs
+- **Startup warm-up:** On daemon start, sends a 1-token no-op to pre-warm the LLM prompt cache
+- **Keep-alive ping:** Lightweight 1-token ping every 4 minutes maintains Anthropic's 5-minute cache TTL between heartbeats
+
+### Daemon API
+
+| Endpoint | Description |
+|---|---|
+| `POST /run` | Start an agent run (NDJSON streaming response) |
+| `GET /health` | Liveness check — returns `{ ok: true }` |
+| `GET /metrics` | Active runs, completed count, uptime, model list |
+| `GET /sessions` | Paginated session list (sorted by most-recent) |
+| `GET /sessions/:id` | Single session summary |
+| `GET /sessions/search?q=` | Full-text session search |
+| `POST /drain` | Reject new runs, wait for active runs to finish |
 
 ---
 
-## Performance features
+## Performance
 
 ### Prompt caching (Anthropic models)
 
-For `anthropic/*` models, orager injects `cache_control: { type: "ephemeral" }` breakpoints at three strategic positions:
+For `anthropic/*` models, orager injects `cache_control: { type: "ephemeral" }` breakpoints at three positions:
 
-1. **System prompt** — the largest stable block, shared across all agents with the same base prompt
+1. **System prompt** — the largest stable block
 2. **Last tool definition** — tool list rarely changes mid-session
-3. **Last prior-turn message** — marks the end of stable history from the previous turn
+3. **Last prior-turn message** — marks the end of stable history
 
-The `X-Session-Id` header is sent on every request to enable sticky routing — OpenRouter tries to send all requests in the same session to the same provider endpoint, maximizing cache hit rates.
-
-Non-Anthropic models (DeepSeek, OpenAI, Gemini) cache automatically via OpenRouter.
+`X-Session-Id` is sent on every request for OpenRouter sticky routing (same session → same provider endpoint → maximum cache hits).
 
 ### Skills caching
 
-Skills loaded via `--add-dir` are cached in memory per directory, keyed by a fingerprint of all `SKILL.md` file modification times. Cache is invalidated automatically when any skill file changes. Max TTL: 5 minutes regardless of mtime.
+Skills loaded via `--add-dir` are cached in memory, keyed by a fingerprint of all `SKILL.md` file modification times. Cache auto-invalidates when any file changes. Max TTL: 5 minutes.
 
 ### Tool result caching
 
-Read-only tool calls (name contains `get`, `list`, `read`, `fetch`) are cached for 30 seconds per unique argument set. Write operations (`post`, `update`, `delete`, `create`, `patch`) clear the entire cache. Cache is per invocation — never persisted to disk.
+Read-only tool calls are cached for 30 seconds per unique argument set. Write operations clear the entire cache. Never persisted to disk.
 
 ### Session summarization
 
-When `--summarize-at` is set and token usage exceeds the threshold, orager pauses the loop and summarizes the session:
+When `--summarize-at` is set and token usage crosses the threshold:
+- Only assistant messages (text + tool call names) are included in the summary — tool results and the system prompt are **never sent** to the summarization model
+- The fixed prompt prefix prevents prompt injection via summarization
+- History is replaced with: `[system prompt, { role: "user", content: "[Session summary]\n<summary>" }]`
 
-- Only assistant messages are included in the summary (text + tool call names)
-- Tool results and system prompt are **never sent** to the summarization model (injection safety)
-- The fixed prompt prefix prevents prompt injection in the summary text
-- After summarization, the full history is replaced with: `[system prompt, { role: "user", content: "[Session summary...]\n<summary>" }]`
-- Session is saved with `summarized: true` flag
+### Loop detection & abort
 
-```bash
-# Summarize when context is 80% full
-orager --print - --model deepseek/deepseek-chat-v3-0324 \
-  --summarize-at 0.8 \
-  --summarize-model deepseek/deepseek-chat-v3-0324 \
-  <<< "Your task here"
-```
+If the agent calls the same tool(s) with identical arguments for `maxIdenticalToolCallTurns` consecutive turns, orager injects an escalating warning message. After 3 injected warnings with no change in behaviour, the run terminates with a `loop_abort` event — preventing runaway token spend.
 
 ### Model fallback rotation
 
-On 429 (rate limit) or 503 (provider unavailable), orager rotates to the next model in the fallback chain before exhausting retries:
-
-```bash
-orager --print - \
-  --model deepseek/deepseek-chat-v3-0324 \
-  --model-fallback deepseek/deepseek-chat-v3-0324:nitro \
-  --model-fallback anthropic/claude-haiku-4-5 \
-  <<< "Your task here"
-```
+On 429 or 503, orager rotates to the next model in the `--model-fallback` chain before exhausting retries.
 
 ---
 
 ## Session management
 
-Sessions are saved to `~/.orager/sessions/<session-id>.json`. Resume a previous session:
+Sessions are saved to `~/.orager/sessions/<session-id>.json`.
 
 ```bash
-orager --print - --output-format stream-json \
-  --model deepseek/deepseek-chat-v3-0324 \
-  --resume 550e8400-e29b-41d4-a716-446655440000 \
-  <<< "Continue where you left off"
-```
-
-By default, resuming from a different working directory starts a fresh session with a warning. Use `--force-resume` to override.
-
-### Session management commands
-
-```bash
-# List all sessions (active + trashed)
 orager --list-sessions
-
-# Mark a session as trashed (preserved on disk, skipped on resume)
-orager --trash-session <session-id>
-
-# Restore a trashed session
-orager --restore-session <session-id>
-
-# Permanently delete a session
-orager --delete-session <session-id>
-
-# Delete all trashed sessions
+orager --trash-session <id>
+orager --restore-session <id>
+orager --delete-session <id>
 orager --delete-trashed
+orager --rollback-session <id> --to-turn 3
+orager --prune-sessions --older-than 30d
 ```
-
-### Session rollback
-
-Roll back a session to a prior turn, discarding everything after that point:
-
-```bash
-# Roll back to after turn 3 (discards turns 4, 5, ...)
-orager --rollback-session <session-id> --to-turn 3
-
-# Roll back to before any assistant turn (keep only the initial prompt)
-orager --rollback-session <session-id> --to-turn 0
-```
-
-After rollback, resume the session normally:
-
-```bash
-orager --print - --resume <session-id> <<< "Try a different approach"
-```
-
-### Pruning old sessions
-
-```bash
-# Delete sessions not modified in the last 30 days (default)
-orager --prune-sessions
-
-# Custom age threshold
-orager --prune-sessions --older-than 7d
-orager --prune-sessions --older-than 24h
-```
-
-Time units: `d` (days), `h` (hours), `m` (minutes).
 
 ---
 
 ## Config file
 
-For programmatic use, pass all options as a JSON file instead of CLI args:
-
-```bash
-orager --print - --config-file /tmp/my-config.json <<< "Your task"
-```
-
-The file is **read once and immediately deleted** before any API calls. Write it with mode `0600` to prevent other users from reading it while it exists. The Paperclip adapter does this automatically (crypto-random filename, chmod 600 before write).
+Pass all options as JSON instead of CLI args. The file is **read once and immediately deleted** before any API calls.
 
 ```json
 {
@@ -359,56 +432,16 @@ The file is **read once and immediately deleted** before any API calls. Write it
   "addDirs": ["/path/to/skills"],
   "parallel_tool_calls": true,
   "reasoningExclude": true,
-  "sort": "latency",
-  "require_parameters": true,
   "summarizeAt": 0.8,
-  "summarizeModel": "deepseek/deepseek-chat-v3-0324"
-}
-```
-
-### Per-turn model routing (config file only)
-
-Use `turnModelRules` to switch models dynamically mid-session based on turn number, cost, or token count. Rules are evaluated before each API call; the first match wins.
-
-```json
-{
-  "model": "deepseek/deepseek-chat-v3-0324",
   "turnModelRules": [
-    { "afterTurn": 5, "model": "anthropic/claude-sonnet-4-6" },
-    { "costAbove": 0.02, "model": "deepseek/deepseek-r1", "once": true }
+    { "afterTurn": 5, "model": "anthropic/claude-sonnet-4-6" }
   ]
 }
 ```
-
-| Field | Description |
-|---|---|
-| `model` | Model to switch to when this rule matches |
-| `afterTurn` | Match when turn ≥ this value (0-indexed) |
-| `costAbove` | Match when cumulative cost > this USD value |
-| `tokensAbove` | Match when cumulative prompt tokens > this count |
-| `once` | Apply for one turn only, then stop matching (default: false) |
-
-### Multimodal prompts (config file only)
-
-Use `promptContent` to pass image URLs alongside the text prompt. Any vision-capable model on OpenRouter will receive the images as part of the first user message.
-
-```json
-{
-  "model": "openai/gpt-4o",
-  "promptContent": [
-    { "type": "text", "text": "Fix the layout bug shown in this screenshot" },
-    { "type": "image_url", "image_url": { "url": "https://cdn.example.com/screenshot.png" } }
-  ]
-}
-```
-
-The Paperclip adapter populates `promptContent` automatically when the execution context includes image attachments.
 
 ---
 
 ## Output format
-
-Orager emits one JSON object per line (`stream-json`):
 
 ```json
 {"type":"system","subtype":"init","model":"deepseek/...","session_id":"abc-123"}
@@ -417,9 +450,58 @@ Orager emits one JSON object per line (`stream-json`):
 {"type":"result","subtype":"success","result":"Done.","session_id":"abc-123","finish_reason":"stop","usage":{"input_tokens":1200,"output_tokens":340,"cache_read_input_tokens":800},"total_cost_usd":0.00004}
 ```
 
-`subtype` on the result event: `success`, `error_max_turns`, `error_max_cost`, `interrupted`, or `error`.
+`subtype`: `success` | `error_max_turns` | `error_max_cost` | `interrupted` | `error`
 
-`cache_read_input_tokens` reflects tokens served from the prompt cache (Anthropic or OpenRouter-managed).
+---
+
+## Source layout
+
+```
+src/
+├── index.ts               CLI entry — arg parsing, session subcommands, main()
+├── loop.ts                Agent loop — turns, tool execution, cost tracking, summarization
+├── loop-helpers.ts        Token estimation, context window lookup, session summarization, concurrency
+├── openrouter.ts          OpenRouter + direct Anthropic streaming API — SSE parsing, cache breakpoints
+├── openrouter-model-meta.ts  Live model metadata (pricing, capabilities) from /api/v1/models
+├── retry.ts               Retry + model fallback rotation on 429/503
+├── session.ts             Session persistence (JSON) — queue-serialized writes, lock file, pruning
+├── approval.ts            Interactive TTY approval prompt — control-char sanitized display
+├── hooks.ts               Pre/post tool call hooks — user-defined shell commands
+├── daemon.ts              HTTP daemon server — JWT auth, concurrency, drain, keep-alive
+├── jwt.ts                 HS256 JWT mint/verify (Node.js built-in crypto)
+├── circuit-breaker.ts     OpenRouter circuit breaker — OPEN/HALF_OPEN/CLOSED state machine
+├── rate-limit-tracker.ts  Per-model rate limit header tracking
+├── mcp-client.ts          MCP server client — connect, list tools, call tools with timeout + size cap
+├── profiles.ts            Built-in and custom agent profiles
+├── profile-loader.ts      Custom profile loader from ~/.orager/profiles/ (JSON/YAML)
+├── settings.ts            ~/.orager/settings.json loader — permissions, bashPolicy, hooks
+├── audit.ts               Append-only NDJSON audit log (mode 0600, 10MB rotation)
+├── model-capabilities.ts  Static model capability map (tool support, vision, reasoning)
+├── deprecated-models.ts   Deprecated model registry with migration hints
+├── telemetry.ts           OpenTelemetry trace/span integration
+├── logger.ts              Structured JSON logger
+└── tools/
+    ├── index.ts           Tool registry (ALL_TOOLS + BROWSER_TOOLS)
+    ├── bash.ts            bash — shell execution with blocklist + timeout
+    ├── read-file.ts       read_file — file reading with line ranges
+    ├── write-file.ts      write_file + str_replace
+    ├── edit.ts            edit_file — batch replacements on one file
+    ├── edit-files.ts      edit_files — batch replacements across multiple files
+    ├── list-dir.ts        list_dir — recursive directory listing
+    ├── glob.ts            glob — pattern-based file finding
+    ├── grep.ts            grep — regex content search
+    ├── search-files.ts    search_files — richer grep with more context options
+    ├── git.ts             git — structured git operations
+    ├── web-fetch.ts       web_fetch — HTTP with SSRF protection + redirect validation
+    ├── web-search.ts      web_search — DuckDuckGo search
+    ├── file-ops.ts        delete_file + move_file + create_dir
+    ├── browser.ts         browser_navigate/screenshot/click/type/key/scroll/execute/close
+    ├── notebook.ts        notebook_read + notebook_edit
+    ├── todo.ts            todo_write + todo_read
+    ├── plan.ts            exit_plan_mode
+    ├── finish.ts          finish — explicit completion signal
+    └── aliases.ts         Claude-compatible tool name aliases
+```
 
 ---
 
@@ -442,58 +524,6 @@ Append `:free`, `:nitro`, `:floor`, `:online`, `:thinking`, or `:extended` to an
 
 ---
 
-## MCP server
-
-orager ships an [MCP](https://modelcontextprotocol.io) server so any MCP-compatible client (Cursor, Claude Desktop, VS Code, etc.) can delegate tasks to OpenRouter models.
-
-### Setup
-
-```json
-{
-  "mcpServers": {
-    "orager": {
-      "command": "node",
-      "args": ["/path/to/orager/dist/mcp.js"],
-      "env": {
-        "OPENROUTER_API_KEY": "sk-or-...",
-        "ORAGER_DEFAULT_MODEL": "deepseek/deepseek-chat-v3-0324"
-      }
-    }
-  }
-}
-```
-
-### Tools exposed
-
-| Tool | Description |
-|---|---|
-| `run_agent` | Run an agent to completion. Returns result text and `session_id` for continuation. |
-| `list_models` | Return the configured default model for this server instance. |
-
-### `run_agent` parameters
-
-| Parameter | Type | Description |
-|---|---|---|
-| `prompt` | string | **Required.** Task or question for the agent. |
-| `model` | string | OpenRouter model ID (default: `ORAGER_DEFAULT_MODEL`). |
-| `session_id` | string | Resume a previous session. |
-| `cwd` | string | Working directory (default: server process cwd). |
-| `max_turns` | number | Max agent turns (default: `20`). |
-| `max_cost_usd` | number | Stop if cost exceeds this USD value. |
-| `system_prompt` | string | Extra text appended to the system prompt. |
-| `dangerously_skip_permissions` | boolean | Skip tool approval prompts. |
-
-### Environment variables
-
-| Variable | Description |
-|---|---|
-| `OPENROUTER_API_KEY` | OpenRouter API key (required) |
-| `ORAGER_DEFAULT_MODEL` | Default model if `model` not specified in tool call |
-| `ORAGER_MAX_TURNS` | Default max turns (default: `20`) |
-| `ORAGER_MAX_COST_USD` | Default cost cap in USD (default: none) |
-
----
-
 ## Development
 
 ```bash
@@ -502,50 +532,4 @@ npm run build       # tsc → dist/
 npm run typecheck   # tsc --noEmit
 npm run test        # vitest run
 npm run dev         # tsx src/index.ts (no build needed)
-npm run mcp         # tsx src/mcp.ts  (MCP server without building)
 ```
-
----
-
-## Architecture
-
-```
-src/
-├── index.ts          CLI entry point — arg parsing, session subcommands, main()
-├── loop.ts           Agent loop — turns, tool execution, summarization, cost tracking
-├── openrouter.ts     OpenRouter streaming API — SSE parsing, Anthropic cache breakpoints
-├── session.ts        Session persistence (~/.orager/sessions/*.json)
-├── skills.ts         Skills loader — mtime-fingerprinted disk cache, SKILL.md parsing
-├── retry.ts          Retry + model fallback rotation on 429/503
-├── emit.ts           stream-json emitter (stdout)
-├── approval.ts       Interactive TTY approval prompt
-├── daemon.ts         HTTP daemon server (--serve mode) with JWT auth + keep-alive
-├── jwt.ts            HS256 JWT mint/verify using Node.js built-in crypto
-└── tools/
-    ├── index.ts      Tool registry (ALL_TOOLS)
-    ├── bash.ts       bash tool
-    ├── read-file.ts  read_file tool
-    ├── write-file.ts write_file tool
-    ├── str-replace.ts str_replace tool
-    ├── list-dir.ts   list_dir tool
-    ├── web-fetch.ts  web_fetch tool
-    ├── finish.ts     finish tool
-    └── load-tools.ts loads extra tools from JSON spec files
-```
-
----
-
-## Future enhancements
-
-- **Explicit read-only flag on tools** — add `readonly: boolean` to `ToolDefinition` so the tool result cache doesn't depend on name-pattern heuristics
-- **Per-tool cache TTL** — allow tools to declare their own cache duration instead of the global 30s
-- **Daemon auto-start** — auto-start the daemon if not running when the adapter detects daemon mode is configured
-- **Daemon metrics endpoint** — `GET /metrics` exposing active runs, cache hit rates, token counts since startup
-- **Structured output tools** — first-class support for `response_format: json_schema` with auto-enabled response-healing plugin
-- **Context window map expansion** — add Gemini 2.5 (1M), Llama 3 (128k), Mistral models to `getContextWindow()`
-- **Selective summarization** — allow summarizing only tool results older than N turns (keep recent turns intact)
-- **Session export/import** — `orager --export-session <id> > session.json` and `orager --import-session session.json` for cross-machine use
-- **OpenTelemetry traces** — emit spans per turn + per tool call for observability integrations
-- **Multi-agent shared sessions** — allow two agent processes to append to the same session (useful for parallel sub-agents)
-- **Streaming cost estimates** — emit a `cost_estimate` event after each turn (before the run finishes) so callers can act on cost early
-- **Plugin registry** — expose `plugins` field in CLI options for other OpenRouter plugins beyond response-healing
