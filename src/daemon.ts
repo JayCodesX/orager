@@ -171,9 +171,10 @@ const ALLOWED_DAEMON_OPTS = new Set([
   "turnModelRules", "promptContent", "siteUrl", "siteName",
   "costPerInputToken", "costPerOutputToken", "maxCostUsd",
   "hooks", "hooksEnabled", "source",
+  "apiKeys", "timeoutSec", "requiredEnvVars",
 ]);
 
-function sanitizeDaemonRunOpts(raw: Record<string, unknown>): Record<string, unknown> {
+function sanitizeDaemonRunOpts(raw: Record<string, unknown>): { safe: Record<string, unknown>; rejected: string[] } {
   const safe: Record<string, unknown> = {};
   const rejected: string[] = [];
   for (const [k, v] of Object.entries(raw)) {
@@ -183,15 +184,12 @@ function sanitizeDaemonRunOpts(raw: Record<string, unknown>): Record<string, unk
       rejected.push(k);
     }
   }
-  if (rejected.length > 0) {
-    process.stderr.write(`[orager daemon] WARNING: ignoring disallowed opts fields from caller: ${rejected.join(", ")}\n`);
-  }
   // Security-sensitive fields: never allow callers to override sandboxRoot or requireApproval
   delete safe["sandboxRoot"];
   delete safe["requireApproval"];
   delete safe["bashPolicy"];
   delete safe["dangerouslySkipPermissions"];
-  return safe;
+  return { safe, rejected };
 }
 
 // ── Daemon server ─────────────────────────────────────────────────────────────
@@ -674,7 +672,12 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
 
       // ── Execute run ─────────────────────────────────────────────────────
 
-      const safeOpts = sanitizeDaemonRunOpts(runReq.opts as unknown as Record<string, unknown>);
+      const { safe: safeOpts, rejected: rejectedOpts } = sanitizeDaemonRunOpts(runReq.opts as unknown as Record<string, unknown>);
+      if (rejectedOpts.length > 0) {
+        const msg = `[orager daemon] WARNING: ignoring disallowed opts fields from caller: ${rejectedOpts.join(", ")}`;
+        process.stderr.write(msg + "\n");
+        res.write(JSON.stringify({ type: "warn", message: msg, dropped_opts: rejectedOpts }) + "\n");
+      }
       const loopOpts: AgentLoopOptions = {
         // Secure defaults — callers cannot override these via the request opts
         dangerouslySkipPermissions: false,
