@@ -1,6 +1,7 @@
-import type { ToolExecutor, ToolResult } from "../types.js";
+import type { ToolExecutor, ToolExecuteOptions, ToolResult } from "../types.js";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { assertPathAllowed } from "../sandbox.js";
 
 interface FileEdit {
   path: string;
@@ -49,7 +50,7 @@ export const editFilesTool: ToolExecutor = {
     },
   },
 
-  async execute(input: Record<string, unknown>, cwd: string): Promise<ToolResult> {
+  async execute(input: Record<string, unknown>, cwd: string, opts?: ToolExecuteOptions): Promise<ToolResult> {
     if (!Array.isArray(input["files"]) || input["files"].length === 0) {
       return { toolCallId: "", content: "files must be a non-empty array", isError: true };
     }
@@ -63,6 +64,11 @@ export const editFilesTool: ToolExecutor = {
         return { toolCallId: "", content: `Invalid file entry: ${JSON.stringify(file)}`, isError: true };
       }
       const abs = path.isAbsolute(file.path) ? file.path : path.join(cwd, file.path);
+      if (opts?.sandboxRoot) {
+        try { assertPathAllowed(abs, opts.sandboxRoot); } catch (e) {
+          return { toolCallId: "", content: String(e), isError: true };
+        }
+      }
       try {
         fileContents.set(abs, await fs.readFile(abs, "utf8"));
       } catch (err) {
@@ -122,17 +128,31 @@ export const editFilesTool: ToolExecutor = {
     }
 
     // ── Phase 3: Write all files (all validations passed) ────────────────────
+    // On write failure, restore already-written files from the Phase 1 snapshot
+    // so the working tree is never left in a partially-edited state.
     const written: string[] = [];
     for (const [abs, content] of pendingWrites) {
       try {
         await fs.writeFile(abs, content, "utf8");
         written.push(abs);
       } catch (err) {
+        const writeErr = err instanceof Error ? err.message : String(err);
+        // Restore all files written so far back to their original content
+        const restoreErrors: string[] = [];
+        for (const w of written) {
+          try {
+            await fs.writeFile(w, fileContents.get(w)!, "utf8");
+          } catch (restoreErr) {
+            restoreErrors.push(`${w}: ${restoreErr instanceof Error ? restoreErr.message : String(restoreErr)}`);
+          }
+        }
+        const restoreNote = restoreErrors.length > 0
+          ? ` Restore also failed for: ${restoreErrors.join("; ")}`
+          : written.length > 0 ? ` Restored ${written.length} previously-written file(s) to original content.` : "";
         return {
           toolCallId: "",
           content:
-            `Partial write failure after writing ${written.length}/${pendingWrites.size} files. ` +
-            `Failed on ${abs}: ${err instanceof Error ? err.message : String(err)}`,
+            `Write failed on ${abs}: ${writeErr}.${restoreNote}`,
           isError: true,
         };
       }

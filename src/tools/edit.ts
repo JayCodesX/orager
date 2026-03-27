@@ -1,6 +1,7 @@
-import type { ToolExecutor, ToolResult } from "../types.js";
+import type { ToolExecutor, ToolExecuteOptions, ToolResult } from "../types.js";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { assertPathAllowed } from "../sandbox.js";
 
 interface EditOperation {
   old_string: string;
@@ -56,7 +57,7 @@ export const editFileTool: ToolExecutor = {
     },
   },
 
-  async execute(input: Record<string, unknown>, cwd: string): Promise<ToolResult> {
+  async execute(input: Record<string, unknown>, cwd: string, opts?: ToolExecuteOptions): Promise<ToolResult> {
     if (typeof input["path"] !== "string" || !input["path"]) {
       return { toolCallId: "", content: "path must be a non-empty string", isError: true };
     }
@@ -67,6 +68,12 @@ export const editFileTool: ToolExecutor = {
     const filePath = path.isAbsolute(input["path"] as string)
       ? (input["path"] as string)
       : path.join(cwd, input["path"] as string);
+
+    if (opts?.sandboxRoot) {
+      try { assertPathAllowed(filePath, opts.sandboxRoot); } catch (e) {
+        return { toolCallId: "", content: String(e), isError: true };
+      }
+    }
 
     const edits = input["edits"] as EditOperation[];
     const createIfMissing = input["create_if_missing"] === true;
