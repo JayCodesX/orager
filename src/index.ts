@@ -621,6 +621,12 @@ interface ConfigFileSchema {
   apiKeys?: string[];
   /** Env var names that must be present before the loop starts. */
   requiredEnvVars?: string[];
+  /** Enable or disable cross-session persistent memory (default true). */
+  memory?: boolean;
+  /** Stable key for the agent's memory store (e.g. Paperclip agent ID). */
+  memoryKey?: string;
+  /** Max chars injected from memory into the system prompt (default 6000). */
+  memoryMaxChars?: number;
 }
 
 /**
@@ -658,6 +664,9 @@ async function loadConfigFile(filePath: string): Promise<{
   timeoutSec?: number;
   apiKeys?: string[];
   requiredEnvVars?: string[];
+  memory?: boolean;
+  memoryKey?: string;
+  memoryMaxChars?: number;
 }> {
   let raw: string;
   try {
@@ -782,6 +791,9 @@ async function loadConfigFile(filePath: string): Promise<{
     timeoutSec?: number;
     apiKeys?: string[];
     requiredEnvVars?: string[];
+    memory?: boolean;
+    memoryKey?: string;
+    memoryMaxChars?: number;
   } = { args };
   if (Array.isArray(cfg.turnModelRules) && cfg.turnModelRules.length > 0) {
     result.turnModelRules = cfg.turnModelRules;
@@ -836,6 +848,10 @@ async function loadConfigFile(filePath: string): Promise<{
     const names = cfg.requiredEnvVars.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
     if (names.length > 0) result.args.push("--require-env", names.join(","));
   }
+  // Memory — pass via result object so they can be stored in globalThis
+  if (cfg.memory !== undefined) result.memory = cfg.memory;
+  if (typeof cfg.memoryKey === "string" && cfg.memoryKey.trim()) result.memoryKey = cfg.memoryKey.trim();
+  if (typeof cfg.memoryMaxChars === "number" && cfg.memoryMaxChars > 0) result.memoryMaxChars = cfg.memoryMaxChars;
   return result;
 }
 
@@ -991,6 +1007,15 @@ async function main(): Promise<void> {
     }
     if (cfResult.apiKeys && cfResult.apiKeys.length > 0) {
       (globalThis as Record<string, unknown>).__oragerApiKeys = cfResult.apiKeys;
+    }
+    if (cfResult.memory !== undefined) {
+      (globalThis as Record<string, unknown>).__oragerMemory = cfResult.memory;
+    }
+    if (cfResult.memoryKey) {
+      (globalThis as Record<string, unknown>).__oragerMemoryKey = cfResult.memoryKey;
+    }
+    if (cfResult.memoryMaxChars !== undefined) {
+      (globalThis as Record<string, unknown>).__oragerMemoryMaxChars = cfResult.memoryMaxChars;
     }
   }
 
@@ -1194,6 +1219,9 @@ async function main(): Promise<void> {
     timeoutSec: opts.timeoutSec,
     apiKeys: (globalThis as Record<string, unknown>).__oragerApiKeys as string[] | undefined,
     requiredEnvVars: opts.requiredEnvVars,
+    memory: (globalThis as Record<string, unknown>).__oragerMemory as boolean | undefined,
+    memoryKey: (globalThis as Record<string, unknown>).__oragerMemoryKey as string | undefined,
+    memoryMaxChars: (globalThis as Record<string, unknown>).__oragerMemoryMaxChars as number | undefined,
   };
 
   if (opts.profile) {

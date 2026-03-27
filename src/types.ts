@@ -1019,6 +1019,28 @@ export interface AgentLoopOptions {
    * Default: false (browser tools are not loaded unless explicitly enabled).
    */
   enableBrowserTools?: boolean;
+
+  /**
+   * Enable or disable cross-session persistent memory. When true (default),
+   * the `remember` tool is available and the memory block is injected into
+   * the system prompt at startup. Set to false to fully disable memory.
+   */
+  memory?: boolean;
+
+  /**
+   * Stable key used to identify the memory store for this agent.
+   * Typically the Paperclip agent ID (passed by the adapter) so memories
+   * persist across session resets. Falls back to a hash of the cwd for
+   * standalone use. Sanitized to [a-zA-Z0-9_-], max 128 chars.
+   */
+  memoryKey?: string;
+
+  /**
+   * Maximum characters injected into the system prompt from the memory store.
+   * Entries are sorted by importance (high first) and truncated at this limit
+   * to avoid crowding out the task context. Default: 6000 (~1500 tokens).
+   */
+  memoryMaxChars?: number;
 }
 
 // ── Permission types ─────────────────────────────────────────────────────────

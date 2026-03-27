@@ -172,6 +172,7 @@ const ALLOWED_DAEMON_OPTS = new Set([
   "costPerInputToken", "costPerOutputToken", "maxCostUsd",
   "hooks", "hooksEnabled", "source",
   "apiKeys", "timeoutSec", "requiredEnvVars",
+  "memory", "memoryKey", "memoryMaxChars",
 ]);
 
 function sanitizeDaemonRunOpts(raw: Record<string, unknown>): { safe: Record<string, unknown>; rejected: string[] } {

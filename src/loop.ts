@@ -15,6 +15,8 @@ import { loadProjectCommands, resolveCommandPrompt, buildCommandsSystemPrompt } 
 import { connectAllMcpServers } from "./mcp-client.js";
 import type { McpClientHandle } from "./mcp-client.js";
 import { makeTodoTools } from "./tools/todo.js";
+import { makeRememberTool } from "./tools/remember.js";
+import { loadMemoryStore, pruneExpired, renderMemoryBlock, memoryKeyFromCwd } from "./memory.js";
 import { runHook } from "./hooks.js";
 import type { HookConfig } from "./hooks.js";
 import { loadSettings, mergeSettings, loadClaudeDesktopMcpServers } from "./settings.js";
@@ -310,6 +312,27 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   // ── Todo tools (session-scoped) ───────────────────────────────────────────
   // Note: sessionId is set above in the session load/create block
   allTools.push(...makeTodoTools(sessionId));
+
+  // ── Cross-session memory ───────────────────────────────────────────────────
+  const memoryEnabled = opts.memory !== false;
+  const memoryMaxChars = typeof opts.memoryMaxChars === "number" && opts.memoryMaxChars > 0
+    ? opts.memoryMaxChars
+    : 6000;
+  // Use provided memoryKey, or derive a stable key from the cwd for standalone use
+  const effectiveMemoryKey = (typeof opts.memoryKey === "string" && opts.memoryKey.trim())
+    ? opts.memoryKey.trim()
+    : memoryKeyFromCwd(cwd);
+  if (memoryEnabled) {
+    // Load + prune the store, inject into system prompt, and register the tool
+    try {
+      const memStore = pruneExpired(await loadMemoryStore(effectiveMemoryKey));
+      const memBlock = renderMemoryBlock(memStore, memoryMaxChars);
+      if (memBlock) {
+        systemPrompt += "\n\n## Your persistent memory\n\n" + memBlock;
+      }
+    } catch { /* non-fatal — memory load failure must never abort a run */ }
+    allTools.push(makeRememberTool(effectiveMemoryKey, memoryMaxChars));
+  }
 
   // Warn about duplicate tool names (first definition wins via find())
   const seenToolNames = new Set<string>();
