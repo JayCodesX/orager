@@ -39,6 +39,7 @@ import { truncateContent } from "./truncate.js";
 import { checkDeprecatedModel } from "./deprecated-models.js";
 import { getModelCapabilities } from "./model-capabilities.js";
 import { withSpan, spanSetAttributes } from "./telemetry.js";
+import { getCachedQueryEmbedding, setCachedQueryEmbedding } from "./embedding-cache.js";
 import { isNearRateLimit, rateLimitSummary, getRateLimitState } from "./rate-limit-tracker.js";
 import { gatherContext, formatContext } from "./context-injector.js";
 import { makeStuckMessage } from "./prompt-variation.js";
@@ -285,6 +286,9 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   let createdAt: string = new Date().toISOString();
   let isResume = false;
   let releaseLock: (() => Promise<void>) | null = null;
+  // Cumulative cost from prior runs of this session (loaded on resume).
+  // Initialised to 0 for new sessions; updated when we load an existing session.
+  let priorCumulativeCostUsd = 0;
 
   let pendingApproval: {
     toolCallId: string;
@@ -310,6 +314,9 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       createdAt = existing.createdAt;
       isResume = true;
       pendingApproval = existing.pendingApproval ?? null;
+      // Load cumulative cost so cost limits apply to the full session total
+      // (not just the current run). Missing in older sessions → default 0.
+      priorCumulativeCostUsd = existing.cumulativeCostUsd ?? 0;
       if (forceResume && existing.cwd !== cwd) {
         onLog?.(
           "stderr",
@@ -411,7 +418,12 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       let memBlock: string;
       if (retrieval === "embedding" && opts.memoryEmbeddingModel && apiKey) {
         try {
-          const [queryVec] = await callEmbeddings(apiKey, opts.memoryEmbeddingModel, [prompt]);
+          // Check in-memory cache before calling the embeddings API
+          let queryVec = getCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt);
+          if (!queryVec) {
+            [queryVec] = await callEmbeddings(apiKey, opts.memoryEmbeddingModel, [prompt]);
+            setCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt, queryVec);
+          }
           memBlock = renderRetrievedBlock(
             retrieveEntriesWithEmbeddings(memStore, queryVec, { topK: 12 }),
             memoryMaxChars,
@@ -651,7 +663,9 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   };
   let cumulativeCachedTokens = 0;
   let cumulativeCacheWriteTokens = 0;
-  let totalCostUsd = 0;
+  // Start from the session's prior cumulative cost so cost limits apply to the
+  // full session total rather than resetting to $0 on every resume.
+  let totalCostUsd = priorCumulativeCostUsd;
   let lastResponseModel = model;
   let lastFinishReason: string | null = null;
   let lastAssistantText = "";
@@ -941,6 +955,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         turnCount: 0,
         cwd,
         pendingApproval: null,
+        cumulativeCostUsd: totalCostUsd,
       }).catch(() => {});
 
       const elapsedMs = pendingApproval.questionedAt
@@ -974,6 +989,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           updatedAt: new Date().toISOString(),
           turnCount: turn,
           cwd,
+          cumulativeCostUsd: totalCostUsd,
         }).catch(() => {});
         {
           const resultEvent = {
@@ -1366,6 +1382,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           updatedAt: new Date().toISOString(),
           turnCount: turn,
           cwd,
+          cumulativeCostUsd: totalCostUsd,
         }).catch(() => {});
         onEmit(budgetResultEvent);
         if (opts.webhookUrl) await postWebhook(opts.webhookUrl, budgetResultEvent);
@@ -1449,6 +1466,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           updatedAt: questionedAt,
           turnCount: turn,
           cwd,
+          cumulativeCostUsd: totalCostUsd,
           pendingApproval: {
             toolCallId: capturedPendingApproval.toolCallId,
             toolName: capturedPendingApproval.toolName,
@@ -1555,6 +1573,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             turnCount: turn,
             cwd,
             summarized: true,
+            cumulativeCostUsd: totalCostUsd,
           }).catch(() => {});
         } catch (summarizeErr) {
           const msg = summarizeErr instanceof Error ? summarizeErr.message : String(summarizeErr);
@@ -1604,6 +1623,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           updatedAt: new Date().toISOString(),
           turnCount: turn,
           cwd,
+          cumulativeCostUsd: totalCostUsd,
         }).catch(() => {});
 
         {
@@ -1656,6 +1676,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         updatedAt: new Date().toISOString(),
         turnCount: turn,
         cwd,
+        cumulativeCostUsd: totalCostUsd,
       });
     } catch (saveErr) {
       const saveErrMsg = saveErr instanceof Error ? saveErr.message : String(saveErr);
@@ -1707,6 +1728,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         updatedAt: new Date().toISOString(),
         turnCount: turn,
         cwd,
+        cumulativeCostUsd: totalCostUsd,
       });
     } catch {
       // ignore save failure during error handling
