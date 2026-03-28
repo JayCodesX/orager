@@ -157,3 +157,28 @@ describe("computeToolBudgetTimeout — T8: explicit toolTimeout capped at remain
     expect(fetchTimeout).toBe(20_000); // explicit < budgetCap (80_000)
   });
 });
+
+describe("computeToolBudgetTimeout — startMs/nowMs alternative (A3)", () => {
+  it("accepts startMs + nowMs instead of elapsedMs", () => {
+    // startMs=0, nowMs=50_000 → elapsedMs=50_000; 100s run → remaining=50s → 80%=40_000
+    const result = computeToolBudgetTimeout({
+      toolName: "bash",
+      timeoutSec: 100,
+      startMs: 0,
+      nowMs: 50_000,
+    });
+    expect(result).toBe(40_000);
+  });
+
+  it("elapsedMs takes precedence over startMs when both are provided", () => {
+    // elapsedMs=0, but startMs=0/nowMs=50_000 would give 40_000 — elapsedMs=0 wins → 80_000
+    const result = computeToolBudgetTimeout({
+      toolName: "bash",
+      timeoutSec: 100,
+      elapsedMs: 0,
+      startMs: 0,
+      nowMs: 50_000,
+    });
+    expect(result).toBe(80_000);
+  });
+});

@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { CircuitBreaker } from "../src/circuit-breaker.js";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { CircuitBreaker, getAgentCircuitBreaker, clearAllAgentCircuitBreakers } from "../src/circuit-breaker.js";
 
 describe("CircuitBreaker", () => {
   let cb: CircuitBreaker;
@@ -67,5 +67,60 @@ describe("CircuitBreaker", () => {
     cb.recordFailure(); cb.recordFailure(); cb.recordFailure();
     expect(cb.retryInMs).toBeGreaterThan(0);
     expect(cb.retryInMs).toBeLessThanOrEqual(1000);
+  });
+});
+
+// ── Per-agent circuit breaker isolation (A1) ──────────────────────────────────
+
+describe("getAgentCircuitBreaker — per-agent isolation (A1)", () => {
+  afterEach(() => {
+    clearAllAgentCircuitBreakers();
+  });
+
+  it("returns a CircuitBreaker instance for a given agentId", () => {
+    const cb = getAgentCircuitBreaker("agent-1");
+    expect(cb).toBeDefined();
+    expect(cb.currentState).toBe("closed");
+  });
+
+  it("returns the same instance on repeated calls for the same agentId", () => {
+    const cb1 = getAgentCircuitBreaker("agent-1");
+    const cb2 = getAgentCircuitBreaker("agent-1");
+    expect(cb1).toBe(cb2);
+  });
+
+  it("returns different instances for different agentIds", () => {
+    const cb1 = getAgentCircuitBreaker("agent-1");
+    const cb2 = getAgentCircuitBreaker("agent-2");
+    expect(cb1).not.toBe(cb2);
+  });
+
+  it("tripping one agent's CB does not affect another agent", () => {
+    const cb1 = getAgentCircuitBreaker("agent-noisy");
+    const cb2 = getAgentCircuitBreaker("agent-clean");
+
+    // Trip agent-noisy's circuit
+    cb1.recordFailure();
+    cb1.recordFailure();
+    cb1.recordFailure(); // threshold = 3
+
+    expect(cb1.isOpen()).toBe(true);
+    // agent-clean should be unaffected
+    expect(cb2.isOpen()).toBe(false);
+  });
+
+  it("clearAllAgentCircuitBreakers resets state for all agents", () => {
+    const cb = getAgentCircuitBreaker("agent-tripped");
+    cb.recordFailure();
+    cb.recordFailure();
+    cb.recordFailure();
+    expect(cb.isOpen()).toBe(true);
+
+    clearAllAgentCircuitBreakers();
+
+    // After clear, a fresh CB is returned for the same agentId
+    const fresh = getAgentCircuitBreaker("agent-tripped");
+    expect(fresh.isOpen()).toBe(false);
+    expect(fresh.currentState).toBe("closed");
   });
 });

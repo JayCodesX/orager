@@ -34,7 +34,7 @@ import { getRateLimitState } from "./rate-limit-tracker.js";
 import { initTelemetry } from "./telemetry.js";
 import { checkAndLogApiKeyHealth, fetchApiKeyInfo } from "./openrouter-key.js";
 import type { ApiKeyInfo } from "./openrouter-key.js";
-import { openRouterCircuitBreaker } from "./circuit-breaker.js";
+import { getAgentCircuitBreaker } from "./circuit-breaker.js";
 
 // ── Port file ─────────────────────────────────────────────────────────────────
 // Written on startup so clients (adapter) can discover the port without config.
@@ -747,12 +747,13 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
 
       // Only check circuit breaker for OpenRouter calls (direct Anthropic path bypasses it)
       const isDirectPath = typeof runReq.opts?.model === "string" && runReq.opts.model.startsWith("anthropic/") && !!process.env.ANTHROPIC_API_KEY?.trim();
-      if (!isDirectPath && openRouterCircuitBreaker.isOpen()) {
+      const agentCb = getAgentCircuitBreaker(agentId);
+      if (!isDirectPath && agentCb.isOpen()) {
         res.writeHead(503, { "Content-Type": "application/json" });
         res.end(JSON.stringify({
           type: "result",
           subtype: "error_circuit_open",
-          result: "OpenRouter API circuit breaker is open due to sustained failures. Retry in " + Math.ceil(openRouterCircuitBreaker.retryInMs / 1000) + "s.",
+          result: "OpenRouter API circuit breaker is open due to sustained failures. Retry in " + Math.ceil(agentCb.retryInMs / 1000) + "s.",
           session_id: "",
           turn_count: 0,
           total_cost_usd: 0,
@@ -761,8 +762,11 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
         return;
       }
 
+      let _runFailed = false;
       runAgentLoop(loopOpts)
         .catch((err: unknown) => {
+          _runFailed = true;
+          if (!isDirectPath) agentCb.recordFailure();
           const msg = err instanceof Error ? err.message : String(err);
           if (!timedOut && !res.destroyed) {
             res.write(
@@ -772,6 +776,7 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
           errorRuns++;
         })
         .finally(() => {
+          if (!_runFailed && !isDirectPath) agentCb.recordSuccess();
           activeRunControllers.delete(runId);
           if (!timedOut) {
             clearTimeout(timeoutHandle);
