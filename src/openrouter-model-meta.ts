@@ -7,6 +7,9 @@
  *
  * Same 6-hour TTL as the context window cache. Shares the same fetch request.
  */
+import fs from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
 
 export interface LiveModelMeta {
   supportedParameters: string[];   // e.g. ["tools", "response_format", "reasoning"]
@@ -22,6 +25,43 @@ let _metaCachedAt = 0;
 let _metaFetchInFlight: Promise<void> | null = null;
 const META_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
+/** Path of the on-disk model metadata cache. */
+const META_DISK_CACHE_PATH = path.join(os.homedir(), ".orager", "model-meta-cache.json");
+
+/** Load the disk cache into the in-memory cache. Returns true if cache was valid and loaded. */
+async function loadFromDiskCache(): Promise<boolean> {
+  try {
+    const raw = await fs.readFile(META_DISK_CACHE_PATH, "utf8");
+    const data = JSON.parse(raw) as {
+      cachedAt?: number;
+      entries?: Array<[string, LiveModelMeta]>;
+    };
+    if (typeof data.cachedAt !== "number" || !Array.isArray(data.entries)) return false;
+    if (Date.now() - data.cachedAt >= META_CACHE_TTL_MS) return false; // stale
+    for (const [id, meta] of data.entries) {
+      _metaCache.set(id, meta);
+    }
+    _metaCachedAt = data.cachedAt;
+    return true;
+  } catch {
+    return false; // file missing, corrupt, or unreadable — silently skip
+  }
+}
+
+/** Persist the in-memory cache to disk (fire-and-forget, non-fatal). */
+async function saveToDiskCache(): Promise<void> {
+  try {
+    await fs.mkdir(path.dirname(META_DISK_CACHE_PATH), { recursive: true });
+    const data = {
+      cachedAt: _metaCachedAt,
+      entries: Array.from(_metaCache.entries()),
+    };
+    await fs.writeFile(META_DISK_CACHE_PATH, JSON.stringify(data), { encoding: "utf8", mode: 0o600 });
+  } catch {
+    // Non-fatal — silently skip
+  }
+}
+
 /**
  * Fetch and populate the live model metadata cache.
  * Skips if cache is fresh (within TTL). Safe to call multiple times.
@@ -30,6 +70,13 @@ export async function fetchLiveModelMeta(apiKey: string): Promise<void> {
   const now = Date.now();
   if (_metaCachedAt > 0 && now - _metaCachedAt < META_CACHE_TTL_MS) return;
   if (_metaFetchInFlight) return _metaFetchInFlight;
+
+  // Try disk cache first — avoids a network round-trip if the daemon was
+  // recently restarted and the on-disk cache is still within its TTL.
+  if (_metaCachedAt === 0) {
+    const loaded = await loadFromDiskCache();
+    if (loaded) return; // disk cache is fresh — skip network fetch
+  }
 
   _metaFetchInFlight = (async () => {
     try {
@@ -73,6 +120,7 @@ export async function fetchLiveModelMeta(apiKey: string): Promise<void> {
         });
       }
       _metaCachedAt = Date.now();
+      void saveToDiskCache(); // persist to disk for next daemon restart
     } catch {
       // Network failure — silently fall back to static table
     } finally {
