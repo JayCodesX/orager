@@ -230,6 +230,15 @@ export async function fetchModelContextLengths(apiKey: string): Promise<void> {
   return modelCacheFetchInFlight;
 }
 
+/**
+ * Returns true when the model context-length cache has been populated and is
+ * still within its TTL. Used by runAgentLoop to skip the fetch on subsequent
+ * runs when the daemon has already warmed the cache at startup.
+ */
+export function isModelContextCacheWarm(): boolean {
+  return modelCacheFetchedAt > 0 && Date.now() - modelCacheFetchedAt < MODEL_CACHE_TTL_MS;
+}
+
 export function getContextWindowFromFallback(model: string): number {
   for (const [re, size] of CONTEXT_WINDOW_FALLBACK) {
     if (re.test(model)) return size;

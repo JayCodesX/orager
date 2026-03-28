@@ -26,7 +26,7 @@ import path from "node:path";
 import { loadSession, saveSession, newSessionId, acquireSessionLock } from "./session.js";
 import { callWithRetry } from "./retry.js";
 import { fetchGenerationMeta, shouldUseDirect } from "./openrouter.js";
-import { fetchLiveModelMeta, getLiveModelPricing, liveModelSupportsTools } from "./openrouter-model-meta.js";
+import { fetchLiveModelMeta, getLiveModelPricing, isLiveModelMetaCacheWarm, liveModelSupportsTools } from "./openrouter-model-meta.js";
 import { recordProviderSuccess } from "./provider-health.js";
 import { loadSkillsFromDirs, buildSkillsSystemPrompt, buildSkillTools } from "./skills.js";
 import { ALL_TOOLS, finishTool, BROWSER_TOOLS } from "./tools/index.js";
@@ -48,6 +48,7 @@ import {
   estimateTokens,
   fetchModelContextLengths,
   getContextWindow,
+  isModelContextCacheWarm,
   MAX_SESSION_MESSAGES,
   summarizeSession,
   CACHE_TTL_MS,
@@ -59,24 +60,36 @@ import {
 // ── Agent loop ────────────────────────────────────────────────────────────────
 
 /**
- * Compute the effective per-tool timeout, taking into account both the
- * explicit `toolTimeouts` configuration and the remaining run-level budget.
+ * Compute the effective per-tool timeout given the run budget and per-tool overrides.
  *
- * Exported as a pure function for unit testing.  The `_effectiveToolTimeout`
- * closure inside `runAgentLoop` delegates to this.
+ * Exported as a pure, deterministic function for unit testing. Callers may
+ * pass the elapsed time either directly (`elapsedMs`) or as a start timestamp
+ * pair (`startMs` + optional `nowMs`). When both are provided, `elapsedMs`
+ * takes precedence.
  *
- * @param toolName    - The tool being executed.
+ * The `_effectiveToolTimeout` closure inside `runAgentLoop` delegates to this.
+ *
+ * @param toolName     - The tool being executed.
  * @param toolTimeouts - Per-tool explicit timeout map from AgentLoopOptions.
- * @param timeoutSec  - Run-level timeout from AgentLoopOptions (0 = unlimited).
- * @param elapsedMs   - Milliseconds elapsed since the loop started.
+ * @param timeoutSec   - Run-level timeout from AgentLoopOptions (0 = unlimited).
+ * @param elapsedMs    - Milliseconds elapsed since the loop started (preferred).
+ * @param startMs      - Loop start timestamp; used only when elapsedMs is omitted.
+ * @param nowMs        - Current timestamp (default: Date.now()); used with startMs.
  */
 export function computeToolBudgetTimeout(params: {
   toolName: string;
   toolTimeouts?: Record<string, number>;
   timeoutSec?: number;
-  elapsedMs: number;
+  elapsedMs?: number;
+  startMs?: number;
+  nowMs?: number;
 }): number | undefined {
-  const { toolName, toolTimeouts, timeoutSec, elapsedMs } = params;
+  const { toolName, toolTimeouts, timeoutSec, nowMs } = params;
+  const elapsedMs =
+    params.elapsedMs ??
+    (params.startMs !== undefined
+      ? (nowMs ?? Date.now()) - params.startMs
+      : 0);
   const explicit = toolTimeouts?.[toolName];
   if (timeoutSec && timeoutSec > 0) {
     const remainingMs = timeoutSec * 1000 - elapsedMs;
@@ -187,7 +200,9 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   // Skipped for the direct Anthropic path — the OpenRouter /models endpoint requires an
   // OpenRouter key and returns no data the direct path can use. The static fallback map
   // (200k for anthropic/* models) is authoritative and used instead.
-  if (!shouldUseDirect(model)) {
+  // Also skipped when both caches are warm (e.g. pre-warmed at daemon startup) to avoid
+  // the function-call overhead on every run in long-lived daemon processes.
+  if (!shouldUseDirect(model) && !(isModelContextCacheWarm() && isLiveModelMetaCacheWarm())) {
     await Promise.all([
       fetchModelContextLengths(apiKey),
       fetchLiveModelMeta(apiKey),
