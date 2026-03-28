@@ -6,6 +6,7 @@ import type { EmitEvent, OpenRouterCallResult, ToolCall } from "../src/types.js"
 
 vi.mock("../src/openrouter.js", () => ({
   callOpenRouter: vi.fn(),
+  shouldUseDirect: vi.fn().mockReturnValue(false),
 }));
 
 vi.mock("../src/session.js", () => ({

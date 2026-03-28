@@ -62,6 +62,20 @@ export async function loadSettings(settingsPath?: string): Promise<OragerSetting
         }
       }
     }
+    if (settings.permissions) {
+      // Warn on permission keys that don't look like valid tool names.
+      // Tool names should be snake_case identifiers (letters, digits, underscores).
+      // This catches common typos like "bsh" (should be "bash") and keys that are
+      // clearly not tool names (paths, URLs, multi-word phrases).
+      const TOOL_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_]*$/;
+      for (const key of Object.keys(settings.permissions)) {
+        if (!TOOL_NAME_RE.test(key)) {
+          process.stderr.write(
+            `[orager] WARNING: permission key '${key}' in settings does not look like a tool name (expected snake_case identifier) — verify spelling\n`,
+          );
+        }
+      }
+    }
     _cache.set(filePath, { mtime, settings });
     return settings;
   } catch {

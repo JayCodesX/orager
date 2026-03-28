@@ -21,7 +21,7 @@ import type {
 
 // ── Module mocks ───────────────────────────────────────────────────────────
 
-vi.mock("../../src/openrouter.js", () => ({ callOpenRouter: vi.fn() }));
+vi.mock("../../src/openrouter.js", () => ({ callOpenRouter: vi.fn(), shouldUseDirect: vi.fn().mockReturnValue(false) }));
 
 vi.mock("../../src/session.js", () => ({
   loadSession: vi.fn().mockResolvedValue(null),

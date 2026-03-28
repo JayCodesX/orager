@@ -4,6 +4,7 @@ import type { OpenRouterCallResult } from "../src/types.js";
 
 vi.mock("../src/openrouter.js", () => ({
   callOpenRouter: vi.fn(),
+  shouldUseDirect: vi.fn().mockReturnValue(false),
 }));
 
 const { callOpenRouter } = await import("../src/openrouter.js");

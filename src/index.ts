@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import process from "node:process";
 import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { runAgentLoop } from "./loop.js";
 import { emit } from "./emit.js";
 import { loadToolsFromFile } from "./tools/load-tools.js";
@@ -18,6 +20,7 @@ import type { CliOptions, EmitResultEvent, TurnModelRule, UserMessageContentBloc
 import { startDaemon } from "./daemon.js";
 import { applyProfileAsync } from "./profiles.js";
 import { initTelemetry } from "./telemetry.js";
+import { runSetupWizard } from "./setup.js";
 
 // ── Stdin reading ────────────────────────────────────────────────────────────
 
@@ -314,6 +317,39 @@ function parseArgs(argv: string[]): CliOptions {
       }
       case "--settings-file": {
         opts.settingsFile = argv[++i];
+        break;
+      }
+      case "--plan-mode": {
+        opts.planMode = true;
+        break;
+      }
+      case "--inject-context": {
+        opts.injectContext = true;
+        break;
+      }
+      case "--enable-browser-tools": {
+        opts.enableBrowserTools = true;
+        break;
+      }
+      case "--track-file-changes": {
+        opts.trackFileChanges = true;
+        break;
+      }
+      case "--tag-tool-outputs": {
+        opts.tagToolOutputs = true;
+        break;
+      }
+      case "--no-tag-tool-outputs": {
+        opts.tagToolOutputs = false;
+        break;
+      }
+      case "--hook-error-mode": {
+        const v = argv[++i];
+        if (v === "ignore" || v === "warn" || v === "fail") opts.hookErrorMode = v;
+        break;
+      }
+      case "--tool-error-budget-hard-stop": {
+        opts.toolErrorBudgetHardStop = true;
         break;
       }
       case "--prune-sessions": {
@@ -855,12 +891,55 @@ async function loadConfigFile(filePath: string): Promise<{
   return result;
 }
 
+// ── User config file (~/.orager/config.json) ─────────────────────────────────
+// Loaded once at startup as base defaults. CLI flags and --config-file always
+// win over user config (user config is prepended to argv so it comes first).
+// The file is NOT deleted — it is a persistent configuration file.
+
+const USER_CONFIG_PATH = path.join(os.homedir(), ".orager", "config.json");
+
+async function loadUserConfig(): Promise<{
+  args: string[];
+  [key: string]: unknown;
+}> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(USER_CONFIG_PATH, "utf8");
+  } catch {
+    return { args: [] }; // file doesn't exist — silently skip
+  }
+  let cfg: ConfigFileSchema;
+  try {
+    cfg = JSON.parse(raw) as ConfigFileSchema;
+  } catch {
+    process.stderr.write(`[orager] WARNING: ~/.orager/config.json contains invalid JSON — ignoring\n`);
+    return { args: [] };
+  }
+  // Reuse loadConfigFile's parsing logic but without the read/delete steps.
+  // We write a temporary file and call loadConfigFile so the conversion logic
+  // stays in one place. We use a temp path guaranteed not to contain secrets.
+  const tmpPath = path.join(os.tmpdir(), `.orager-userconfig-${process.pid}.json`);
+  try {
+    await fs.writeFile(tmpPath, JSON.stringify(cfg), { mode: 0o600 });
+    const result = await loadConfigFile(tmpPath);
+    return result;
+  } catch {
+    return { args: [] };
+  }
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
   await initTelemetry();
 
   let argv = process.argv.slice(2);
+
+  // ── Setup wizard ─────────────────────────────────────────────────────────────
+  if (argv[0] === "setup") {
+    await runSetupWizard(argv.slice(1));
+    return;
+  }
 
   // ── Daemon mode ─────────────────────────────────────────────────────────────
   if (argv.includes("--serve")) {
@@ -909,6 +988,35 @@ async function main(): Promise<void> {
   if (argv.includes("--delete-trashed"))   { await handleDeleteTrashed();       return; }
   if (argv.includes("--rollback-session")) { await handleRollbackSession(argv); return; }
   if (argv.includes("--prune-sessions"))   { await handlePrune(argv);           return; }
+
+  // ── User config (~/.orager/config.json) — base defaults ──────────────────
+  // Loaded before CLI flags so that explicit args always win. The file is
+  // NOT deleted and must not contain secrets (use config-file for those).
+  {
+    const userCfg = await loadUserConfig();
+    // Prepend so CLI flags (and --config-file expansion below) override them
+    if (userCfg.args.length > 0) {
+      argv = [...userCfg.args, ...argv];
+    }
+    // Complex types that can't be argv tokens — set only when not already set
+    const G = globalThis as Record<string, unknown>;
+    if (userCfg.turnModelRules && !G.__oragerTurnModelRules)     G.__oragerTurnModelRules = userCfg.turnModelRules;
+    if (userCfg.promptContent  && !G.__oragerPromptContent)      G.__oragerPromptContent  = userCfg.promptContent;
+    if (userCfg.mcpServers     && !G.__oragerMcpServers)         G.__oragerMcpServers     = userCfg.mcpServers;
+    if (userCfg.hooks          && !G.__oragerHooks)              G.__oragerHooks          = userCfg.hooks;
+    if (userCfg.bashPolicy     && !G.__oragerBashPolicy)         G.__oragerBashPolicy     = userCfg.bashPolicy;
+    if (userCfg.planMode   !== undefined && !G.__oragerPlanMode)   G.__oragerPlanMode   = userCfg.planMode;
+    if (userCfg.injectContext !== undefined && !G.__oragerInjectContext) G.__oragerInjectContext = userCfg.injectContext;
+    if (userCfg.tagToolOutputs !== undefined && !G.__oragerTagToolOutputs) G.__oragerTagToolOutputs = userCfg.tagToolOutputs;
+    if (userCfg.trackFileChanges !== undefined && !G.__oragerTrackFileChanges) G.__oragerTrackFileChanges = userCfg.trackFileChanges;
+    if (userCfg.enableBrowserTools !== undefined && !G.__oragerEnableBrowserTools) G.__oragerEnableBrowserTools = userCfg.enableBrowserTools;
+    if (userCfg.memory !== undefined && !G.__oragerMemory) G.__oragerMemory = userCfg.memory;
+    if (userCfg.memoryKey && !G.__oragerMemoryKey)         G.__oragerMemoryKey = userCfg.memoryKey;
+    if (userCfg.memoryMaxChars !== undefined && !G.__oragerMemoryMaxChars) G.__oragerMemoryMaxChars = userCfg.memoryMaxChars;
+    if (userCfg.apiKeys && !G.__oragerApiKeys)             G.__oragerApiKeys = userCfg.apiKeys;
+    if (userCfg.webhookUrl && !G.__oragerWebhookUrl)       G.__oragerWebhookUrl = userCfg.webhookUrl;
+    if (userCfg.maxCostUsdSoft !== undefined && !G.__oragerMaxCostUsdSoft) G.__oragerMaxCostUsdSoft = userCfg.maxCostUsdSoft;
+  }
 
   // ── Config file expansion ──────────────────────────────────────────────────
   // If --config-file <path> is present, load the JSON config, delete the file,
@@ -1202,20 +1310,20 @@ async function main(): Promise<void> {
     toolErrorBudgetHardStop: (globalThis as Record<string, unknown>).__oragerToolErrorBudgetHardStop as boolean | undefined ?? opts.toolErrorBudgetHardStop,
     response_format: (globalThis as Record<string, unknown>).__oragerResponseFormat as AgentLoopOptions["response_format"] | undefined,
     hooks: (globalThis as Record<string, unknown>).__oragerHooks as AgentLoopOptions["hooks"] | undefined,
-    planMode: (globalThis as Record<string, unknown>).__oragerPlanMode as boolean | undefined,
-    injectContext: (globalThis as Record<string, unknown>).__oragerInjectContext as boolean | undefined,
-    tagToolOutputs: (globalThis as Record<string, unknown>).__oragerTagToolOutputs as boolean | undefined,
+    planMode: (globalThis as Record<string, unknown>).__oragerPlanMode as boolean | undefined ?? opts.planMode,
+    injectContext: (globalThis as Record<string, unknown>).__oragerInjectContext as boolean | undefined ?? opts.injectContext,
+    tagToolOutputs: (globalThis as Record<string, unknown>).__oragerTagToolOutputs as boolean | undefined ?? opts.tagToolOutputs,
     readProjectInstructions: (globalThis as Record<string, unknown>).__oragerReadProjectInstructions as boolean | undefined,
     summarizePrompt: (globalThis as Record<string, unknown>).__oragerSummarizePrompt as string | undefined,
     summarizeFallbackKeep: (globalThis as Record<string, unknown>).__oragerSummarizeFallbackKeep as number | undefined,
     webhookUrl: (globalThis as Record<string, unknown>).__oragerWebhookUrl as string | undefined,
     bashPolicy: (globalThis as Record<string, unknown>).__oragerBashPolicy as AgentLoopOptions["bashPolicy"] | undefined,
-    trackFileChanges: (globalThis as Record<string, unknown>).__oragerTrackFileChanges as boolean | undefined,
-    enableBrowserTools: (globalThis as Record<string, unknown>).__oragerEnableBrowserTools as boolean | undefined,
+    trackFileChanges: (globalThis as Record<string, unknown>).__oragerTrackFileChanges as boolean | undefined ?? opts.trackFileChanges,
+    enableBrowserTools: (globalThis as Record<string, unknown>).__oragerEnableBrowserTools as boolean | undefined ?? opts.enableBrowserTools,
     maxCostUsdSoft: (globalThis as Record<string, unknown>).__oragerMaxCostUsdSoft as number | undefined,
     approvalTimeoutMs: (globalThis as Record<string, unknown>).__oragerApprovalTimeoutMs as number | undefined,
     hookTimeoutMs: (globalThis as Record<string, unknown>).__oragerHookTimeoutMs as number | undefined,
-    hookErrorMode: (globalThis as Record<string, unknown>).__oragerHookErrorMode as AgentLoopOptions["hookErrorMode"] | undefined,
+    hookErrorMode: (globalThis as Record<string, unknown>).__oragerHookErrorMode as AgentLoopOptions["hookErrorMode"] | undefined ?? opts.hookErrorMode,
     timeoutSec: opts.timeoutSec,
     apiKeys: (globalThis as Record<string, unknown>).__oragerApiKeys as string[] | undefined,
     requiredEnvVars: opts.requiredEnvVars,
