@@ -17,7 +17,7 @@ import { connectAllMcpServers } from "./mcp-client.js";
 import type { McpClientHandle } from "./mcp-client.js";
 import { makeTodoTools } from "./tools/todo.js";
 import { makeRememberTool } from "./tools/remember.js";
-import { loadMemoryStore, pruneExpired, renderMemoryBlock, renderRetrievedBlock, retrieveEntries, memoryKeyFromCwd } from "./memory.js";
+import { loadMemoryStore, pruneExpired, renderMemoryBlock, renderRetrievedBlock, retrieveEntries, retrieveEntriesWithEmbeddings, memoryKeyFromCwd } from "./memory.js";
 import { runHook } from "./hooks.js";
 import type { HookConfig } from "./hooks.js";
 import { loadSettings, mergeSettings, loadClaudeDesktopMcpServers } from "./settings.js";
@@ -25,7 +25,7 @@ import { exitPlanModeTool, PLAN_MODE_TOOL_NAME } from "./tools/plan.js";
 import path from "node:path";
 import { loadSession, saveSession, newSessionId, acquireSessionLock } from "./session.js";
 import { callWithRetry } from "./retry.js";
-import { fetchGenerationMeta, shouldUseDirect } from "./openrouter.js";
+import { fetchGenerationMeta, shouldUseDirect, callEmbeddings } from "./openrouter.js";
 import { fetchLiveModelMeta, getLiveModelPricing, isLiveModelMetaCacheWarm, liveModelSupportsTools } from "./openrouter-model-meta.js";
 import { recordProviderSuccess } from "./provider-health.js";
 import { loadSkillsFromDirs, buildSkillsSystemPrompt, buildSkillTools } from "./skills.js";
@@ -407,17 +407,41 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       const threshold = typeof opts.memoryRetrievalThreshold === "number"
         ? opts.memoryRetrievalThreshold
         : 15;
-      const memBlock = memStore.entries.length <= threshold
-        ? renderMemoryBlock(memStore, memoryMaxChars)
-        : renderRetrievedBlock(
-            retrieveEntries(memStore, prompt, { topK: 12 }),
+      const retrieval = opts.memoryRetrieval ?? "local";
+      let memBlock: string;
+      if (retrieval === "embedding" && opts.memoryEmbeddingModel && apiKey) {
+        try {
+          const [queryVec] = await callEmbeddings(apiKey, opts.memoryEmbeddingModel, [prompt]);
+          memBlock = renderRetrievedBlock(
+            retrieveEntriesWithEmbeddings(memStore, queryVec, { topK: 12 }),
             memoryMaxChars,
           );
+        } catch {
+          // Fall back to Phase 1 on embedding API failure
+          memBlock = memStore.entries.length <= threshold
+            ? renderMemoryBlock(memStore, memoryMaxChars)
+            : renderRetrievedBlock(retrieveEntries(memStore, prompt, { topK: 12 }), memoryMaxChars);
+        }
+      } else {
+        // Phase 1 path (existing logic from Phase 1)
+        memBlock = memStore.entries.length <= threshold
+          ? renderMemoryBlock(memStore, memoryMaxChars)
+          : renderRetrievedBlock(
+              retrieveEntries(memStore, prompt, { topK: 12 }),
+              memoryMaxChars,
+            );
+      }
       if (memBlock) {
         systemPrompt += "\n\n## Your persistent memory\n\n" + memBlock;
       }
     } catch { /* non-fatal — memory load failure must never abort a run */ }
-    allTools.push(makeRememberTool(effectiveMemoryKey, memoryMaxChars));
+    allTools.push(makeRememberTool(
+      effectiveMemoryKey,
+      memoryMaxChars,
+      opts.memoryRetrieval === "embedding" && opts.memoryEmbeddingModel
+        ? { apiKey, model: opts.memoryEmbeddingModel }
+        : null,
+    ));
   }
 
   // Warn about duplicate tool names (first definition wins via find())
