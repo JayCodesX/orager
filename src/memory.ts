@@ -100,6 +100,101 @@ export function renderMemoryBlock(store: MemoryStore, maxChars = 6000): string {
   return lastNewline > 0 ? truncated.slice(0, lastNewline) : "";
 }
 
+// ── Retrieval ─────────────────────────────────────────────────────────────────
+
+const STOP_WORDS = new Set([
+  "the","a","an","is","it","to","of","and","or","in","on","at","for","with",
+  "this","that","was","are","be","by","as","from","but","not","has","have",
+  "had","do","did","will","would","could","should","can","may","might",
+]);
+
+/**
+ * Lowercases, splits on whitespace and punctuation, removes stop words,
+ * and returns unique tokens with length >= 3.
+ */
+export function buildQuery(text: string): string[] {
+  const tokens = text.toLowerCase().split(/[\s\p{P}]+/u);
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const tok of tokens) {
+    if (tok.length >= 3 && !STOP_WORDS.has(tok) && !seen.has(tok)) {
+      seen.add(tok);
+      result.push(tok);
+    }
+  }
+  return result;
+}
+
+/**
+ * Scores a memory entry against a set of query tokens.
+ * Combines term overlap, importance weight, and recency decay.
+ */
+export function scoreEntry(entry: MemoryEntry, queryTokens: string[]): number {
+  const contentLower = entry.content.toLowerCase();
+  const matchCount = queryTokens.filter((tok) => contentLower.includes(tok)).length;
+  const termOverlap = matchCount / Math.max(queryTokens.length, 1);
+
+  const importanceWeight = entry.importance === 3 ? 1.5 : entry.importance === 2 ? 1.0 : 0.6;
+
+  const days = (Date.now() - Date.parse(entry.createdAt)) / 86400000;
+  const recencyDecay = 1 / (1 + days / 30);
+
+  return termOverlap * importanceWeight * recencyDecay;
+}
+
+/**
+ * Retrieves the most relevant entries for a query.
+ * Falls back to importance+recency sort when queryTokens is empty.
+ */
+export function retrieveEntries(
+  store: MemoryStore,
+  query: string,
+  opts?: { topK?: number; minScore?: number },
+): MemoryEntry[] {
+  const topK = opts?.topK ?? 12;
+  const minScore = opts?.minScore ?? 0.0;
+  const queryTokens = buildQuery(query);
+
+  if (queryTokens.length === 0) {
+    // Fall back to importance+recency sort
+    return [...store.entries]
+      .sort((a, b) => {
+        if (b.importance !== a.importance) return b.importance - a.importance;
+        return b.createdAt.localeCompare(a.createdAt);
+      })
+      .slice(0, topK);
+  }
+
+  return store.entries
+    .map((entry) => ({ entry, score: scoreEntry(entry, queryTokens) }))
+    .filter(({ score }) => score >= minScore)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topK)
+    .map(({ entry }) => entry);
+}
+
+/**
+ * Same format as renderMemoryBlock but operates on a pre-filtered list.
+ * Re-numbers entries [1], [2], ...
+ */
+export function renderRetrievedBlock(entries: MemoryEntry[], maxChars = 6000): string {
+  if (entries.length === 0) return "";
+
+  const lines: string[] = [];
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    const tagPart = e.tags && e.tags.length > 0 ? `, tags: ${e.tags.join(", ")}` : "";
+    lines.push(`[${i + 1}] (id: ${e.id}, importance: ${e.importance}${tagPart}) ${e.content}`);
+  }
+
+  let result = lines.join("\n");
+  if (result.length <= maxChars) return result;
+
+  const truncated = result.slice(0, maxChars);
+  const lastNewline = truncated.lastIndexOf("\n");
+  return lastNewline > 0 ? truncated.slice(0, lastNewline) : "";
+}
+
 // ── Writes ────────────────────────────────────────────────────────────────────
 
 /** Adds an entry. Returns a new store — original is unchanged. */
