@@ -17,7 +17,7 @@ import {
   searchSessions,
 } from "./session.js";
 import type { CliOptions, EmitResultEvent, TurnModelRule, UserMessageContentBlock, AgentLoopOptions } from "./types.js";
-import { startDaemon } from "./daemon.js";
+import { startDaemon, readDaemonPort } from "./daemon.js";
 import { applyProfileAsync } from "./profiles.js";
 import { initTelemetry } from "./telemetry.js";
 import { runSetupWizard } from "./setup.js";
@@ -398,6 +398,38 @@ process.on("SIGINT", () => handleInterrupt("SIGINT"));
 process.on("SIGTERM", () => handleInterrupt("SIGTERM"));
 
 // ── Main ─────────────────────────────────────────────────────────────────────
+
+// ── Status command ────────────────────────────────────────────────────────────
+
+async function handleStatus(): Promise<void> {
+  const port = await readDaemonPort();
+  if (!port) {
+    process.stdout.write("orager daemon: not running (no port file found)\n");
+    process.exit(1);
+  }
+
+  const url = `http://127.0.0.1:${port}`;
+  try {
+    const res = await fetch(`${url}/health`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (res.ok) {
+      process.stdout.write(`orager daemon: running on port ${port}\n`);
+      process.stdout.write(`  url: ${url}\n`);
+      process.exit(0);
+    } else {
+      process.stdout.write(
+        `orager daemon: port file found (port ${port}) but /health returned HTTP ${res.status}\n`,
+      );
+      process.exit(1);
+    }
+  } catch {
+    process.stdout.write(
+      `orager daemon: port file found (port ${port}) but daemon is not responding (connection refused or timeout)\n`,
+    );
+    process.exit(1);
+  }
+}
 
 // ── Session management subcommands ───────────────────────────────────────────
 
@@ -978,6 +1010,9 @@ async function main(): Promise<void> {
     // startDaemon never returns (server keeps process alive)
     return;
   }
+
+  // ── Status command ────────────────────────────────────────────────────────
+  if (argv.includes("--status")) { await handleStatus(); return; }
 
   // Session management commands — no API key needed
   if (argv.includes("--list-sessions"))    { await handleListSessions();         return; }

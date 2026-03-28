@@ -32,7 +32,7 @@ export interface CircuitBreakerOptions {
 
 export class CircuitBreaker {
   private state: CircuitState = "closed";
-  private consecutiveFailures = 0;
+  consecutiveFailures = 0;
   private openedAt = 0;
   private _halfOpenInFlight = false;
 
@@ -146,4 +146,25 @@ export function clearAgentCircuitBreaker(agentId: string): void {
 /** Clear ALL per-agent circuit breakers — intended for test teardown only. */
 export function clearAllAgentCircuitBreakers(): void {
   _agentCircuitBreakers.clear();
+}
+
+/**
+ * Returns a snapshot of all per-agent circuit breaker states.
+ * Used by the daemon /metrics endpoint so operators can see which agents
+ * are currently experiencing circuit-open conditions.
+ */
+export function getAllAgentCircuitBreakerStates(): Record<string, {
+  state: string;
+  consecutiveFailures: number;
+  retryInMs: number;
+}> {
+  const result: Record<string, { state: string; consecutiveFailures: number; retryInMs: number }> = {};
+  for (const [agentId, cb] of _agentCircuitBreakers) {
+    result[agentId] = {
+      state: cb.currentState,
+      consecutiveFailures: cb.consecutiveFailures,
+      retryInMs: cb.retryInMs,
+    };
+  }
+  return result;
 }

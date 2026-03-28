@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { CircuitBreaker, getAgentCircuitBreaker, clearAllAgentCircuitBreakers } from "../src/circuit-breaker.js";
+import { CircuitBreaker, getAgentCircuitBreaker, clearAllAgentCircuitBreakers, getAllAgentCircuitBreakerStates } from "../src/circuit-breaker.js";
 
 describe("CircuitBreaker", () => {
   let cb: CircuitBreaker;
@@ -205,5 +205,34 @@ describe("daemon run pattern — circuit breaker state transitions (T-gap2)", ()
 
     expect(getAgentCircuitBreaker(agentA).isOpen()).toBe(true);
     expect(getAgentCircuitBreaker(agentB).isOpen()).toBe(false);
+  });
+});
+
+describe("getAllAgentCircuitBreakerStates — metrics snapshot", () => {
+  afterEach(() => {
+    clearAllAgentCircuitBreakers();
+  });
+
+  it("returns empty object when no agents have circuit breakers", () => {
+    clearAllAgentCircuitBreakers();
+    const states = getAllAgentCircuitBreakerStates();
+    expect(Object.keys(states)).toHaveLength(0);
+  });
+
+  it("includes state for agents with circuit breakers", () => {
+    const cb = getAgentCircuitBreaker("agent-metrics-test");
+    cb.recordFailure();
+    const states = getAllAgentCircuitBreakerStates();
+    expect(states["agent-metrics-test"]).toBeDefined();
+    expect(states["agent-metrics-test"]!.state).toBe("closed");
+    expect(states["agent-metrics-test"]!.consecutiveFailures).toBe(1);
+  });
+
+  it("reports open state and positive retryInMs for a tripped circuit", () => {
+    const cb = getAgentCircuitBreaker("agent-tripped-metrics");
+    cb.recordFailure(); cb.recordFailure(); cb.recordFailure();
+    const states = getAllAgentCircuitBreakerStates();
+    expect(states["agent-tripped-metrics"]!.state).toBe("open");
+    expect(states["agent-tripped-metrics"]!.retryInMs).toBeGreaterThan(0);
   });
 });

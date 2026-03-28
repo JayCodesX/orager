@@ -83,6 +83,15 @@ export async function fetchLiveModelMeta(apiKey: string): Promise<void> {
   return _metaFetchInFlight;
 }
 
+/**
+ * Returns true when the live model metadata cache has been populated and is
+ * still within its TTL. Used by runAgentLoop to skip the fetch on subsequent
+ * runs when the daemon has already warmed the cache at startup.
+ */
+export function isLiveModelMetaCacheWarm(): boolean {
+  return _metaCachedAt > 0 && Date.now() - _metaCachedAt < META_CACHE_TTL_MS;
+}
+
 /** Get cached metadata for a model (null if not cached yet). */
 export function getLiveModelMeta(model: string): LiveModelMeta | null {
   // Try exact match first, then strip provider prefix
