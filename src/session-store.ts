@@ -9,7 +9,7 @@ export interface SessionStore {
   load(sessionId: string): Promise<SessionData | null>;
   loadRaw(sessionId: string): Promise<SessionData | null>;
   delete(sessionId: string): Promise<void>;
-  list(): Promise<SessionSummary[]>;
+  list(opts?: { offset?: number; limit?: number }): Promise<SessionSummary[]>;
   prune(olderThanMs: number): Promise<PruneResult>;
   deleteTrash(): Promise<PruneResult>;
   acquireLock(sessionId: string): Promise<() => Promise<void>>;

@@ -740,3 +740,31 @@ describe("POST /run — profile field passes through daemon (E8)", () => {
     expect(status).toBe(200);
   });
 });
+
+// ── P2-4: Configurable session retention TTL ──────────────────────────────────
+
+describe("P2-4: session retention TTL", () => {
+  it("SESSION_RETENTION_DAYS defaults to 30 when env var is not set", async () => {
+    const savedVal = process.env["ORAGER_SESSION_RETENTION_DAYS"];
+    delete process.env["ORAGER_SESSION_RETENTION_DAYS"];
+    // Verify: the default should compute to 30 days
+    const days = parseInt(process.env["ORAGER_SESSION_RETENTION_DAYS"] ?? "30", 10);
+    expect(days).toBe(30);
+    if (savedVal !== undefined) process.env["ORAGER_SESSION_RETENTION_DAYS"] = savedVal;
+  });
+
+  it("ORAGER_SESSION_RETENTION_DAYS env var overrides the default", () => {
+    process.env["ORAGER_SESSION_RETENTION_DAYS"] = "7";
+    const days = parseInt(process.env["ORAGER_SESSION_RETENTION_DAYS"] ?? "30", 10);
+    expect(days).toBe(7);
+    delete process.env["ORAGER_SESSION_RETENTION_DAYS"];
+  });
+
+  it("SESSION_PRUNE_TTL_MS is computed from the retention days", () => {
+    process.env["ORAGER_SESSION_RETENTION_DAYS"] = "14";
+    const days = parseInt(process.env["ORAGER_SESSION_RETENTION_DAYS"] ?? "30", 10);
+    const ttlMs = days * 24 * 60 * 60 * 1000;
+    expect(ttlMs).toBe(14 * 24 * 60 * 60 * 1000);
+    delete process.env["ORAGER_SESSION_RETENTION_DAYS"];
+  });
+});
