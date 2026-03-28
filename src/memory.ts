@@ -12,6 +12,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
+import {
+  isSqliteMemoryEnabled,
+  loadMemoryStoreSqlite,
+  saveMemoryStoreSqlite,
+} from "./memory-sqlite.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -316,4 +321,22 @@ export function memoryKeyFromCwd(cwd: string): string {
   const hash = crypto.createHash("sha1").update(cwd).digest("hex").slice(0, 12);
   const label = path.basename(cwd).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 32);
   return `${label}_${hash}`;
+}
+
+// ── Storage router ────────────────────────────────────────────────────────────
+
+/**
+ * Load memory store from SQLite when ORAGER_DB_PATH is set, otherwise from JSON file.
+ */
+export async function loadMemoryStoreAny(memoryKey: string): Promise<MemoryStore> {
+  if (isSqliteMemoryEnabled()) return loadMemoryStoreSqlite(memoryKey);
+  return loadMemoryStore(memoryKey);
+}
+
+/**
+ * Save memory store to SQLite when ORAGER_DB_PATH is set, otherwise to JSON file.
+ */
+export async function saveMemoryStoreAny(memoryKey: string, store: MemoryStore): Promise<void> {
+  if (isSqliteMemoryEnabled()) { saveMemoryStoreSqlite(memoryKey, store); return; }
+  await saveMemoryStore(memoryKey, store);
 }

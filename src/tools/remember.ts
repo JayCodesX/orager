@@ -8,14 +8,19 @@
  * Storage: ~/.orager/memory/<memoryKey>.json (atomic writes, mode 0o600)
  */
 import {
-  loadMemoryStore,
-  saveMemoryStore,
+  loadMemoryStoreAny,
+  saveMemoryStoreAny,
   addMemoryEntry,
   removeMemoryEntry,
   pruneExpired,
   renderMemoryBlock,
   embedEntryIfNeeded,
 } from "../memory.js";
+import {
+  isSqliteMemoryEnabled,
+  addMemoryEntrySqlite,
+  removeMemoryEntrySqlite,
+} from "../memory-sqlite.js";
 import { callEmbeddings } from "../openrouter.js";
 import type { ToolExecutor, ToolResult } from "../types.js";
 
@@ -85,7 +90,7 @@ export function makeRememberTool(
       }
 
       // Load + prune on every call so the view is always fresh
-      let store = pruneExpired(await loadMemoryStore(memoryKey));
+      let store = pruneExpired(await loadMemoryStoreAny(memoryKey));
 
       if (action === "list") {
         const block = renderMemoryBlock(store, maxChars);
@@ -121,6 +126,22 @@ export function makeRememberTool(
             ? new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000).toISOString()
             : undefined;
 
+        if (isSqliteMemoryEnabled()) {
+          // Fast path: direct INSERT without load→mutate→save round-trip
+          const entryData = {
+            content,
+            ...(tags && tags.length > 0 ? { tags } : {}),
+            ...(expiresAt ? { expiresAt } : {}),
+            importance,
+          };
+          const saved = addMemoryEntrySqlite(memoryKey, entryData);
+          return {
+            toolCallId: "",
+            content: `Memory saved (id: ${saved.id}, importance: ${importance}${tags && tags.length > 0 ? `, tags: ${tags.join(", ")}` : ""}): ${content}`,
+            isError: false,
+          };
+        }
+
         store = addMemoryEntry(store, {
           content,
           ...(tags && tags.length > 0 ? { tags } : {}),
@@ -146,7 +167,7 @@ export function makeRememberTool(
           }
         }
 
-        await saveMemoryStore(memoryKey, store);
+        await saveMemoryStoreAny(memoryKey, store);
 
         const saved = store.entries[store.entries.length - 1];
         return {
@@ -161,12 +182,22 @@ export function makeRememberTool(
         if (!id) {
           return { toolCallId: "", content: "id is required for action=remove", isError: true };
         }
+
+        if (isSqliteMemoryEnabled()) {
+          // Fast path: direct DELETE
+          const deleted = removeMemoryEntrySqlite(memoryKey, id);
+          if (!deleted) {
+            return { toolCallId: "", content: `No memory entry found with id: ${id}`, isError: false };
+          }
+          return { toolCallId: "", content: `Memory removed: ${id}`, isError: false };
+        }
+
         const before = store.entries.length;
         store = removeMemoryEntry(store, id);
         if (store.entries.length === before) {
           return { toolCallId: "", content: `No memory entry found with id: ${id}`, isError: false };
         }
-        await saveMemoryStore(memoryKey, store);
+        await saveMemoryStoreAny(memoryKey, store);
         return { toolCallId: "", content: `Memory removed: ${id}`, isError: false };
       }
 
