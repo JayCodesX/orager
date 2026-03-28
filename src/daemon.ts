@@ -30,7 +30,7 @@ import { runAgentLoop } from "./loop.js";
 import { mintJwt, verifyJwt, loadOrCreateSigningKey, KEY_PATH } from "./jwt.js";
 import { callOpenRouter } from "./openrouter.js";
 import type { EmitEvent, AgentLoopOptions } from "./types.js";
-import { ensureSessionsDirPermissions, pruneOldSessions, listSessions, searchSessions, getSessionsDir } from "./session.js";
+import { ensureSessionsDirPermissions, pruneOldSessions, listSessions, searchSessions, getSessionsDir, loadSessionRaw } from "./session.js";
 import { getAllProviderStats, getDegradedProviders } from "./provider-health.js";
 import { getRateLimitState } from "./rate-limit-tracker.js";
 import { initTelemetry } from "./telemetry.js";
@@ -217,10 +217,12 @@ const ALLOWED_DAEMON_OPTS = new Set<keyof AgentLoopOptions>([
   "injectContext", "readProjectInstructions",
   // Webhook (outbound result delivery)
   "webhookUrl",
-  // API keys (caller may supply extra rotation keys)
-  "apiKeys",
+  // API keys (caller may supply extra rotation keys or per-agent key isolation)
+  "apiKeys", "agentApiKey",
   // Memory
   "memory", "memoryKey", "memoryMaxChars",
+  // Session lock
+  "sessionLockTimeoutMs",
 ]);
 
 export function sanitizeDaemonRunOpts(raw: Record<string, unknown>): { safe: Record<string, unknown>; rejected: string[] } {
@@ -542,6 +544,31 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
             const results = await searchSessions(q.trim(), limit);
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ sessions: results, total: results.length, query: q }));
+            return;
+          }
+
+          // GET /sessions/:sessionId/cost — lifetime cost visibility
+          const sessionCostMatch = pathname.match(/^\/sessions\/([^/]+)\/cost$/);
+          if (sessionCostMatch) {
+            const sessionId = sessionCostMatch[1]!;
+            if (!/^[a-zA-Z0-9_-]{1,128}$/.test(sessionId)) {
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "invalid session id format" }));
+              return;
+            }
+            const sessionData = await loadSessionRaw(sessionId);
+            if (!sessionData) {
+              res.writeHead(404, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "session not found" }));
+              return;
+            }
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({
+              sessionId: sessionData.sessionId,
+              cumulativeCostUsd: sessionData.cumulativeCostUsd ?? 0,
+              lastRunAt: sessionData.updatedAt,
+              runCount: sessionData.turnCount,
+            }));
             return;
           }
 
