@@ -90,6 +90,11 @@ export interface OragerUserConfig {
   enableBrowserTools?: boolean;
   trackFileChanges?: boolean;
 
+  // Daemon defaults (applied when running orager --serve)
+  daemonPort?: number;
+  daemonMaxConcurrent?: number;
+  daemonIdleTimeout?: string;  // e.g. "30m", "1h"
+
   // Misc
   profile?: string;
   webhookUrl?: string;
@@ -301,10 +306,20 @@ async function customSetup(rl: readline.Interface): Promise<void> {
   // ── Section 5: Reasoning ──────────────────────────────────────────────────
   process.stdout.write("\n" + bold("5. Reasoning (for models that support extended thinking)\n"));
 
-  process.stdout.write(cyan("reasoningEffort") + dim(` [${displayValue(cfg.reasoningEffort ?? "(none)")}]`) + "\n");
-  process.stdout.write(dim("  Options: xhigh, high, medium, low, minimal, none\n"));
-  const re = await ask(rl, "  > ");
-  if (re.trim()) cfg.reasoningEffort = re.trim() as OragerUserConfig["reasoningEffort"];
+  {
+    const REASONING_EFFORT_VALUES = ["xhigh", "high", "medium", "low", "minimal", "none"] as const;
+    process.stdout.write(cyan("reasoningEffort") + dim(` [${displayValue(cfg.reasoningEffort ?? "(none)")}]`) + "\n");
+    process.stdout.write(dim("  Options: xhigh, high, medium, low, minimal, none  (blank = unset)\n"));
+    for (;;) {
+      const re = await ask(rl, "  > ");
+      if (!re.trim()) break;
+      if ((REASONING_EFFORT_VALUES as readonly string[]).includes(re.trim())) {
+        cfg.reasoningEffort = re.trim() as OragerUserConfig["reasoningEffort"];
+        break;
+      }
+      process.stdout.write(yellow(`  Invalid value "${re.trim()}". Choose from: ${REASONING_EFFORT_VALUES.join(", ")}\n`));
+    }
+  }
 
   process.stdout.write(cyan("reasoningMaxTokens") + dim(` [${displayValue(cfg.reasoningMaxTokens ?? "(none)")}]`) + "\n");
   const rmt = await ask(rl, "  > ");
@@ -331,13 +346,33 @@ async function customSetup(rl: readline.Interface): Promise<void> {
   const pig = await ask(rl, "  > ");
   if (pig.trim()) cfg.providerIgnore = parseCsvList(pig);
 
-  process.stdout.write(cyan("sort") + dim(` [${displayValue(cfg.sort ?? "(none)")}]`) + " — optimize for: price, throughput, latency\n");
-  const so = await ask(rl, "  > ");
-  if (so.trim()) cfg.sort = so.trim() as OragerUserConfig["sort"];
+  {
+    const SORT_VALUES = ["price", "throughput", "latency"] as const;
+    process.stdout.write(cyan("sort") + dim(` [${displayValue(cfg.sort ?? "(none)")}]`) + " — optimize for: price, throughput, latency  (blank = unset)\n");
+    for (;;) {
+      const so = await ask(rl, "  > ");
+      if (!so.trim()) break;
+      if ((SORT_VALUES as readonly string[]).includes(so.trim())) {
+        cfg.sort = so.trim() as OragerUserConfig["sort"];
+        break;
+      }
+      process.stdout.write(yellow(`  Invalid value "${so.trim()}". Choose from: ${SORT_VALUES.join(", ")}\n`));
+    }
+  }
 
-  process.stdout.write(cyan("dataCollection") + dim(` [${displayValue(cfg.dataCollection ?? "(none)")}]`) + " — allow | deny training on your prompts\n");
-  const dc = await ask(rl, "  > ");
-  if (dc.trim()) cfg.dataCollection = dc.trim() as "allow" | "deny";
+  {
+    const DC_VALUES = ["allow", "deny"] as const;
+    process.stdout.write(cyan("dataCollection") + dim(` [${displayValue(cfg.dataCollection ?? "(none)")}]`) + " — allow | deny training on your prompts  (blank = unset)\n");
+    for (;;) {
+      const dc = await ask(rl, "  > ");
+      if (!dc.trim()) break;
+      if ((DC_VALUES as readonly string[]).includes(dc.trim())) {
+        cfg.dataCollection = dc.trim() as "allow" | "deny";
+        break;
+      }
+      process.stdout.write(yellow(`  Invalid value "${dc.trim()}". Choose from: ${DC_VALUES.join(", ")}\n`));
+    }
+  }
 
   process.stdout.write(cyan("zdr (zero data retention)") + dim(` [${displayValue(cfg.zdr ?? false)}]`) + " — yes/no\n");
   const zdr = await ask(rl, "  > ");
@@ -381,9 +416,19 @@ async function customSetup(rl: readline.Interface): Promise<void> {
   // ── Section 9: Identity ───────────────────────────────────────────────────
   process.stdout.write("\n" + bold("9. Identity (OpenRouter dashboards)\n"));
 
-  process.stdout.write(cyan("siteUrl") + dim(` [${displayValue(cfg.siteUrl ?? "(none)")}]`) + " — shown as HTTP-Referer\n");
-  const su = await ask(rl, "  > ");
-  if (su.trim()) cfg.siteUrl = su.trim();
+  process.stdout.write(cyan("siteUrl") + dim(` [${displayValue(cfg.siteUrl ?? "(none)")}]`) + " — shown as HTTP-Referer (must be http:// or https://)\n");
+  for (;;) {
+    const su = await ask(rl, "  > ");
+    if (!su.trim()) break;
+    try {
+      const parsed = new URL(su.trim());
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("not http/https");
+      cfg.siteUrl = su.trim();
+      break;
+    } catch {
+      process.stdout.write(yellow("  Invalid URL — must start with http:// or https://\n"));
+    }
+  }
 
   process.stdout.write(cyan("siteName") + dim(` [${displayValue(cfg.siteName ?? "(none)")}]`) + " — shown in OpenRouter activity logs\n");
   const sn = await ask(rl, "  > ");
@@ -422,8 +467,29 @@ async function customSetup(rl: readline.Interface): Promise<void> {
     if (b !== undefined) (cfg as Record<string, unknown>)[key] = b;
   }
 
-  // ── Section 12: Profile & misc ────────────────────────────────────────────
-  process.stdout.write("\n" + bold("12. Profile & misc\n"));
+  // ── Section 12: Daemon defaults ──────────────────────────────────────────
+  process.stdout.write("\n" + bold("12. Daemon defaults") + dim(" (applied when running `orager --serve`)") + "\n");
+  process.stdout.write(dim("  The orager daemon keeps a persistent process alive to eliminate per-run startup\n"));
+  process.stdout.write(dim("  overhead. Start it with `orager --serve`, then point your adapter at\n"));
+  process.stdout.write(dim("  ORAGER_DAEMON_URL=http://localhost:<port>.\n\n"));
+
+  process.stdout.write(cyan("daemonPort") + dim(` [${displayValue(cfg.daemonPort ?? 3456)}]`) + " — port the daemon listens on\n");
+  const dp = await ask(rl, "  > ");
+  const dpn = parseOptionalNumber(dp);
+  if (dpn !== undefined && dpn > 0) cfg.daemonPort = dpn;
+
+  process.stdout.write(cyan("daemonMaxConcurrent") + dim(` [${displayValue(cfg.daemonMaxConcurrent ?? 3)}]`) + " — max simultaneous agent runs\n");
+  const dmc = await ask(rl, "  > ");
+  const dmcn = parseOptionalNumber(dmc);
+  if (dmcn !== undefined && dmcn > 0) cfg.daemonMaxConcurrent = dmcn;
+
+  process.stdout.write(cyan("daemonIdleTimeout") + dim(` [${displayValue(cfg.daemonIdleTimeout ?? "30m")}]`) + " — auto-shutdown after idle period (e.g. 30m, 2h)\n");
+  const dit = await ask(rl, "  > ");
+  if (/^\d+(?:\.\d+)?[mh]$/.test(dit.trim())) cfg.daemonIdleTimeout = dit.trim();
+  else if (dit.trim()) process.stdout.write(yellow("  Invalid format — expected e.g. 30m or 1h. Keeping current value.\n"));
+
+  // ── Section 13: Profile & misc ────────────────────────────────────────────
+  process.stdout.write("\n" + bold("13. Profile & misc\n"));
 
   process.stdout.write(cyan("profile") + dim(` [${displayValue(cfg.profile ?? "(none)")}]`) + " — named profile: code-review, bug-fix, research, refactor, test-writer, devops\n");
   const pr = await ask(rl, "  > ");
