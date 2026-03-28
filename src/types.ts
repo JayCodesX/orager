@@ -1073,6 +1073,12 @@ export interface AgentLoopOptions {
    * to avoid crowding out the task context. Default: 6000 (~1500 tokens).
    */
   memoryMaxChars?: number;
+
+  /**
+   * Minimum entry count before switching from inject-all to scored retrieval.
+   * Default: 15. Set to 0 to always score; Infinity to always inject all.
+   */
+  memoryRetrievalThreshold?: number;
 }
 
 // ── Permission types ─────────────────────────────────────────────────────────
