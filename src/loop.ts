@@ -112,9 +112,17 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     maxTurns,
     cwd,
     verbose: _verbose,
-    onEmit,
+    onEmit: _rawOnEmit,
     onLog,
   } = opts;
+
+  // Track whether a result event has been emitted so the finally block knows
+  // whether it needs to emit one (e.g. when the loop is aborted mid-execution).
+  let _resultEmitted = false;
+  const onEmit = (event: Parameters<typeof _rawOnEmit>[0]) => {
+    if (event.type === "result") _resultEmitted = true;
+    _rawOnEmit(event);
+  };
 
   // Prefer per-agent key over global key so one agent's 429 can't starve others.
   const apiKey = opts.agentApiKey?.trim() || opts.apiKey || "";
@@ -1781,6 +1789,48 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       if (opts.webhookUrl) await postWebhook(opts.webhookUrl, resultEvent);
     }
   } finally {
+    // ── Guaranteed session save on any exit path ──────────────────────────
+    // Only triggers when no result event was emitted by the normal paths.
+    // The individual paths (normal completion, abort check, cost-limit, caught
+    // error) all call saveSession and emit a result. The finally block fires as
+    // a safety net for unexpected early exits (e.g. throw mid-tool that somehow
+    // bypasses the catch block) where neither a save nor a result event occurred.
+    if (!_resultEmitted) {
+      try {
+        await saveSession({
+          sessionId,
+          model: lastResponseModel,
+          messages,
+          createdAt,
+          updatedAt: new Date().toISOString(),
+          turnCount: turn,
+          cwd,
+          cumulativeCostUsd: totalCostUsd,
+        });
+      } catch (finalSaveErr) {
+        const fsMsg = finalSaveErr instanceof Error ? finalSaveErr.message : String(finalSaveErr);
+        process.stderr.write(`[orager] WARNING: finally-block session save failed for ${sessionId}: ${fsMsg}\n`);
+      }
+      const aborted = _effectiveAbortSignal?.aborted ?? false;
+      const fallbackEvent = {
+        type: "result" as const,
+        subtype: (aborted ? "error_cancelled" : "error") as "error_cancelled" | "error",
+        result: aborted ? "Run was aborted" : "Run ended unexpectedly",
+        session_id: sessionId,
+        finish_reason: null,
+        usage: {
+          input_tokens: cumulativeUsage.prompt_tokens,
+          output_tokens: cumulativeUsage.completion_tokens,
+          cache_read_input_tokens: cumulativeCachedTokens,
+          cache_write_tokens: cumulativeCacheWriteTokens,
+        },
+        total_cost_usd: totalCostUsd,
+        turnCount: turn,
+        toolMetrics: Object.fromEntries(toolMetrics),
+        filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
+      };
+      try { _rawOnEmit(fallbackEvent); } catch { /* non-fatal */ }
+    }
     // ── SessionStop hook and MCP cleanup ─────────────────────────────────
     if (effectiveOpts.hooks?.SessionStop) {
       const _hookOpts = { timeoutMs: effectiveOpts.hookTimeoutMs, errorMode: effectiveOpts.hookErrorMode };

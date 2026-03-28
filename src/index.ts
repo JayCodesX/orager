@@ -1227,6 +1227,37 @@ async function main(): Promise<void> {
   // ── Status command ────────────────────────────────────────────────────────
   if (argv.includes("--status")) { await handleStatus(argv.includes("--json")); return; }
 
+  // ── Rotate-key command ────────────────────────────────────────────────────
+  if (argv.includes("--rotate-key")) {
+    const port = await readDaemonPort();
+    if (!port) {
+      process.stderr.write("orager: daemon not running (no port file found).\n");
+      process.exit(1);
+    }
+    try {
+      const keyData = await fs.readFile(KEY_PATH, "utf8");
+      const signingKey = keyData.trim();
+      const token = mintJwt(signingKey, "orager-cli-rotate-key");
+      const res = await fetch(`http://127.0.0.1:${port}/rotate-key`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!res.ok) {
+        const body = await res.text();
+        process.stderr.write(`orager: rotate-key failed (HTTP ${res.status}): ${body}\n`);
+        process.exit(1);
+      }
+      const result = await res.json() as { rotated: boolean; previousKeyExpiresAt: string };
+      process.stdout.write(`Signing key rotated successfully.\n`);
+      process.stdout.write(`Old key accepted until: ${result.previousKeyExpiresAt}\n`);
+    } catch (err) {
+      process.stderr.write(`orager: rotate-key error: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+
   // Session management commands — no API key needed
   if (argv.includes("--list-sessions"))    { await handleListSessions();         return; }
   if (argv.includes("--search-sessions"))  { await handleSearchSessions(argv);  return; }

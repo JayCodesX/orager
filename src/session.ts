@@ -9,6 +9,17 @@ import { log } from "./logger.js";
 /** Increment when SessionData structure changes in a breaking way. */
 export const CURRENT_SESSION_SCHEMA_VERSION = 1;
 
+// ── Session size cap ──────────────────────────────────────────────────────────
+// Prevents individual session files from growing without bound. When a session
+// exceeds this limit after marshalling, the oldest messages are trimmed (keeping
+// the system message + the N most recent) until it fits.
+
+/** Default per-session file size cap (5 MB). Override via ORAGER_SESSION_MAX_SIZE_BYTES. */
+export const SESSION_MAX_SIZE_BYTES = (() => {
+  const v = parseInt(process.env["ORAGER_SESSION_MAX_SIZE_BYTES"] ?? "", 10);
+  return Number.isFinite(v) && v > 0 ? v : 5 * 1024 * 1024; // 5 MB
+})();
+
 /** Apply any pending schema migrations to a loaded session. Returns the (possibly mutated) data. */
 export function migrateSession(data: SessionData): SessionData {
   const v = data.schemaVersion ?? 0;
@@ -124,8 +135,38 @@ async function _fileSave(data: SessionData): Promise<void> {
     // Include pid + timestamp in the tmp name to avoid cross-process collisions
     const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
     try {
-      const toWrite = { ...data, schemaVersion: CURRENT_SESSION_SCHEMA_VERSION };
-      await fs.writeFile(tmp, JSON.stringify(toWrite, null, 2), { encoding: "utf8", mode: 0o600 });
+      let toWrite = { ...data, schemaVersion: CURRENT_SESSION_SCHEMA_VERSION };
+      // ── Size cap: trim oldest messages if over limit ─────────────────────
+      // Keep system message (index 0 if role === "system") + most recent N msgs.
+      let serialized = JSON.stringify(toWrite, null, 2);
+      if (Buffer.byteLength(serialized, "utf8") > SESSION_MAX_SIZE_BYTES) {
+        const msgs = [...toWrite.messages];
+        const systemMsg = msgs[0]?.role === "system" ? msgs[0] : null;
+        // Drop oldest non-system messages one by one until under the limit
+        // (binary drop: keep halving the non-system prefix for speed)
+        let nonSystem = systemMsg ? msgs.slice(1) : msgs;
+        while (nonSystem.length > 1) {
+          // Drop the first half of oldest messages in one go
+          const dropCount = Math.ceil(nonSystem.length / 2);
+          nonSystem = nonSystem.slice(dropCount);
+          const candidate = systemMsg ? [systemMsg, ...nonSystem] : nonSystem;
+          const candidateSerialized = JSON.stringify({ ...toWrite, messages: candidate }, null, 2);
+          if (Buffer.byteLength(candidateSerialized, "utf8") <= SESSION_MAX_SIZE_BYTES) {
+            toWrite = { ...toWrite, messages: candidate };
+            serialized = candidateSerialized;
+            break;
+          }
+        }
+        // If still over limit with only 1 non-system message, keep it anyway
+        if (Buffer.byteLength(serialized, "utf8") > SESSION_MAX_SIZE_BYTES) {
+          const fallback = systemMsg ? [systemMsg, ...nonSystem] : nonSystem;
+          toWrite = { ...toWrite, messages: fallback };
+          serialized = JSON.stringify(toWrite, null, 2);
+        }
+        process.stderr.write(`[orager] WARNING: Session ${sessionId} trimmed to fit size limit\n`);
+        log.warn("session_trimmed", { sessionId, originalMessageCount: data.messages.length, trimmedMessageCount: toWrite.messages.length });
+      }
+      await fs.writeFile(tmp, serialized, { encoding: "utf8", mode: 0o600 });
       await fs.rename(tmp, target);
     } catch (err) {
       await fs.unlink(tmp).catch(() => {});
@@ -201,19 +242,41 @@ async function _fileDelete(sessionId: string): Promise<void> {
   }
 }
 
-async function _fileList(): Promise<SessionSummary[]> {
-  let entries: string[];
+const FILE_LIST_PAGE_SIZE = 200; // max session files read per _fileList call
+
+async function _fileList(opts?: { offset?: number; limit?: number }): Promise<SessionSummary[]> {
+  const sessionsDir = getSessionsDir();
+  let allEntries: string[];
   try {
-    entries = await fs.readdir(getSessionsDir());
+    allEntries = await fs.readdir(sessionsDir);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw err;
   }
 
+  const jsonEntries = allEntries.filter((e) => e.endsWith(".json") && !e.includes(".run.lock"));
+
+  // Sort by mtime descending (most recently modified first) before paginating.
+  // This means newer sessions always appear first without loading all files.
+  const withMtime: Array<{ entry: string; mtimeMs: number }> = [];
+  for (const entry of jsonEntries) {
+    try {
+      const stat = await fs.stat(path.join(sessionsDir, entry));
+      withMtime.push({ entry, mtimeMs: stat.mtimeMs });
+    } catch {
+      withMtime.push({ entry, mtimeMs: 0 });
+    }
+  }
+  withMtime.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+  // Paginate: read at most FILE_LIST_PAGE_SIZE files per call
+  const offset = opts?.offset ?? 0;
+  const limit = Math.min(opts?.limit ?? FILE_LIST_PAGE_SIZE, FILE_LIST_PAGE_SIZE);
+  const page = withMtime.slice(offset, offset + limit);
+
   const summaries: SessionSummary[] = [];
 
-  for (const entry of entries) {
-    if (!entry.endsWith(".json")) continue;
+  for (const { entry } of page) {
     const sessionId = entry.slice(0, -5);
     const data = await _fileLoadRaw(sessionId);
     if (!data) continue;
@@ -228,6 +291,7 @@ async function _fileList(): Promise<SessionSummary[]> {
     });
   }
 
+  // Sort by updatedAt for consistency with SQLite backend
   return summaries.sort(
     (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
   );
@@ -369,7 +433,7 @@ function _makeFileStore(): SessionStore {
     load:        _fileLoad,
     loadRaw:     _fileLoadRaw,
     delete:      _fileDelete,
-    list:        _fileList,
+    list:        (opts) => _fileList(opts),
     prune:       _filePrune,
     deleteTrash: _fileDeleteTrash,
     acquireLock: _fileAcquireLock,
@@ -398,8 +462,8 @@ export async function deleteSession(sessionId: string): Promise<void> {
   return (await getStore()).delete(sessionId);
 }
 
-export async function listSessions(): Promise<SessionSummary[]> {
-  return (await getStore()).list();
+export async function listSessions(opts?: { offset?: number; limit?: number }): Promise<SessionSummary[]> {
+  return (await getStore()).list(opts);
 }
 
 export async function pruneOldSessions(olderThanMs: number): Promise<PruneResult> {

@@ -105,7 +105,7 @@ export class SqliteSessionStore implements SessionStore {
     this.db.prepare("DELETE FROM sessions WHERE session_id = ?").run(sessionId);
   }
 
-  async list(): Promise<SessionSummary[]> {
+  async list(_opts?: { offset?: number; limit?: number }): Promise<SessionSummary[]> {
     const rows = this.db.prepare(
       "SELECT session_id, model, created_at, updated_at, turn_count, cwd, trashed " +
       "FROM sessions ORDER BY updated_at DESC"
