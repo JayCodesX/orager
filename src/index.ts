@@ -23,6 +23,13 @@ import { applyProfileAsync } from "./profiles.js";
 import { initTelemetry } from "./telemetry.js";
 import { runSetupWizard } from "./setup.js";
 import { createRequire } from "node:module";
+import { loadMemoryStoreAny, MEMORY_DIR } from "./memory.js";
+import {
+  isSqliteMemoryEnabled,
+  listMemoryKeysSqlite,
+  clearMemoryStoreSqlite,
+} from "./memory-sqlite.js";
+import readline from "node:readline";
 
 // ── Node.js version gate ──────────────────────────────────────────────────────
 {
@@ -797,6 +804,180 @@ async function handlePrune(argv: string[]): Promise<void> {
   process.exit(0);
 }
 
+// ── Sessions table command ───────────────────────────────────────────────────
+
+async function handleSessionsCommand(argv: string[]): Promise<void> {
+  const jsonMode = argv.includes("--json");
+
+  const port = await readDaemonPort();
+  if (!port) {
+    process.stderr.write("Daemon is not running\n");
+    process.exit(1);
+  }
+
+  const url = `http://127.0.0.1:${port}`;
+
+  // Mint JWT for authenticated requests
+  let token: string;
+  try {
+    const keyData = await fs.readFile(KEY_PATH, "utf8");
+    token = mintJwt(keyData.trim(), "orager-cli-sessions");
+  } catch {
+    process.stderr.write("orager: could not read signing key\n");
+    process.exit(1);
+  }
+
+  // Fetch sessions list
+  let sessions: Array<{
+    sessionId: string;
+    updatedAt: string;
+    turnCount: number;
+    model: string;
+  }>;
+  try {
+    const res = await fetch(`${url}/sessions?limit=20`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) {
+      process.stderr.write(`orager: GET /sessions returned HTTP ${res.status}\n`);
+      process.exit(1);
+    }
+    const body = await res.json() as { sessions: typeof sessions };
+    sessions = body.sessions ?? [];
+  } catch {
+    process.stderr.write("Daemon is not running\n");
+    process.exit(1);
+  }
+
+  // Fetch cost for each session
+  const costMap = new Map<string, number>();
+  await Promise.all(
+    sessions.map(async (s) => {
+      try {
+        const res = await fetch(`${url}/sessions/${encodeURIComponent(s.sessionId)}/cost`, {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: AbortSignal.timeout(3000),
+        });
+        if (res.ok) {
+          const body = await res.json() as { cumulativeCostUsd: number };
+          costMap.set(s.sessionId, body.cumulativeCostUsd ?? 0);
+        }
+      } catch { /* non-fatal */ }
+    }),
+  );
+
+  if (jsonMode) {
+    const result = sessions.map((s) => ({
+      sessionId: s.sessionId,
+      lastRunAt: s.updatedAt,
+      cumulativeCostUsd: costMap.get(s.sessionId) ?? 0,
+      runCount: s.turnCount,
+    }));
+    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+    process.exit(0);
+  }
+
+  // Print formatted table
+  const header = `${"SESSION ID".padEnd(22)} ${"LAST RUN AT".padEnd(20)} ${"COST USD".padStart(10)} ${"TURNS".padStart(6)}`;
+  process.stdout.write(header + "\n");
+  process.stdout.write("-".repeat(header.length) + "\n");
+
+  for (const s of sessions) {
+    const id = s.sessionId.slice(0, 20).padEnd(22);
+    const lastRun = (s.updatedAt ?? "").slice(0, 16).replace("T", " ").padEnd(20);
+    const cost = `$${(costMap.get(s.sessionId) ?? 0).toFixed(4)}`.padStart(10);
+    const turns = String(s.turnCount).padStart(6);
+    process.stdout.write(`${id} ${lastRun} ${cost} ${turns}\n`);
+  }
+  process.exit(0);
+}
+
+// ── Memory subcommand ─────────────────────────────────────────────────────────
+
+async function handleMemorySubcommand(argv: string[]): Promise<void> {
+  const subIdx = argv.indexOf("memory");
+  const subArgs = argv.slice(subIdx + 1);
+  const sub = subArgs[0];
+
+  if (sub === "export") {
+    const keyIdx = subArgs.indexOf("--key");
+    const memoryKey = keyIdx !== -1 ? (subArgs[keyIdx + 1] ?? "") : "";
+    if (!memoryKey) {
+      process.stderr.write("orager memory export --key <memoryKey>\n");
+      process.exit(1);
+    }
+    const store = await loadMemoryStoreAny(memoryKey);
+    process.stdout.write(JSON.stringify(store, null, 2) + "\n");
+    process.exit(0);
+  }
+
+  if (sub === "list") {
+    if (isSqliteMemoryEnabled()) {
+      const keys = listMemoryKeysSqlite();
+      for (const k of keys) process.stdout.write(k + "\n");
+    } else {
+      // List files in MEMORY_DIR, strip .json suffix
+      try {
+        const entries = await fs.readdir(MEMORY_DIR);
+        for (const entry of entries) {
+          if (entry.endsWith(".json")) {
+            process.stdout.write(entry.slice(0, -5) + "\n");
+          }
+        }
+      } catch {
+        // Directory doesn't exist — no memory keys
+      }
+    }
+    process.exit(0);
+  }
+
+  if (sub === "clear") {
+    const keyIdx = subArgs.indexOf("--key");
+    const memoryKey = keyIdx !== -1 ? (subArgs[keyIdx + 1] ?? "") : "";
+    if (!memoryKey) {
+      process.stderr.write("orager memory clear --key <memoryKey> [--yes]\n");
+      process.exit(1);
+    }
+    const skipConfirm = subArgs.includes("--yes");
+    if (!skipConfirm) {
+      // Interactive confirmation
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const answer = await new Promise<string>((resolve) => {
+        rl.question(`Clear all memory entries for key "${memoryKey}"? [y/N] `, resolve);
+      });
+      rl.close();
+      if (answer.trim().toLowerCase() !== "y") {
+        process.stdout.write("Aborted.\n");
+        process.exit(0);
+      }
+    }
+    if (isSqliteMemoryEnabled()) {
+      const deleted = clearMemoryStoreSqlite(memoryKey);
+      process.stdout.write(`Cleared ${deleted} entry/entries for key "${memoryKey}".\n`);
+    } else {
+      const { MEMORY_DIR: memDir } = await import("./memory.js");
+      const sanitized = memoryKey.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 128);
+      const filePath = path.join(memDir, `${sanitized}.json`);
+      try {
+        await fs.unlink(filePath);
+        process.stdout.write(`Cleared memory for key "${memoryKey}".\n`);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+          process.stdout.write(`No memory found for key "${memoryKey}".\n`);
+        } else {
+          process.stderr.write(`Error: ${(err as Error).message}\n`);
+          process.exit(1);
+        }
+      }
+    }
+    process.exit(0);
+  }
+
+  process.stderr.write("Usage: orager memory <export|list|clear> [options]\n");
+  process.exit(1);
+}
+
 // ── Config file loading ───────────────────────────────────────────────────────
 // When --config-file <path> is passed (e.g. from the paperclip adapter),
 // read the JSON config, delete the file immediately (it may contain secrets),
@@ -1186,6 +1367,12 @@ async function main(): Promise<void> {
     return;
   }
 
+  // ── Memory subcommand ─────────────────────────────────────────────────────
+  if (argv[0] === "memory") {
+    await handleMemorySubcommand(argv);
+    return;
+  }
+
   // ── Daemon mode ─────────────────────────────────────────────────────────────
   if (argv.includes("--serve")) {
     const apiKey =
@@ -1226,6 +1413,9 @@ async function main(): Promise<void> {
 
   // ── Status command ────────────────────────────────────────────────────────
   if (argv.includes("--status")) { await handleStatus(argv.includes("--json")); return; }
+
+  // ── Sessions table command ────────────────────────────────────────────────
+  if (argv.includes("--sessions")) { await handleSessionsCommand(argv); return; }
 
   // ── Rotate-key command ────────────────────────────────────────────────────
   if (argv.includes("--rotate-key")) {
