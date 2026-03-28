@@ -15,6 +15,7 @@ import {
   pruneExpired,
   renderMemoryBlock,
   embedEntryIfNeeded,
+  withMemoryLock,
 } from "../memory.js";
 import {
   isSqliteMemoryEnabled,
@@ -142,37 +143,44 @@ export function makeRememberTool(
           };
         }
 
-        store = addMemoryEntry(store, {
-          content,
-          ...(tags && tags.length > 0 ? { tags } : {}),
-          ...(expiresAt ? { expiresAt } : {}),
-          importance,
+        // Wrap the entire load→mutate→save round-trip in a per-key lock to prevent
+        // concurrent adds from silently dropping each other's entries (last-write-wins).
+        let savedEntry: { id: string };
+        await withMemoryLock(memoryKey, async () => {
+          // Re-load inside the lock so we start from the latest persisted state
+          let lockedStore = pruneExpired(await loadMemoryStoreAny(memoryKey));
+          lockedStore = addMemoryEntry(lockedStore, {
+            content,
+            ...(tags && tags.length > 0 ? { tags } : {}),
+            ...(expiresAt ? { expiresAt } : {}),
+            importance,
+          });
+
+          // Attempt to embed the new entry if embeddingOpts provided
+          if (embeddingOpts) {
+            try {
+              const vectors = await callEmbeddings(embeddingOpts.apiKey, embeddingOpts.model, [content]);
+              const lastIdx = lockedStore.entries.length - 1;
+              const updatedEntry = embedEntryIfNeeded(lockedStore.entries[lastIdx], vectors[0], embeddingOpts.model);
+              lockedStore = {
+                ...lockedStore,
+                entries: [
+                  ...lockedStore.entries.slice(0, lastIdx),
+                  updatedEntry,
+                ],
+              };
+            } catch {
+              // Embedding failure must never block the memory save — fall through
+            }
+          }
+
+          await saveMemoryStoreAny(memoryKey, lockedStore);
+          savedEntry = lockedStore.entries[lockedStore.entries.length - 1];
         });
 
-        // Attempt to embed the new entry if embeddingOpts provided
-        if (embeddingOpts) {
-          try {
-            const vectors = await callEmbeddings(embeddingOpts.apiKey, embeddingOpts.model, [content]);
-            const lastIdx = store.entries.length - 1;
-            const updatedEntry = embedEntryIfNeeded(store.entries[lastIdx], vectors[0], embeddingOpts.model);
-            store = {
-              ...store,
-              entries: [
-                ...store.entries.slice(0, lastIdx),
-                updatedEntry,
-              ],
-            };
-          } catch {
-            // Embedding failure must never block the memory save — fall through
-          }
-        }
-
-        await saveMemoryStoreAny(memoryKey, store);
-
-        const saved = store.entries[store.entries.length - 1];
         return {
           toolCallId: "",
-          content: `Memory saved (id: ${saved.id}, importance: ${importance}${tags && tags.length > 0 ? `, tags: ${tags.join(", ")}` : ""}): ${content}`,
+          content: `Memory saved (id: ${savedEntry!.id}, importance: ${importance}${tags && tags.length > 0 ? `, tags: ${tags.join(", ")}` : ""}): ${content}`,
           isError: false,
         };
       }
@@ -192,12 +200,19 @@ export function makeRememberTool(
           return { toolCallId: "", content: `Memory removed: ${id}`, isError: false };
         }
 
-        const before = store.entries.length;
-        store = removeMemoryEntry(store, id);
-        if (store.entries.length === before) {
+        let removeResult: { found: boolean } = { found: false };
+        await withMemoryLock(memoryKey, async () => {
+          let lockedStore = pruneExpired(await loadMemoryStoreAny(memoryKey));
+          const before = lockedStore.entries.length;
+          lockedStore = removeMemoryEntry(lockedStore, id);
+          if (lockedStore.entries.length < before) {
+            await saveMemoryStoreAny(memoryKey, lockedStore);
+            removeResult = { found: true };
+          }
+        });
+        if (!removeResult.found) {
           return { toolCallId: "", content: `No memory entry found with id: ${id}`, isError: false };
         }
-        await saveMemoryStoreAny(memoryKey, store);
         return { toolCallId: "", content: `Memory removed: ${id}`, isError: false };
       }
 

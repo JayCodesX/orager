@@ -323,6 +323,43 @@ export function memoryKeyFromCwd(cwd: string): string {
   return `${label}_${hash}`;
 }
 
+// ── Per-key write lock ────────────────────────────────────────────────────────
+//
+// Prevents concurrent writes from silently dropping entries via last-write-wins.
+// Uses a promise-chaining mutex pattern: each lock operation chains on the
+// previous one for the same key so writes are always serialised.
+
+const _memoryWriteLocks = new Map<string, Promise<void>>();
+
+/**
+ * Acquire a per-key advisory lock, run fn(), then release.
+ * Concurrent callers with the same key are queued in order.
+ * Exported for testing; _clearMemoryLocksForTesting() resets state.
+ */
+export async function withMemoryLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = _memoryWriteLocks.get(key) ?? Promise.resolve();
+  let resolve!: () => void;
+  const next = new Promise<void>((res) => { resolve = res; });
+  // Store a non-rejecting sentinel so failures don't block subsequent waiters
+  _memoryWriteLocks.set(key, next.catch(() => {}));
+
+  await prev.catch(() => {}); // wait for any in-flight operation on this key
+  try {
+    return await fn();
+  } finally {
+    resolve();
+    // Clean up map entry if no newer waiter has replaced it
+    if (_memoryWriteLocks.get(key) === next.catch(() => {})) {
+      // Best-effort cleanup — map may have been updated by a queued waiter
+    }
+  }
+}
+
+/** Reset lock state — for testing only. */
+export function _clearMemoryLocksForTesting(): void {
+  _memoryWriteLocks.clear();
+}
+
 // ── Storage router ────────────────────────────────────────────────────────────
 
 /**
