@@ -59,24 +59,36 @@ import {
 // ── Agent loop ────────────────────────────────────────────────────────────────
 
 /**
- * Compute the effective per-tool timeout, taking into account both the
- * explicit `toolTimeouts` configuration and the remaining run-level budget.
+ * Compute the effective per-tool timeout given the run budget and per-tool overrides.
  *
- * Exported as a pure function for unit testing.  The `_effectiveToolTimeout`
- * closure inside `runAgentLoop` delegates to this.
+ * Exported as a pure, deterministic function for unit testing. Callers may
+ * pass the elapsed time either directly (`elapsedMs`) or as a start timestamp
+ * pair (`startMs` + optional `nowMs`). When both are provided, `elapsedMs`
+ * takes precedence.
  *
- * @param toolName    - The tool being executed.
+ * The `_effectiveToolTimeout` closure inside `runAgentLoop` delegates to this.
+ *
+ * @param toolName     - The tool being executed.
  * @param toolTimeouts - Per-tool explicit timeout map from AgentLoopOptions.
- * @param timeoutSec  - Run-level timeout from AgentLoopOptions (0 = unlimited).
- * @param elapsedMs   - Milliseconds elapsed since the loop started.
+ * @param timeoutSec   - Run-level timeout from AgentLoopOptions (0 = unlimited).
+ * @param elapsedMs    - Milliseconds elapsed since the loop started (preferred).
+ * @param startMs      - Loop start timestamp; used only when elapsedMs is omitted.
+ * @param nowMs        - Current timestamp (default: Date.now()); used with startMs.
  */
 export function computeToolBudgetTimeout(params: {
   toolName: string;
   toolTimeouts?: Record<string, number>;
   timeoutSec?: number;
-  elapsedMs: number;
+  elapsedMs?: number;
+  startMs?: number;
+  nowMs?: number;
 }): number | undefined {
-  const { toolName, toolTimeouts, timeoutSec, elapsedMs } = params;
+  const { toolName, toolTimeouts, timeoutSec, nowMs } = params;
+  const elapsedMs =
+    params.elapsedMs ??
+    (params.startMs !== undefined
+      ? (nowMs ?? Date.now()) - params.startMs
+      : 0);
   const explicit = toolTimeouts?.[toolName];
   if (timeoutSec && timeoutSec > 0) {
     const remainingMs = timeoutSec * 1000 - elapsedMs;

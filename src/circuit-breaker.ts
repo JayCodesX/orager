@@ -113,3 +113,37 @@ export const openRouterCircuitBreaker = new CircuitBreaker({
   threshold: 3,
   resetAfterMs: 30_000,
 });
+
+// ── Per-agent circuit breaker map ─────────────────────────────────────────────
+// Keyed by agentId so one agent's failure streak cannot block other agents.
+const _agentCircuitBreakers = new Map<string, CircuitBreaker>();
+
+/**
+ * Returns (or lazily creates) a per-agent CircuitBreaker keyed by agentId.
+ * Ensures that one noisy agent's sustained failures do not block other agents
+ * running concurrently on the same daemon process.
+ */
+export function getAgentCircuitBreaker(
+  agentId: string,
+  opts: CircuitBreakerOptions = {},
+): CircuitBreaker {
+  let cb = _agentCircuitBreakers.get(agentId);
+  if (!cb) {
+    cb = new CircuitBreaker({
+      threshold:    opts.threshold    ?? 3,
+      resetAfterMs: opts.resetAfterMs ?? 30_000,
+    });
+    _agentCircuitBreakers.set(agentId, cb);
+  }
+  return cb;
+}
+
+/** Remove a specific agent's circuit breaker (e.g. to reset state after a clean run). */
+export function clearAgentCircuitBreaker(agentId: string): void {
+  _agentCircuitBreakers.delete(agentId);
+}
+
+/** Clear ALL per-agent circuit breakers — intended for test teardown only. */
+export function clearAllAgentCircuitBreakers(): void {
+  _agentCircuitBreakers.clear();
+}
