@@ -29,6 +29,8 @@ export interface MemoryEntry {
   expiresAt?: string;   // ISO — undefined means never expires
   runId?: string;       // orager session ID that created it
   importance: 1 | 2 | 3; // 1=low, 2=normal, 3=high (affects sort order)
+  _embedding?: number[];    // cached embedding vector
+  _embeddingModel?: string; // model used to generate it
 }
 
 // ── Storage path ──────────────────────────────────────────────────────────────
@@ -193,6 +195,77 @@ export function renderRetrievedBlock(entries: MemoryEntry[], maxChars = 6000): s
   const truncated = result.slice(0, maxChars);
   const lastNewline = truncated.lastIndexOf("\n");
   return lastNewline > 0 ? truncated.slice(0, lastNewline) : "";
+}
+
+// ── Embedding-based retrieval (Phase 2) ───────────────────────────────────────
+
+/**
+ * Compute cosine similarity between two vectors.
+ * Returns 0 if either vector has zero magnitude.
+ */
+export function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length === 0 || b.length === 0) return 0;
+  let dot = 0;
+  let magA = 0;
+  let magB = 0;
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    dot += a[i] * b[i];
+    magA += a[i] * a[i];
+    magB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(magA) * Math.sqrt(magB);
+  if (denom === 0) return 0;
+  return dot / denom;
+}
+
+/**
+ * Returns a new MemoryEntry with _embedding and _embeddingModel set.
+ * Pure — no side effects.
+ */
+export function embedEntryIfNeeded(
+  entry: MemoryEntry,
+  embedding: number[],
+  model: string,
+): MemoryEntry {
+  return { ...entry, _embedding: embedding, _embeddingModel: model };
+}
+
+/**
+ * Retrieve entries ranked by embedding cosine similarity combined with
+ * importance weight and recency decay.
+ * Entries without a cached _embedding fall back to Phase 1 scoreEntry
+ * with an empty query (importance+recency only).
+ */
+export function retrieveEntriesWithEmbeddings(
+  store: MemoryStore,
+  queryEmbedding: number[],
+  opts?: { topK?: number; minScore?: number },
+): MemoryEntry[] {
+  const topK = opts?.topK ?? 12;
+  const minScore = opts?.minScore ?? 0.0;
+
+  const scored = store.entries.map((entry) => {
+    const importanceWeight = entry.importance === 3 ? 1.5 : entry.importance === 2 ? 1.0 : 0.6;
+    const days = (Date.now() - Date.parse(entry.createdAt)) / 86400000;
+    const recencyDecay = 1 / (1 + days / 30);
+
+    let score: number;
+    if (entry._embedding && entry._embedding.length > 0) {
+      const sim = cosineSimilarity(entry._embedding, queryEmbedding);
+      score = sim * importanceWeight * recencyDecay;
+    } else {
+      score = scoreEntry(entry, []);
+    }
+
+    return { entry, score };
+  });
+
+  return scored
+    .filter(({ score }) => score >= minScore)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topK)
+    .map(({ entry }) => entry);
 }
 
 // ── Writes ────────────────────────────────────────────────────────────────────

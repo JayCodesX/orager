@@ -1079,6 +1079,18 @@ export interface AgentLoopOptions {
    * Default: 15. Set to 0 to always score; Infinity to always inject all.
    */
   memoryRetrievalThreshold?: number;
+
+  /**
+   * "local" = Phase 1 term overlap (default)
+   * "embedding" = Phase 2 cosine similarity with cached embeddings
+   */
+  memoryRetrieval?: "local" | "embedding";
+
+  /**
+   * OpenRouter embedding model to use. Example: "openai/text-embedding-3-small"
+   * Required when memoryRetrieval === "embedding". Ignored otherwise.
+   */
+  memoryEmbeddingModel?: string;
 }
 
 // ── Permission types ─────────────────────────────────────────────────────────

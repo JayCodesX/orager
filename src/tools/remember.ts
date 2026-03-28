@@ -14,13 +14,19 @@ import {
   removeMemoryEntry,
   pruneExpired,
   renderMemoryBlock,
+  embedEntryIfNeeded,
 } from "../memory.js";
+import { callEmbeddings } from "../openrouter.js";
 import type { ToolExecutor, ToolResult } from "../types.js";
 
 const MAX_CONTENT_CHARS = 500;
 const DEFAULT_MAX_CHARS = 6000;
 
-export function makeRememberTool(memoryKey: string, maxChars = DEFAULT_MAX_CHARS): ToolExecutor {
+export function makeRememberTool(
+  memoryKey: string,
+  maxChars = DEFAULT_MAX_CHARS,
+  embeddingOpts?: { apiKey: string; model: string } | null,
+): ToolExecutor {
   return {
     definition: {
       type: "function",
@@ -121,6 +127,24 @@ export function makeRememberTool(memoryKey: string, maxChars = DEFAULT_MAX_CHARS
           ...(expiresAt ? { expiresAt } : {}),
           importance,
         });
+
+        // Attempt to embed the new entry if embeddingOpts provided
+        if (embeddingOpts) {
+          try {
+            const vectors = await callEmbeddings(embeddingOpts.apiKey, embeddingOpts.model, [content]);
+            const lastIdx = store.entries.length - 1;
+            const updatedEntry = embedEntryIfNeeded(store.entries[lastIdx], vectors[0], embeddingOpts.model);
+            store = {
+              ...store,
+              entries: [
+                ...store.entries.slice(0, lastIdx),
+                updatedEntry,
+              ],
+            };
+          } catch {
+            // Embedding failure must never block the memory save — fall through
+          }
+        }
 
         await saveMemoryStore(memoryKey, store);
 
