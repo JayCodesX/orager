@@ -108,7 +108,6 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   const {
     prompt,
     model,
-    apiKey,
     addDirs,
     maxTurns,
     cwd,
@@ -116,6 +115,9 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     onEmit,
     onLog,
   } = opts;
+
+  // Prefer per-agent key over global key so one agent's 429 can't starve others.
+  const apiKey = opts.agentApiKey?.trim() || opts.apiKey || "";
 
   const maxRetries = opts.maxRetries ?? 3;
   const forceResume = opts.forceResume ?? false;
@@ -301,11 +303,27 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
 
   if (opts.sessionId) {
     try {
-      releaseLock = await acquireSessionLock(opts.sessionId);
+      releaseLock = await acquireSessionLock(opts.sessionId, {
+        timeoutMs: opts.sessionLockTimeoutMs,
+      });
     } catch (lockErr) {
       const msg = lockErr instanceof Error ? lockErr.message : String(lockErr);
       onLog?.("stderr", `[orager] could not acquire session lock: ${msg}\n`);
-      // Non-fatal: proceed without lock (better than blocking indefinitely)
+      // If the lock cannot be acquired (concurrent run on same session), emit
+      // a proper error result so the caller gets a meaningful message.
+      if (msg.includes("Cannot start concurrent runs")) {
+        onEmit({
+          type: "result",
+          subtype: "error",
+          result: msg,
+          session_id: opts.sessionId,
+          finish_reason: null,
+          usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 },
+          total_cost_usd: 0,
+        });
+        return;
+      }
+      // Other lock errors (e.g. filesystem error): log and proceed without lock
     }
     const existing = await loadSession(opts.sessionId);
     if (existing && (forceResume || existing.cwd === cwd)) {

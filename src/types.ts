@@ -1098,6 +1098,20 @@ export interface AgentLoopOptions {
    * Required when memoryRetrieval === "embedding". Ignored otherwise.
    */
   memoryEmbeddingModel?: string;
+
+  /**
+   * Per-agent OpenRouter API key override. When set, this agent uses its own
+   * key instead of the global OPENROUTER_API_KEY. Isolates rate limits so one
+   * agent's 429 cannot starve others.
+   */
+  agentApiKey?: string;
+
+  /**
+   * Maximum total wait time (ms) when retrying to acquire the session lock.
+   * If the lock is still held after this duration, the run fails with a
+   * descriptive error. Default: 5000 ms.
+   */
+  sessionLockTimeoutMs?: number;
 }
 
 // ── Permission types ─────────────────────────────────────────────────────────

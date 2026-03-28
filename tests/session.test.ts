@@ -387,6 +387,9 @@ describe("stale lock detection", () => {
     const freshAt = Date.now() - 10 * 1000;
     await fs.writeFile(lockFile, JSON.stringify({ pid: 12345, at: freshAt, host: "other-host" }), "utf8");
 
-    await expect(acquireSessionLock(sessionId)).rejects.toThrow(/already being resumed/i);
+    // Pass a short timeout so retries exhaust quickly in the test
+    await expect(
+      acquireSessionLock(sessionId, { timeoutMs: 200, initialDelayMs: 30 }),
+    ).rejects.toThrow(/locked by another run|Cannot start concurrent runs/i);
   });
 });

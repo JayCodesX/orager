@@ -410,9 +410,55 @@ export async function deleteTrashedSessions(): Promise<PruneResult> {
   return (await getStore()).deleteTrash();
 }
 
-export async function acquireSessionLock(sessionId: string): Promise<() => Promise<void>> {
+/**
+ * Acquire an advisory resume lock for a session with exponential-backoff retry.
+ *
+ * Retries up to `maxAttempts` times (default 10) with exponential backoff
+ * starting at `initialDelayMs` (default 50 ms), capped by `timeoutMs`
+ * (default 5000 ms total wait).
+ *
+ * Throws a descriptive error when the lock cannot be acquired within the budget:
+ *   "Session <id> is locked by another run. Cannot start concurrent runs on the same session."
+ */
+export async function acquireSessionLock(
+  sessionId: string,
+  opts: { timeoutMs?: number; maxAttempts?: number; initialDelayMs?: number } = {},
+): Promise<() => Promise<void>> {
   assertSafeSessionId(sessionId);
-  return (await getStore()).acquireLock(sessionId);
+  const store = await getStore();
+
+  const timeoutMs = opts.timeoutMs ?? 5000;
+  const maxAttempts = opts.maxAttempts ?? 10;
+  const initialDelayMs = opts.initialDelayMs ?? 50;
+
+  const deadline = Date.now() + timeoutMs;
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      return await store.acquireLock(sessionId);
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+
+      // If it's not a "locked by another run" error, rethrow immediately
+      if (!lastError.message.includes("already being resumed")) {
+        throw lastError;
+      }
+
+      const delayMs = Math.min(initialDelayMs * 2 ** attempt, 2000);
+      const remaining = deadline - Date.now();
+
+      if (remaining <= 0 || Date.now() + delayMs > deadline) {
+        break;
+      }
+
+      await new Promise<void>((resolve) => setTimeout(resolve, Math.min(delayMs, remaining)));
+    }
+  }
+
+  throw new Error(
+    `Session ${sessionId} is locked by another run. Cannot start concurrent runs on the same session.`,
+  );
 }
 
 /**
