@@ -436,6 +436,7 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
               .filter(([, ts]) => ts >= cutoff)
               .map(([m]) => m);
           })(),
+          modelUsageTimestamps: Object.fromEntries(modelLastUsedAt),
           activeRunsByAgent: Object.fromEntries(activeRunsByAgent),
           providerHealth: getAllProviderStats(),
           degradedProviders: getDegradedProviders(),

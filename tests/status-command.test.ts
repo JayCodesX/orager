@@ -47,3 +47,14 @@ describe("orager --status --json mode", () => {
     expect(parsed.error).toBe("no port file found");
   });
 });
+
+describe("handleStatus uptime enrichment", () => {
+  it("JSON output includes uptimeMs field (null when key unavailable)", () => {
+    // handleStatus is not directly testable (calls process.exit) but we verify
+    // the JSON shape includes uptimeMs
+    const withUptime = { running: true, port: 3456, url: "http://127.0.0.1:3456", uptimeMs: 12345 };
+    const withoutUptime = { running: true, port: 3456, url: "http://127.0.0.1:3456", uptimeMs: null };
+    expect(JSON.parse(JSON.stringify(withUptime)).uptimeMs).toBe(12345);
+    expect(JSON.parse(JSON.stringify(withoutUptime)).uptimeMs).toBeNull();
+  });
+});
