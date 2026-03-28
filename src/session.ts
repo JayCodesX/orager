@@ -644,8 +644,12 @@ export async function rollbackSession(
 export async function ensureSessionsDirPermissions(): Promise<void> {
   try {
     await fs.mkdir(getSessionsDir(), { recursive: true, mode: 0o700 });
-    // Tighten permissions if directory already exists with wrong mode
-    await fs.chmod(getSessionsDir(), 0o700);
+    if (process.platform !== "win32") {
+      // Tighten permissions if directory already exists with wrong mode
+      await fs.chmod(getSessionsDir(), 0o700);
+    } else {
+      process.stderr.write("[orager] warning: directory permission checks are not enforced on Windows\n");
+    }
   } catch {
     // Non-fatal
   }
