@@ -7,11 +7,12 @@
  * keeps the tests fast, hermetic, and free of network/filesystem side-effects.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import http from "node:http";
 import crypto from "node:crypto";
 import { mintJwt, verifyJwt } from "../src/jwt.js";
 import { sanitizeDaemonRunOpts } from "../src/daemon.js";
+import { applyProfileAsync } from "../src/profiles.js";
 import type { AddressInfo } from "node:net";
 
 // ── Test constants ─────────────────────────────────────────────────────────────
@@ -19,7 +20,7 @@ import type { AddressInfo } from "node:net";
 const TEST_SIGNING_KEY = "test-signing-key-32-bytes-long!!";
 const TEST_API_KEY = "test-api-key";
 const MAX_CONCURRENT = 2;
-const MAX_REQUEST_BODY_BYTES = 50 * 1024 * 1024; // 50 MB
+const MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024; // 4 MB (matches daemon.ts)
 
 let daemonUrl: string;
 let server: http.Server;
@@ -98,7 +99,7 @@ function createTestServer(): http.Server {
         if (bodyTooLarge) {
           if (!res.destroyed) {
             res.writeHead(413);
-            res.end(JSON.stringify({ error: "request body too large (max 50 MB)" }));
+            res.end(JSON.stringify({ error: "request body too large (max 4 MB)" }));
           }
           return;
         }
@@ -244,9 +245,9 @@ describe("POST /run", () => {
     expect(status).toBe(400);
   });
 
-  it("returns 413 (or closes connection) when body exceeds 50 MB limit", async () => {
+  it("returns 413 (or closes connection) when body exceeds 4 MB limit", async () => {
     const token = mintJwt(TEST_SIGNING_KEY, "test-agent");
-    // Build a body slightly over 50 MB
+    // Build a body slightly over 4 MB
     const oversized = "x".repeat(MAX_REQUEST_BODY_BYTES + 1024);
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -481,11 +482,8 @@ describe("ALLOWED_DAEMON_OPTS completeness", () => {
       "settingsFile", // daemon resolves its own settings
     ]);
 
-    // Fields excluded by DaemonRunRequest type or resolved at CLI level before reaching daemon
-    // - apiKey: comes from daemon's own env, not the POST body
-    // - profile: a CliOptions field resolved to AgentLoopOptions fields before runAgentLoop;
-    //            the daemon currently does not expand profiles (loop.ts has no profile support)
-    const typeExcluded = new Set(["apiKey", "profile"]);
+    // Fields excluded by DaemonRunRequest type (apiKey comes from daemon's own env, not POST body)
+    const typeExcluded = new Set(["apiKey"]);
 
     // Fields that should be in ALLOWED_DAEMON_OPTS
     const shouldBeAllowed = adapterSentFields.filter(
@@ -575,27 +573,30 @@ describe("sanitizeDaemonRunOpts — removed legacy keys are rejected (S6)", () =
     expect(safe).not.toHaveProperty("systemPrompt");
   });
 
-  it("rejects 'profile' (CLI-only field, not AgentLoopOptions)", () => {
+  it("allows 'profile' (now an AgentLoopOptions field — expanded by runAgentLoop)", () => {
+    // profile was previously CLI-only; it is now part of AgentLoopOptions so the
+    // daemon passes it through to runAgentLoop which calls applyProfileAsync().
     const { safe, rejected } = sanitizeDaemonRunOpts({ profile: "code-review" });
-    expect(rejected).toContain("profile");
-    expect(safe).not.toHaveProperty("profile");
+    expect(rejected).not.toContain("profile");
+    expect(safe.profile).toBe("code-review");
   });
 
   it("rejects multiple removed keys in a single call", () => {
-    const { rejected } = sanitizeDaemonRunOpts({
+    const { rejected, safe } = sanitizeDaemonRunOpts({
       hooksEnabled: true,
       source: "daemon",
       site_url: "https://x.com",
       site_name: "X",
       systemPrompt: "hi",
-      profile: "default",
     });
     expect(rejected).toContain("hooksEnabled");
     expect(rejected).toContain("source");
     expect(rejected).toContain("site_url");
     expect(rejected).toContain("site_name");
     expect(rejected).toContain("systemPrompt");
-    expect(rejected).toContain("profile");
+    // profile is now allowed (AgentLoopOptions field)
+    expect(safe).not.toHaveProperty("hooksEnabled");
+    expect(safe).not.toHaveProperty("source");
   });
 
   it("still allows the camelCase replacements (siteUrl, siteName, appendSystemPrompt)", () => {
@@ -608,5 +609,110 @@ describe("sanitizeDaemonRunOpts — removed legacy keys are rejected (S6)", () =
     expect(safe.siteUrl).toBe("https://example.com");
     expect(safe.siteName).toBe("My App");
     expect(safe.appendSystemPrompt).toBe("Be concise.");
+  });
+});
+
+// ── E7: Profile expansion unit tests ─────────────────────────────────────────
+// Verifies that applyProfileAsync correctly expands profile presets into
+// AgentLoopOptions defaults, and that caller opts always win over profile defaults.
+
+describe("applyProfileAsync — profile expansion (E7)", () => {
+  it("expands code-review profile: sets tagToolOutputs=true and maxTurns=20", async () => {
+    const opts = await applyProfileAsync("code-review", {
+      model: "openai/gpt-4o",
+      prompt: "Review this code.",
+    } as Parameters<typeof applyProfileAsync>[1]);
+    expect(opts.tagToolOutputs).toBe(true);
+    expect(opts.maxTurns).toBe(20);
+  });
+
+  it("expands code-review profile: sets bashPolicy with blockedCommands", async () => {
+    const opts = await applyProfileAsync("code-review", {
+      model: "openai/gpt-4o",
+      prompt: "Review.",
+    } as Parameters<typeof applyProfileAsync>[1]);
+    expect(opts.bashPolicy).toBeDefined();
+    const bp = opts.bashPolicy as { blockedCommands?: string[] };
+    expect(bp.blockedCommands).toContain("curl");
+    expect(bp.blockedCommands).toContain("wget");
+  });
+
+  it("caller opts override profile defaults (maxTurns wins)", async () => {
+    const opts = await applyProfileAsync("code-review", {
+      model: "openai/gpt-4o",
+      prompt: "Review.",
+      maxTurns: 5, // caller overrides profile's maxTurns=20
+    } as Parameters<typeof applyProfileAsync>[1]);
+    expect(opts.maxTurns).toBe(5);
+  });
+
+  it("unknown profile name returns original opts unchanged and logs warning", async () => {
+    const original = { model: "openai/gpt-4o", prompt: "test", maxTurns: 7 } as Parameters<typeof applyProfileAsync>[1];
+    const stderrWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const opts = await applyProfileAsync("nonexistent-profile-xyz", original);
+      expect(opts.maxTurns).toBe(7);
+      expect(opts.model).toBe("openai/gpt-4o");
+      // Should have written a warning to stderr
+      expect(stderrWrite).toHaveBeenCalledWith(
+        expect.stringContaining("unknown profile"),
+      );
+    } finally {
+      stderrWrite.mockRestore();
+    }
+  });
+
+  it("appends caller's appendSystemPrompt after profile's system prompt", async () => {
+    const opts = await applyProfileAsync("code-review", {
+      model: "openai/gpt-4o",
+      prompt: "Review.",
+      appendSystemPrompt: "Also check for accessibility issues.",
+    } as Parameters<typeof applyProfileAsync>[1]);
+    // Profile's system prompt should be present
+    expect(opts.appendSystemPrompt).toContain("code review");
+    // Caller's addition should also be present
+    expect(opts.appendSystemPrompt).toContain("accessibility");
+  });
+});
+
+// ── E8: POST /run with profile passes through daemon ─────────────────────────
+// Verifies that opts.profile passes sanitizeDaemonRunOpts and that the daemon
+// accepts and processes a /run request that includes a profile field.
+
+describe("POST /run — profile field passes through daemon (E8)", () => {
+  it("sanitizeDaemonRunOpts keeps profile field in safe opts", () => {
+    const { safe, rejected } = sanitizeDaemonRunOpts({
+      model: "openai/gpt-4o",
+      profile: "code-review",
+      maxTurns: 10,
+    });
+    expect(rejected).not.toContain("profile");
+    expect(safe.profile).toBe("code-review");
+    expect(safe.model).toBe("openai/gpt-4o");
+    expect(safe.maxTurns).toBe(10);
+  });
+
+  it("daemon /run returns 200 when opts includes profile field", async () => {
+    const token = mintJwt(TEST_SIGNING_KEY, "test-agent");
+    const { status } = await post("/run", {
+      token,
+      body: {
+        prompt: "Please review my code.",
+        opts: { model: "openai/gpt-4o", profile: "code-review" },
+      },
+    });
+    expect(status).toBe(200);
+  });
+
+  it("daemon /run returns 200 with bug-fix profile", async () => {
+    const token = mintJwt(TEST_SIGNING_KEY, "test-agent");
+    const { status } = await post("/run", {
+      token,
+      body: {
+        prompt: "Fix the null pointer exception in src/utils.ts.",
+        opts: { profile: "bug-fix" },
+      },
+    });
+    expect(status).toBe(200);
   });
 });

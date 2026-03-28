@@ -178,7 +178,7 @@ const ALLOWED_DAEMON_OPTS = new Set<keyof AgentLoopOptions>([
   "temperature", "top_p", "top_k", "seed", "stop",
   "frequency_penalty", "presence_penalty", "repetition_penalty", "min_p",
   // Model control
-  "reasoning", "provider", "transforms", "preset",
+  "reasoning", "provider", "transforms", "preset", "profile",
   "parallel_tool_calls", "tool_choice", "response_format",
   // Cost limits
   "maxCostUsd", "maxCostUsdSoft", "costPerInputToken", "costPerOutputToken",
@@ -597,7 +597,7 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
     }
 
     // ── Parse body ──────────────────────────────────────────────────────────
-    const MAX_REQUEST_BODY_BYTES = 50 * 1024 * 1024; // 50 MB
+    const MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024; // 4 MB
     let body = "";
     let bodySize = 0;
     let bodyTooLarge = false;
@@ -625,7 +625,7 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
       if (bodyTooLarge) {
         if (!res.destroyed) {
           res.writeHead(413);
-          res.end(JSON.stringify({ error: "request body too large (max 50 MB)" }));
+          res.end(JSON.stringify({ error: "request body too large (max 4 MB)" }));
         }
         return;
       }
