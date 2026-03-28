@@ -21,6 +21,17 @@ import { startDaemon, readDaemonPort } from "./daemon.js";
 import { applyProfileAsync } from "./profiles.js";
 import { initTelemetry } from "./telemetry.js";
 import { runSetupWizard } from "./setup.js";
+import { createRequire } from "node:module";
+
+// ── Version ───────────────────────────────────────────────────────────────────
+const _ORAGER_VERSION: string = (() => {
+  try {
+    const req = createRequire(import.meta.url);
+    return (req("../package.json") as { version?: string }).version ?? "0.0.1";
+  } catch {
+    return "0.0.1";
+  }
+})();
 
 // ── Stdin reading ────────────────────────────────────────────────────────────
 
@@ -401,10 +412,14 @@ process.on("SIGTERM", () => handleInterrupt("SIGTERM"));
 
 // ── Status command ────────────────────────────────────────────────────────────
 
-async function handleStatus(): Promise<void> {
+async function handleStatus(jsonMode = false): Promise<void> {
   const port = await readDaemonPort();
   if (!port) {
-    process.stdout.write("orager daemon: not running (no port file found)\n");
+    if (jsonMode) {
+      process.stdout.write(JSON.stringify({ running: false, port: null, url: null, error: "no port file found" }) + "\n");
+    } else {
+      process.stdout.write("orager daemon: not running (no port file found)\n");
+    }
     process.exit(1);
   }
 
@@ -414,19 +429,32 @@ async function handleStatus(): Promise<void> {
       signal: AbortSignal.timeout(3000),
     });
     if (res.ok) {
-      process.stdout.write(`orager daemon: running on port ${port}\n`);
-      process.stdout.write(`  url: ${url}\n`);
+      if (jsonMode) {
+        process.stdout.write(JSON.stringify({ running: true, port, url }) + "\n");
+      } else {
+        process.stdout.write(`orager daemon: running on port ${port}\n`);
+        process.stdout.write(`  url: ${url}\n`);
+      }
       process.exit(0);
     } else {
-      process.stdout.write(
-        `orager daemon: port file found (port ${port}) but /health returned HTTP ${res.status}\n`,
-      );
+      if (jsonMode) {
+        process.stdout.write(JSON.stringify({ running: false, port, url, error: `/health returned HTTP ${res.status}` }) + "\n");
+      } else {
+        process.stdout.write(
+          `orager daemon: port file found (port ${port}) but /health returned HTTP ${res.status}\n`,
+        );
+      }
       process.exit(1);
     }
   } catch {
-    process.stdout.write(
-      `orager daemon: port file found (port ${port}) but daemon is not responding (connection refused or timeout)\n`,
-    );
+    const msg = "daemon not responding (connection refused or timeout)";
+    if (jsonMode) {
+      process.stdout.write(JSON.stringify({ running: false, port, url, error: msg }) + "\n");
+    } else {
+      process.stdout.write(
+        `orager daemon: port file found (port ${port}) but ${msg}\n`,
+      );
+    }
     process.exit(1);
   }
 }
@@ -967,6 +995,12 @@ async function main(): Promise<void> {
 
   let argv = process.argv.slice(2);
 
+  // ── Version ──────────────────────────────────────────────────────────────────
+  if (argv.includes("--version") || argv.includes("-v")) {
+    process.stdout.write(`orager ${_ORAGER_VERSION}\n`);
+    process.exit(0);
+  }
+
   // ── Setup wizard ─────────────────────────────────────────────────────────────
   if (argv[0] === "setup") {
     await runSetupWizard(argv.slice(1));
@@ -1012,7 +1046,7 @@ async function main(): Promise<void> {
   }
 
   // ── Status command ────────────────────────────────────────────────────────
-  if (argv.includes("--status")) { await handleStatus(); return; }
+  if (argv.includes("--status")) { await handleStatus(argv.includes("--json")); return; }
 
   // Session management commands — no API key needed
   if (argv.includes("--list-sessions"))    { await handleListSessions();         return; }

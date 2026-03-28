@@ -278,6 +278,8 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
   let lastActivityAt = Date.now();
   let keepAliveTimer: ReturnType<typeof setInterval> | null = null;
   const usedModels = new Set<string>([model]);
+  /** Maps model id → last-used timestamp (ms). Used to compute recentModels in /metrics. */
+  const modelLastUsedAt = new Map<string, number>([[model, Date.now()]]);
   let lastRealRequestAt = Date.now();
 
   // ── Audit log (metadata only — no prompt/response content) ─────────────────
@@ -428,6 +430,12 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
           uptimeMs: Date.now() - daemonStartedAt,
           model,
           usedModels: Array.from(usedModels),
+          recentModels: (() => {
+            const cutoff = Date.now() - 60 * 60 * 1000; // 1 hour
+            return Array.from(modelLastUsedAt.entries())
+              .filter(([, ts]) => ts >= cutoff)
+              .map(([m]) => m);
+          })(),
           activeRunsByAgent: Object.fromEntries(activeRunsByAgent),
           providerHealth: getAllProviderStats(),
           degradedProviders: getDegradedProviders(),
@@ -672,7 +680,10 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
       }
 
       // Track which models are being used for multi-model keep-alive (#5)
-      if (runReq.opts?.model) usedModels.add(runReq.opts.model);
+      if (runReq.opts?.model) {
+        usedModels.add(runReq.opts.model);
+        modelLastUsedAt.set(runReq.opts.model, Date.now());
+      }
       lastRealRequestAt = Date.now();
 
       activeRuns++;
