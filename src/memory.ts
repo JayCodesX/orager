@@ -363,6 +363,14 @@ export function _clearMemoryLocksForTesting(): void {
 // ── Storage router ────────────────────────────────────────────────────────────
 
 /**
+ * Returns true when SQLite is enabled and the retrieval mode is "local" (Phase 1).
+ * In this case, searchMemoryFts should be used instead of in-memory scoring.
+ */
+export function shouldUseFtsRetrieval(memoryRetrieval?: string): boolean {
+  return isSqliteMemoryEnabled() && (memoryRetrieval === "local" || memoryRetrieval === undefined);
+}
+
+/**
  * Load memory store from SQLite when ORAGER_DB_PATH is set, otherwise from JSON file.
  */
 export async function loadMemoryStoreAny(memoryKey: string): Promise<MemoryStore> {

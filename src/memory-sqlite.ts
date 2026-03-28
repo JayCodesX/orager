@@ -257,6 +257,24 @@ export function searchMemoryFts(
 }
 
 /**
+ * Returns all distinct memory_key values in the database.
+ */
+export function listMemoryKeysSqlite(): string[] {
+  const db = getDb();
+  const rows = db.prepare("SELECT DISTINCT memory_key FROM memory_entries ORDER BY memory_key").all() as { memory_key: string }[];
+  return rows.map((r) => r.memory_key);
+}
+
+/**
+ * Deletes all entries for a given memoryKey. Returns the number of deleted rows.
+ */
+export function clearMemoryStoreSqlite(memoryKey: string): number {
+  const db = getDb();
+  const result = db.prepare("DELETE FROM memory_entries WHERE memory_key = ?").run(memoryKey);
+  return result.changes;
+}
+
+/**
  * Returns true when ORAGER_DB_PATH is set, indicating SQLite memory is available.
  */
 export function isSqliteMemoryEnabled(): boolean {

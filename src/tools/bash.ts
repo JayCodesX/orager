@@ -1,9 +1,46 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import type { ToolExecutor, ToolResult } from "../types.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 300_000;
 const MAX_OUTPUT_CHARS = 100_000;
+
+// ── Platform availability ─────────────────────────────────────────────────────
+
+let _bashAvailable: boolean | null = null;
+
+/**
+ * Returns true if a bash-compatible shell is available.
+ * On non-Windows platforms, always returns true.
+ * On Windows, checks whether `bash` or `sh` are in PATH using `where`.
+ * Result is cached after the first call.
+ */
+export function isBashAvailable(): boolean {
+  if (_bashAvailable !== null) return _bashAvailable;
+  if (process.platform !== "win32") {
+    _bashAvailable = true;
+    return true;
+  }
+  // On Windows, check if bash or sh is available via `where`
+  for (const shell of ["bash", "sh"]) {
+    try {
+      const result = spawnSync("where", [shell], { encoding: "utf8", timeout: 5000 });
+      if (result.status === 0 && result.stdout.trim()) {
+        _bashAvailable = true;
+        return true;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  _bashAvailable = false;
+  return false;
+}
+
+/** Reset cached bash availability — for testing only. */
+export function _resetBashAvailabilityForTesting(): void {
+  _bashAvailable = null;
+}
 
 /**
  * Check if a command string contains a blocked command, using a set of
@@ -82,6 +119,15 @@ export const bashTool: ToolExecutor = {
     cwd: string,
     context?: Record<string, unknown>
   ): Promise<ToolResult> {
+    // ── Platform availability check ────────────────────────────────────────
+    if (!isBashAvailable()) {
+      return {
+        toolCallId: "",
+        content: "bash tool is not available on this platform without Git Bash or WSL",
+        isError: true,
+      };
+    }
+
     if (typeof input["command"] !== "string" || !input["command"]) {
       return { toolCallId: "", content: "command must be a non-empty string", isError: true };
     }
