@@ -17,7 +17,7 @@ import { connectAllMcpServers } from "./mcp-client.js";
 import type { McpClientHandle } from "./mcp-client.js";
 import { makeTodoTools } from "./tools/todo.js";
 import { makeRememberTool } from "./tools/remember.js";
-import { loadMemoryStore, pruneExpired, renderMemoryBlock, memoryKeyFromCwd } from "./memory.js";
+import { loadMemoryStore, pruneExpired, renderMemoryBlock, renderRetrievedBlock, retrieveEntries, memoryKeyFromCwd } from "./memory.js";
 import { runHook } from "./hooks.js";
 import type { HookConfig } from "./hooks.js";
 import { loadSettings, mergeSettings, loadClaudeDesktopMcpServers } from "./settings.js";
@@ -404,7 +404,15 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     // Load + prune the store, inject into system prompt, and register the tool
     try {
       const memStore = pruneExpired(await loadMemoryStore(effectiveMemoryKey));
-      const memBlock = renderMemoryBlock(memStore, memoryMaxChars);
+      const threshold = typeof opts.memoryRetrievalThreshold === "number"
+        ? opts.memoryRetrievalThreshold
+        : 15;
+      const memBlock = memStore.entries.length <= threshold
+        ? renderMemoryBlock(memStore, memoryMaxChars)
+        : renderRetrievedBlock(
+            retrieveEntries(memStore, prompt, { topK: 12 }),
+            memoryMaxChars,
+          );
       if (memBlock) {
         systemPrompt += "\n\n## Your persistent memory\n\n" + memBlock;
       }
