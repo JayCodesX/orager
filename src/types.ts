@@ -143,6 +143,13 @@ export interface SessionData {
   /** Schema version for forward-compatible migrations. Always written as CURRENT_SESSION_SCHEMA_VERSION. */
   schemaVersion?: number;
   /**
+   * Cumulative API cost (USD) across all runs for this session.
+   * Incremented at loop teardown so that maxCostUsd is enforced against the
+   * full session total rather than resetting to $0 on every resume.
+   * Missing in older sessions — defaults to 0 for backward compatibility.
+   */
+  cumulativeCostUsd?: number;
+  /**
    * Set when the run ended early to ask for approval.
    * Cleared when the session is resumed and the approval is resolved.
    */
