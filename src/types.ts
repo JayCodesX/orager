@@ -1019,6 +1019,14 @@ export interface AgentLoopOptions {
   settingsFile?: string;
 
   /**
+   * Named agent profile preset to apply (e.g. "code-review", "bug-fix", "research").
+   * Profile defaults are applied before the run starts; caller opts always win.
+   * Built-in profiles: code-review, bug-fix, research, refactor, test-writer, devops.
+   * Custom profiles can be defined in ~/.orager/profiles/<name>.yaml.
+   */
+  profile?: string;
+
+  /**
    * When true, starts the loop in plan mode: only readonly tools are available
    * until the model calls exit_plan_mode. Default false.
    */
