@@ -440,9 +440,9 @@ USAGE
 
 BASIC
   --model <id>              Model to use (default: deepseek/deepseek-chat-v3-2)
-  --max-turns <n>           Maximum agent turns (default: 30)
+  --max-turns <n>           Maximum agent turns (default: 20)
   --timeout-sec <n>         Run-level timeout in seconds (default: 300)
-  --session-id <id>         Resume an existing session
+  --resume <id>             Resume an existing session
   --cwd <path>              Working directory for the agent
   --print                   Print result to stdout (non-interactive mode)
   --verbose                 Verbose logging
@@ -472,7 +472,8 @@ SESSIONS
 
 TOOLS & SAFETY
   --dangerously-skip-permissions  Skip all tool-use permission checks
-  --require-approval <mode>       Approval mode: all, none, tools
+  --require-approval              Require approval for all tool calls
+  --require-approval-for <tools>  Require approval for specific tools (comma-separated)
   --bash-policy <json>            Bash tool policy (blocked commands, env vars)
   --settings-file <path>          Path to a custom settings JSON file
 
@@ -1077,6 +1078,18 @@ interface ConfigFileSchema {
   memoryKey?: string;
   /** Max chars injected from memory into the system prompt (default 6000). */
   memoryMaxChars?: number;
+  /** Daemon default port (applied when --serve is used). */
+  daemonPort?: number;
+  /** Daemon max concurrent runs (applied when --serve is used). */
+  daemonMaxConcurrent?: number;
+  /** Daemon idle-shutdown timeout string, e.g. "30m" or "1h" (applied when --serve is used). */
+  daemonIdleTimeout?: string;
+  /** Per-agent OpenRouter API key override — isolates rate limits from the global key. */
+  agentApiKey?: string;
+  /** Memory retrieval mode: "local" (default FTS) or "embedding" (cosine similarity). */
+  memoryRetrieval?: "local" | "embedding";
+  /** OpenRouter embedding model for memoryRetrieval === "embedding". */
+  memoryEmbeddingModel?: string;
 }
 
 /**
@@ -1117,6 +1130,9 @@ async function loadConfigFile(filePath: string): Promise<{
   memory?: boolean;
   memoryKey?: string;
   memoryMaxChars?: number;
+  agentApiKey?: string;
+  memoryRetrieval?: "local" | "embedding";
+  memoryEmbeddingModel?: string;
 }> {
   let raw: string;
   try {
@@ -1244,6 +1260,9 @@ async function loadConfigFile(filePath: string): Promise<{
     memory?: boolean;
     memoryKey?: string;
     memoryMaxChars?: number;
+    agentApiKey?: string;
+    memoryRetrieval?: "local" | "embedding";
+    memoryEmbeddingModel?: string;
   } = { args };
   if (Array.isArray(cfg.turnModelRules) && cfg.turnModelRules.length > 0) {
     result.turnModelRules = cfg.turnModelRules;
@@ -1298,10 +1317,18 @@ async function loadConfigFile(filePath: string): Promise<{
     const names = cfg.requiredEnvVars.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
     if (names.length > 0) result.args.push("--require-env", names.join(","));
   }
+  // Daemon defaults — push as CLI flags so the --serve branch reads them via argv.indexOf
+  if (cfg.daemonPort !== undefined && cfg.daemonPort > 0) args.push("--port", String(cfg.daemonPort));
+  if (cfg.daemonMaxConcurrent !== undefined && cfg.daemonMaxConcurrent > 0) args.push("--max-concurrent", String(cfg.daemonMaxConcurrent));
+  if (typeof cfg.daemonIdleTimeout === "string" && /^\d+(?:\.\d+)?[mh]$/.test(cfg.daemonIdleTimeout)) args.push("--idle-timeout", cfg.daemonIdleTimeout);
   // Memory — pass via result object so they can be stored in globalThis
   if (cfg.memory !== undefined) result.memory = cfg.memory;
   if (typeof cfg.memoryKey === "string" && cfg.memoryKey.trim()) result.memoryKey = cfg.memoryKey.trim();
   if (typeof cfg.memoryMaxChars === "number" && cfg.memoryMaxChars > 0) result.memoryMaxChars = cfg.memoryMaxChars;
+  // Per-agent key isolation and memory retrieval — pass via result object (contain secrets / typed values)
+  if (typeof cfg.agentApiKey === "string" && cfg.agentApiKey.trim()) result.agentApiKey = cfg.agentApiKey.trim();
+  if (cfg.memoryRetrieval === "local" || cfg.memoryRetrieval === "embedding") result.memoryRetrieval = cfg.memoryRetrieval;
+  if (typeof cfg.memoryEmbeddingModel === "string" && cfg.memoryEmbeddingModel.trim()) result.memoryEmbeddingModel = cfg.memoryEmbeddingModel.trim();
   return result;
 }
 
@@ -1595,6 +1622,15 @@ async function main(): Promise<void> {
     if (cfResult.memoryMaxChars !== undefined) {
       (globalThis as Record<string, unknown>).__oragerMemoryMaxChars = cfResult.memoryMaxChars;
     }
+    if (cfResult.agentApiKey) {
+      (globalThis as Record<string, unknown>).__oragerAgentApiKey = cfResult.agentApiKey;
+    }
+    if (cfResult.memoryRetrieval !== undefined) {
+      (globalThis as Record<string, unknown>).__oragerMemoryRetrieval = cfResult.memoryRetrieval;
+    }
+    if (cfResult.memoryEmbeddingModel) {
+      (globalThis as Record<string, unknown>).__oragerMemoryEmbeddingModel = cfResult.memoryEmbeddingModel;
+    }
   }
 
   // Resolve API key
@@ -1800,6 +1836,9 @@ async function main(): Promise<void> {
     memory: (globalThis as Record<string, unknown>).__oragerMemory as boolean | undefined,
     memoryKey: (globalThis as Record<string, unknown>).__oragerMemoryKey as string | undefined,
     memoryMaxChars: (globalThis as Record<string, unknown>).__oragerMemoryMaxChars as number | undefined,
+    agentApiKey: (globalThis as Record<string, unknown>).__oragerAgentApiKey as string | undefined,
+    memoryRetrieval: (globalThis as Record<string, unknown>).__oragerMemoryRetrieval as "local" | "embedding" | undefined,
+    memoryEmbeddingModel: (globalThis as Record<string, unknown>).__oragerMemoryEmbeddingModel as string | undefined,
   };
 
   if (opts.profile) {
