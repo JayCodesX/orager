@@ -24,11 +24,13 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
+import { createRequire } from "node:module";
 import { runAgentLoop } from "./loop.js";
 import { mintJwt, verifyJwt, loadOrCreateSigningKey, KEY_PATH } from "./jwt.js";
 import { callOpenRouter } from "./openrouter.js";
 import type { EmitEvent, AgentLoopOptions } from "./types.js";
-import { ensureSessionsDirPermissions, pruneOldSessions, listSessions, searchSessions } from "./session.js";
+import { ensureSessionsDirPermissions, pruneOldSessions, listSessions, searchSessions, getSessionsDir } from "./session.js";
 import { getAllProviderStats, getDegradedProviders } from "./provider-health.js";
 import { getRateLimitState } from "./rate-limit-tracker.js";
 import { initTelemetry } from "./telemetry.js";
@@ -43,6 +45,16 @@ import { fetchLiveModelMeta } from "./openrouter-model-meta.js";
 
 const PORT_FILE = path.join(os.homedir(), ".orager", "daemon.port");
 const PID_FILE = path.join(os.homedir(), ".orager", "daemon.pid");
+
+// ── drainAndExit export ───────────────────────────────────────────────────────
+// Set by startDaemon once the server is live; exported so tests can trigger
+// graceful shutdown without sending real OS signals.
+let _drainAndExit: ((timeoutMs: number) => Promise<void>) | null = null;
+/** Call the active daemon's drain-and-exit function. Throws if no daemon started. */
+export function drainAndExit(timeoutMs: number): Promise<void> {
+  if (!_drainAndExit) throw new Error("drainAndExit: no daemon running");
+  return _drainAndExit(timeoutMs);
+}
 
 // ── Cached API key info (for /metrics endpoint) ───────────────────────────────
 let _cachedKeyInfo: { info: ApiKeyInfo | null; fetchedAt: number } | null = null;
@@ -392,13 +404,61 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
   const server = http.createServer((req, res) => {
     lastActivityAt = Date.now();
 
-    // Health check — returns minimal liveness signal only.
+    // Health check — deep checks for key file, sessions dir, and optional SQLite DB.
     // Operational metrics (activeRuns, maxConcurrent, model, provider health) are
     // available at the authenticated /metrics endpoint to prevent info leakage to
     // unauthenticated local processes.
     if (req.method === "GET" && req.url === "/health") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok" }));
+      const checks: Record<string, "ok" | "error"> = {};
+      const failures: string[] = [];
+
+      // Check 1: signing key readable
+      try {
+        fsSync.accessSync(KEY_PATH, fsSync.constants.R_OK);
+        checks["keyFile"] = "ok";
+      } catch {
+        checks["keyFile"] = "error";
+        failures.push("keyFile");
+      }
+
+      // Check 2: sessions dir writable — write + delete a temp file
+      try {
+        const sessDir = getSessionsDir();
+        const tmpPath = path.join(sessDir, `.health-check-${process.pid}`);
+        fsSync.writeFileSync(tmpPath, "1");
+        fsSync.unlinkSync(tmpPath);
+        checks["sessionsDir"] = "ok";
+      } catch {
+        checks["sessionsDir"] = "error";
+        failures.push("sessionsDir");
+      }
+
+      // Check 3: if ORAGER_DB_PATH set, run SELECT 1 via better-sqlite3
+      const dbPath = process.env["ORAGER_DB_PATH"];
+      if (dbPath) {
+        try {
+          const _require = createRequire(import.meta.url);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const Database = _require("better-sqlite3") as { new(path: string, opts?: Record<string, unknown>): { prepare(sql: string): { get(): unknown }; close(): void } };
+          const db = new Database(dbPath, { readonly: true });
+          db.prepare("SELECT 1").get();
+          db.close();
+          checks["db"] = "ok";
+        } catch {
+          checks["db"] = "error";
+          failures.push("db");
+        }
+      } else {
+        (checks as Record<string, string>)["db"] = "n/a";
+      }
+
+      if (failures.length === 0) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "ok", checks }));
+      } else {
+        res.writeHead(503, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "degraded", reason: failures.join(","), checks }));
+      }
       return;
     }
 
@@ -871,17 +931,28 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
   runSessionPrune();
   setInterval(runSessionPrune, 24 * 60 * 60 * 1000).unref();
 
-  // Graceful shutdown
-  process.on("SIGTERM", async () => {
+  const DRAIN_TIMEOUT_MS = 120_000; // 2 minutes
+
+  /**
+   * Abort all in-flight runs, wait up to timeoutMs for them to finish,
+   * then close the server and release PID/port files before exiting.
+   * Exported so tests can exercise shutdown behaviour directly.
+   */
+  async function drainAndExit(timeoutMs: number): Promise<void> {
     draining = true;
-    process.stderr.write("[orager daemon] SIGTERM — draining in-flight runs...\n");
+    process.stderr.write(`[orager daemon] draining in-flight runs (timeout ${timeoutMs / 1000}s)...\n`);
     stopKeepAlive();
+
+    // Abort every active run so clients receive a clean error
+    for (const controller of activeRunControllers.values()) {
+      controller.abort();
+    }
+
     await releasePidLock();
     await removePortFile();
 
-    const DRAIN_TIMEOUT_MS = 120_000; // 2 minutes
     const drainStart = Date.now();
-    while (activeRuns > 0 && Date.now() - drainStart < DRAIN_TIMEOUT_MS) {
+    while (activeRuns > 0 && Date.now() - drainStart < timeoutMs) {
       await new Promise<void>((r) => setTimeout(r, 500));
     }
     if (activeRuns > 0) {
@@ -892,13 +963,14 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
       process.stderr.write("[orager daemon] all runs completed — exiting\n");
     }
     server.close(() => process.exit(0));
-  });
-  process.on("SIGINT", async () => {
-    stopKeepAlive();
-    await releasePidLock();
-    await removePortFile();
-    server.close(() => process.exit(0));
-  });
+  }
+
+  // Wire up the module-level export so callers (tests) can invoke drain without signals
+  _drainAndExit = drainAndExit;
+
+  // Graceful shutdown
+  process.on("SIGTERM", () => { void drainAndExit(DRAIN_TIMEOUT_MS); });
+  process.on("SIGINT",  () => { void drainAndExit(30_000); });
 }
 
 // ── Daemon client helpers (used by the adapter's execute-cli.ts) ──────────────

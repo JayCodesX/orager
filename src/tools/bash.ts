@@ -5,6 +5,53 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 300_000;
 const MAX_OUTPUT_CHARS = 100_000;
 
+/**
+ * Check if a command string contains a blocked command, using a set of
+ * hardening techniques that go beyond simple executable extraction:
+ *
+ * 1. `bash -c <arg>` / `sh -c <arg>` — recursively check the inline arg
+ * 2. `. <file>` / `source <file>` — always blocked when any policy is active
+ * 3. Process substitution `<(...)` — check content inside for blocked commands
+ * 4. Substring scan — any blocked term appearing anywhere in the full command
+ *
+ * Returns the name of the first blocked command found, or null if clean.
+ */
+export function containsBlockedCommand(cmd: string, blocked: Set<string>): string | null {
+  // 1. bash -c / sh -c — extract the inline argument and recurse
+  const shellCMatch = /(?:^|\s)(?:bash|sh|dash|zsh|ksh|csh|fish)\s+-[^c]*c\s+(['"]?)(.+?)\1(?:\s|$)/s.exec(cmd);
+  if (shellCMatch) {
+    const inlineArg = shellCMatch[2] ?? "";
+    const inner = containsBlockedCommand(inlineArg, blocked);
+    if (inner) return inner;
+  }
+
+  // 2. source / . (dot) — always block when any bash policy is active
+  if (/(?:^|[;|&()\s`])(?:source|\.)\s+\S/.test(cmd)) {
+    return "source";
+  }
+
+  // 3. Process substitution <(...) — check content inside
+  const procSubRe = /<\(([^)]+)\)/g;
+  let procMatch: RegExpExecArray | null;
+  while ((procMatch = procSubRe.exec(cmd)) !== null) {
+    const inner = containsBlockedCommand(procMatch[1] ?? "", blocked);
+    if (inner) return inner;
+  }
+
+  // 4. Substring scan — catch any occurrence of a blocked term in the full command
+  const cmdLower = cmd.toLowerCase();
+  for (const term of blocked) {
+    if (cmdLower.includes(term)) {
+      // Only match if it appears as a word boundary to reduce false positives
+      // (e.g. "rmdir" should not trigger "rm" block unless "rmdir" is also blocked)
+      const wordBoundaryRe = new RegExp(`(?:^|[^a-z0-9_/-])${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:[^a-z0-9_]|$)`);
+      if (wordBoundaryRe.test(cmdLower)) return term;
+    }
+  }
+
+  return null;
+}
+
 export const bashTool: ToolExecutor = {
   definition: {
     type: "function",
@@ -107,6 +154,16 @@ export const bashTool: ToolExecutor = {
             isError: true,
           };
         }
+      }
+
+      // Hardened bypass checks: shell -c, source/., process substitution, substring
+      const hardenedBlocked = containsBlockedCommand(command, blockedSet);
+      if (hardenedBlocked) {
+        return {
+          toolCallId: "",
+          content: `Command '${hardenedBlocked}' is blocked by bash policy`,
+          isError: true,
+        };
       }
     }
 
