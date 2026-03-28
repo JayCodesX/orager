@@ -57,6 +57,38 @@ import {
 
 // ── Agent loop ────────────────────────────────────────────────────────────────
 
+/**
+ * Compute the effective per-tool timeout, taking into account both the
+ * explicit `toolTimeouts` configuration and the remaining run-level budget.
+ *
+ * Exported as a pure function for unit testing.  The `_effectiveToolTimeout`
+ * closure inside `runAgentLoop` delegates to this.
+ *
+ * @param toolName    - The tool being executed.
+ * @param toolTimeouts - Per-tool explicit timeout map from AgentLoopOptions.
+ * @param timeoutSec  - Run-level timeout from AgentLoopOptions (0 = unlimited).
+ * @param elapsedMs   - Milliseconds elapsed since the loop started.
+ */
+export function computeToolBudgetTimeout(params: {
+  toolName: string;
+  toolTimeouts?: Record<string, number>;
+  timeoutSec?: number;
+  elapsedMs: number;
+}): number | undefined {
+  const { toolName, toolTimeouts, timeoutSec, elapsedMs } = params;
+  const explicit = toolTimeouts?.[toolName];
+  if (timeoutSec && timeoutSec > 0) {
+    const remainingMs = timeoutSec * 1000 - elapsedMs;
+    if (remainingMs <= 0) return 1; // budget exhausted — let abort signal fire
+    const budgetCap = Math.min(
+      Math.max(Math.floor(remainingMs * 0.8), 5_000),
+      5 * 60_000, // never longer than 5 min per tool from budget
+    );
+    return explicit != null ? Math.min(explicit, budgetCap) : budgetCap;
+  }
+  return explicit;
+}
+
 export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   const {
     prompt,
@@ -102,6 +134,10 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     }
   }
 
+  // Record loop start time so per-tool budget deadlines can be derived from
+  // remaining time (timeoutSec * 1000 - elapsed). Used in tool execution below.
+  const _loopStartMs = Date.now();
+
   // ── Run-level timeout ──────────────────────────────────────────────────────
   // Compose opts.abortSignal with a timeout signal derived from opts.timeoutSec.
   // The resulting signal aborts at whichever fires first.
@@ -115,6 +151,24 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     if (signals.length === 1) return signals[0];
     return AbortSignal.any(signals);
   })();
+
+  /**
+   * Derive the effective timeout for a tool call.
+   * - If an explicit entry exists in opts.toolTimeouts, honour it but cap it
+   *   at the remaining run budget so tools never outlive the loop.
+   * - If timeoutSec > 0 and no explicit timeout is set, use 80% of the
+   *   remaining budget (min 5 s, max 5 min) so the loop always has headroom
+   *   for post-tool hooks and summarization.
+   * - Returns undefined when there is no effective limit.
+   */
+  function _effectiveToolTimeout(toolName: string): number | undefined {
+    return computeToolBudgetTimeout({
+      toolName,
+      toolTimeouts: opts.toolTimeouts,
+      timeoutSec: opts.timeoutSec,
+      elapsedMs: Date.now() - _loopStartMs,
+    });
+  }
 
   // Per-run circuit breaker — isolates circuit state between daemon runs so one
   // agent's failure streak doesn't block all subsequent runs in the same process.
@@ -551,6 +605,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   let identicalTurnStreak = 0;
   let stuckAttempt = 0;
   const maxIdenticalTurns = opts.maxIdenticalToolCallTurns ?? 5;
+  let loopAborted = false; // set true when stuck-detection forces a break
 
   // JSON healing state — one healing attempt per run
   let jsonHealingUsed = false;
@@ -642,7 +697,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           mode: "delegated",
         });
         try {
-          const delegatedTimeoutMs = opts.toolTimeouts?.[toolName];
+          const delegatedTimeoutMs = _effectiveToolTimeout(toolName);
           const delegatedPromise = opts.onToolCall(toolName, parsedInput);
           const result = delegatedTimeoutMs != null
             ? await Promise.race([
@@ -747,7 +802,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         const metricStart = Date.now();
         let metricIsError = false;
         try {
-          const toolTimeoutMs = opts.toolTimeouts?.[toolName];
+          const toolTimeoutMs = _effectiveToolTimeout(toolName);
           const result = toolTimeoutMs != null
             ? await Promise.race([
                 executeFn(parsedInput, cwd, { sandboxRoot: opts.sandboxRoot, bashPolicy: effectiveOpts.bashPolicy, sessionId }),
@@ -1293,6 +1348,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
               `[orager] loop_abort: identical tool calls for ${identicalTurnStreak} turns — terminating after ${stuckAttempt} warnings\n`,
             );
             log.warn("loop_abort", { sessionId, turn, streak: identicalTurnStreak, stuckAttempt });
+            loopAborted = true;
             break;
           }
           // Do NOT reset identicalTurnStreak — escalate by injecting a warning on every
@@ -1530,7 +1586,9 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     }
 
     // ── 6. After loop ─────────────────────────────────────────────────────
-    const subtype = (maxTurns > 0 && turn >= maxTurns ? "error_max_turns" : "success") as "error_max_turns" | "success";
+    const subtype = loopAborted
+      ? ("error_loop_abort" as const)
+      : (maxTurns > 0 && turn >= maxTurns ? "error_max_turns" : "success") as "error_max_turns" | "success";
 
     // Best-effort session save — a write failure should not turn a successful run into an error
     try {

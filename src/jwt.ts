@@ -90,6 +90,13 @@ export function verifyJwt(token: string, signingKey: string): JwtClaims {
   if (typeof claims.iat !== "number" || !Number.isFinite(claims.iat)) {
     throw new Error("JWT has invalid iat claim");
   }
+  // Reject tokens issued more than CLOCK_SKEW_TOLERANCE_SECONDS in the future.
+  // This prevents an attacker from minting a token with a far-future iat+exp
+  // (if they somehow obtained the key) and using it well beyond the normal TTL.
+  const CLOCK_SKEW_TOLERANCE_SECONDS = 30;
+  if (claims.iat > Math.floor(Date.now() / 1000) + CLOCK_SKEW_TOLERANCE_SECONDS) {
+    throw new Error("JWT iat is too far in the future — possible clock skew or token forgery");
+  }
   if (claims.scope !== "run") {
     throw new Error("JWT scope must be 'run'");
   }

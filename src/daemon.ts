@@ -153,33 +153,67 @@ export interface DaemonRunRequest {
   opts: Omit<AgentLoopOptions, "apiKey" | "onEmit" | "onLog">;
 }
 
-/** Allowlist of AgentLoopOptions fields that callers are permitted to set via daemon /run. */
-const ALLOWED_DAEMON_OPTS = new Set([
-  "model", "models", "maxTurns", "prompt", "systemPrompt", "appendSystemPrompt",
-  "cwd", "sessionId", "forceNewSession", "summarizeAt", "summarizeModel",
-  "temperature", "top_p", "top_k", "seed", "stop", "maxTokens",
-  "reasoning", "provider", "transforms", "preset", "site_url", "site_name",
-  "profile", "planMode", "tagToolOutputs", "trackFileChanges",
-  "maxIdenticalToolCallTurns", "webhookUrl", "useFinishTool",
-  "enableBrowserTools", "parallel_tool_calls", "tool_choice",
-  "response_format", "frequency_penalty", "presence_penalty",
-  "repetition_penalty", "min_p", "maxCostUsdSoft",
-  "addDirs", "maxRetries", "verbose", "forceResume", "approvalMode",
-  "approvalAnswer", "approvalTimeoutMs", "mcpServers", "requireMcpServers",
-  "toolTimeouts", "maxSpawnDepth", "toolErrorBudgetHardStop",
-  "summarizeKeepRecentTurns", "summarizePrompt", "summarizeFallbackKeep",
-  "turnModelRules", "promptContent", "siteUrl", "siteName",
-  "costPerInputToken", "costPerOutputToken", "maxCostUsd",
-  "hooks", "hooksEnabled", "source",
-  "apiKeys", "timeoutSec", "requiredEnvVars",
+/**
+ * Allowlist of AgentLoopOptions fields that callers are permitted to set via daemon /run.
+ *
+ * Typed as Set<keyof AgentLoopOptions> so TypeScript emits a compile error when:
+ *   - a key is misspelled (catches typos like "maxTrun")
+ *   - a key is removed from AgentLoopOptions but forgotten here (stale entry)
+ *
+ * When adding a new field to AgentLoopOptions, decide here whether callers should
+ * be allowed to set it. If yes, add it. If no (security-sensitive), leave it out
+ * and add it to the delete list in sanitizeDaemonRunOpts instead.
+ */
+const ALLOWED_DAEMON_OPTS = new Set<keyof AgentLoopOptions>([
+  // Identity / session
+  "model", "models", "sessionId", "cwd", "addDirs",
+  // Run control
+  "maxTurns", "maxRetries", "verbose", "forceResume", "timeoutSec",
+  // Prompt
+  "prompt", "appendSystemPrompt", "promptContent",
+  // Summarization
+  "summarizeAt", "summarizeModel", "summarizeKeepRecentTurns",
+  "summarizePrompt", "summarizeFallbackKeep",
+  // Sampling
+  "temperature", "top_p", "top_k", "seed", "stop",
+  "frequency_penalty", "presence_penalty", "repetition_penalty", "min_p",
+  // Model control
+  "reasoning", "provider", "transforms", "preset",
+  "parallel_tool_calls", "tool_choice", "response_format",
+  // Cost limits
+  "maxCostUsd", "maxCostUsdSoft", "costPerInputToken", "costPerOutputToken",
+  // Site identity (informational HTTP headers, not outbound connections)
+  "siteUrl", "siteName",
+  // Tool settings
+  "useFinishTool", "enableBrowserTools", "tagToolOutputs",
+  "trackFileChanges", "toolTimeouts", "maxSpawnDepth",
+  "toolErrorBudgetHardStop", "maxIdenticalToolCallTurns",
+  "requiredCapabilities", "requiredEnvVars",
+  // Approval
+  "approvalMode", "approvalAnswer", "approvalTimeoutMs",
+  // Turn routing
+  "turnModelRules",
+  // Hooks
+  "hooks", "hookTimeoutMs", "hookErrorMode",
+  // MCP
+  "mcpServers", "requireMcpServers",
+  // Plan mode
+  "planMode",
+  // Context injection
+  "injectContext", "readProjectInstructions",
+  // Webhook (outbound result delivery)
+  "webhookUrl",
+  // API keys (caller may supply extra rotation keys)
+  "apiKeys",
+  // Memory
   "memory", "memoryKey", "memoryMaxChars",
 ]);
 
-function sanitizeDaemonRunOpts(raw: Record<string, unknown>): { safe: Record<string, unknown>; rejected: string[] } {
+export function sanitizeDaemonRunOpts(raw: Record<string, unknown>): { safe: Record<string, unknown>; rejected: string[] } {
   const safe: Record<string, unknown> = {};
   const rejected: string[] = [];
   for (const [k, v] of Object.entries(raw)) {
-    if (ALLOWED_DAEMON_OPTS.has(k)) {
+    if (ALLOWED_DAEMON_OPTS.has(k as keyof AgentLoopOptions)) {
       safe[k] = v;
     } else {
       rejected.push(k);
@@ -354,10 +388,13 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
   const server = http.createServer((req, res) => {
     lastActivityAt = Date.now();
 
-    // Health check
+    // Health check — returns minimal liveness signal only.
+    // Operational metrics (activeRuns, maxConcurrent, model, provider health) are
+    // available at the authenticated /metrics endpoint to prevent info leakage to
+    // unauthenticated local processes.
     if (req.method === "GET" && req.url === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok", activeRuns, maxConcurrent, model }));
+      res.end(JSON.stringify({ status: "ok" }));
       return;
     }
 

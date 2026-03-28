@@ -6,6 +6,7 @@ import type { EmitEvent, EmitResultEvent, EmitToolEvent, OpenRouterCallResult, T
 
 vi.mock("../src/openrouter.js", () => ({
   callOpenRouter: vi.fn(),
+  shouldUseDirect: vi.fn().mockReturnValue(false),
 }));
 
 vi.mock("../src/session.js", () => ({
@@ -984,30 +985,55 @@ describe("runAgentLoop — loop detection escalation", () => {
     expect(logs.some((l) => l.includes("loop detected"))).toBe(true);
   });
 
-  it("keeps injecting stuck warnings on every subsequent identical turn (streak does not reset)", async () => {
-    // 5 identical turns — threshold=3, so turns 3, 4, 5 should each inject a warning
+  it("emits 3 loop-detected warnings then aborts — streak does not reset between warnings", async () => {
+    // 5 identical turns at threshold=3: warning fires on turns 3, 4, 5.
+    // After the 3rd warning (stuckAttempt=3) Fix #2 breaks the loop with error_loop_abort.
+    // The 6th call (noToolResponse) is never reached.
     const repeatCall = bashCall("c1", "echo loop");
     vi.mocked(callOpenRouter)
       .mockResolvedValueOnce(toolResponse([repeatCall]))
       .mockResolvedValueOnce(toolResponse([repeatCall]))
       .mockResolvedValueOnce(toolResponse([repeatCall]))  // first warning (streak=3)
-      .mockResolvedValueOnce(toolResponse([repeatCall]))  // second warning (streak stays at 3)
-      .mockResolvedValueOnce(toolResponse([repeatCall]))  // third warning (streak stays at 3)
-      .mockResolvedValueOnce(noToolResponse("escaped"));
+      .mockResolvedValueOnce(toolResponse([repeatCall]))  // second warning
+      .mockResolvedValueOnce(toolResponse([repeatCall])); // third warning → abort
 
     const logs: string[] = [];
     const { opts, emitted } = loopOpts({
       maxIdenticalToolCallTurns: 3,
       maxTurns: 20,
+      dangerouslySkipPermissions: true,
       onLog: (_s, msg) => logs.push(msg),
     });
 
     await runAgentLoop(opts);
 
-    expect(resultEvent(emitted).subtype).toBe("success");
-    // "loop detected" should appear 3 times (turns 3, 4, 5)
+    // Loop aborts after 3 warnings
+    expect(resultEvent(emitted).subtype).toBe("error_loop_abort");
+    // "loop detected" appears for each of the 3 warning injections
     const loopWarnings = logs.filter((l) => l.includes("loop detected"));
     expect(loopWarnings.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("emits error_loop_abort subtype after 3 stuck warnings without resolution", async () => {
+    // The LLM always returns the same tool call — never escapes. The loop should
+    // break after stuckAttempt reaches 3 and emit error_loop_abort.
+    const repeatCall = bashCall("stuck-id", "echo stuck forever");
+    vi.mocked(callOpenRouter).mockResolvedValue(toolResponse([repeatCall]));
+
+    const logs: string[] = [];
+    const { opts, emitted } = loopOpts({
+      maxIdenticalToolCallTurns: 3,
+      maxTurns: 20,
+      dangerouslySkipPermissions: true,
+      onLog: (_s, msg) => logs.push(msg),
+    });
+
+    await runAgentLoop(opts);
+
+    // Must emit error_loop_abort, not success or error_max_turns
+    expect(resultEvent(emitted).subtype).toBe("error_loop_abort");
+    // loop_abort warning must have been logged
+    expect(logs.some((l) => l.includes("loop_abort"))).toBe(true);
   });
 });
 
