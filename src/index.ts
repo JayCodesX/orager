@@ -24,6 +24,17 @@ import { initTelemetry } from "./telemetry.js";
 import { runSetupWizard } from "./setup.js";
 import { createRequire } from "node:module";
 
+// ── Node.js version gate ──────────────────────────────────────────────────────
+{
+  const [major, minor] = process.versions.node.split(".").map(Number);
+  if (major < 20 || (major === 20 && minor < 3)) {
+    process.stderr.write(
+      `orager requires Node.js >= 20.3.0 (found ${process.versions.node})\n`
+    );
+    process.exit(1);
+  }
+}
+
 // ── Version ───────────────────────────────────────────────────────────────────
 const _ORAGER_VERSION: string = (() => {
   try {
@@ -482,6 +493,14 @@ DOCS
 
 // ── Status command ────────────────────────────────────────────────────────────
 
+function formatUptime(uptimeMs: number): string {
+  const uptimeSec = Math.floor(uptimeMs / 1000);
+  const h = Math.floor(uptimeSec / 3600);
+  const m = Math.floor((uptimeSec % 3600) / 60);
+  const s = uptimeSec % 60;
+  return `${h}h ${m}m ${s}s`;
+}
+
 async function handleStatus(jsonMode = false): Promise<void> {
   const port = await readDaemonPort();
   if (!port) {
@@ -518,9 +537,17 @@ async function handleStatus(jsonMode = false): Promise<void> {
     process.exit(1);
   }
 
-  // Daemon is alive — attempt to fetch uptime from /metrics using the signing key.
+  // Daemon is alive — fetch full metrics for extended status display.
   // Non-fatal: if the key can't be read or /metrics fails, we still report running.
-  let uptimeMs: number | null = null;
+  interface MetricsBody {
+    uptimeMs?: number;
+    activeRuns?: number;
+    completedRuns?: number;
+    errorRuns?: number;
+    circuitBreakersByAgent?: Record<string, unknown>;
+    recentModels?: string[];
+  }
+  let metrics: MetricsBody | null = null;
   try {
     const keyData = await fs.readFile(KEY_PATH, "utf8");
     const signingKey = keyData.trim();
@@ -531,27 +558,48 @@ async function handleStatus(jsonMode = false): Promise<void> {
         signal: AbortSignal.timeout(3000),
       });
       if (metricsRes.ok) {
-        const metricsBody = await metricsRes.json() as { uptimeMs?: number };
-        if (typeof metricsBody.uptimeMs === "number") {
-          uptimeMs = metricsBody.uptimeMs;
-        }
+        metrics = await metricsRes.json() as MetricsBody;
       }
     }
   } catch {
-    // Key not found or metrics call failed — proceed without uptime
+    // Key not found or metrics call failed — proceed without metrics
   }
 
+  const uptimeMs = metrics?.uptimeMs ?? null;
+
   if (jsonMode) {
-    process.stdout.write(JSON.stringify({ running: true, port, url, uptimeMs }) + "\n");
+    const out: Record<string, unknown> = { running: true, port, url, uptimeMs };
+    if (metrics) {
+      out["activeRuns"] = metrics.activeRuns ?? null;
+      out["completedRuns"] = metrics.completedRuns ?? null;
+      out["errorRuns"] = metrics.errorRuns ?? null;
+      out["circuitBreakersByAgent"] = metrics.circuitBreakersByAgent ?? {};
+      out["recentModels"] = metrics.recentModels ?? [];
+      if (typeof uptimeMs === "number") out["uptime"] = formatUptime(uptimeMs);
+    }
+    process.stdout.write(JSON.stringify(out) + "\n");
   } else {
     process.stdout.write(`orager daemon: running on port ${port}\n`);
     process.stdout.write(`  url: ${url}\n`);
     if (uptimeMs !== null) {
-      const uptimeSec = Math.floor(uptimeMs / 1000);
-      const h = Math.floor(uptimeSec / 3600);
-      const m = Math.floor((uptimeSec % 3600) / 60);
-      const s = uptimeSec % 60;
-      process.stdout.write(`  uptime: ${h}h ${m}m ${s}s\n`);
+      process.stdout.write(`  uptime: ${formatUptime(uptimeMs)}\n`);
+    }
+    if (metrics) {
+      process.stdout.write(`  activeRuns: ${metrics.activeRuns ?? "n/a"}\n`);
+      process.stdout.write(`  completedRuns: ${metrics.completedRuns ?? "n/a"}\n`);
+      process.stdout.write(`  errorRuns: ${metrics.errorRuns ?? "n/a"}\n`);
+      const cbStates = metrics.circuitBreakersByAgent ?? {};
+      const cbEntries = Object.entries(cbStates);
+      if (cbEntries.length > 0) {
+        process.stdout.write(`  circuitBreakers:\n`);
+        for (const [agent, state] of cbEntries) {
+          process.stdout.write(`    ${agent}: ${JSON.stringify(state)}\n`);
+        }
+      }
+      const recentModels = metrics.recentModels ?? [];
+      if (recentModels.length > 0) {
+        process.stdout.write(`  recentModels: ${recentModels.join(", ")}\n`);
+      }
     }
   }
   process.exit(0);

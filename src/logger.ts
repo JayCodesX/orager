@@ -5,8 +5,9 @@
  * When ORAGER_LOG_STRUCTURED=true (and no log file), writes JSON to stderr.
  * Otherwise, no-ops (human-readable logs go via onLog).
  *
- * Log entries are non-blocking: write failures are silently discarded so a
- * logging issue never crashes the agent loop.
+ * Log entries are synchronous and never throw. Before each write the log file
+ * size is checked; if it exceeds ORAGER_LOG_MAX_SIZE_MB (default 100 MB) the
+ * file is rotated to <path>.1 and a new file is started.
  */
 
 import fs from "node:fs";
@@ -24,26 +25,48 @@ export interface LogEvent {
 const LOG_FILE = process.env["ORAGER_LOG_FILE"];
 const LOG_STRUCTURED = process.env["ORAGER_LOG_STRUCTURED"] === "true";
 
-let _logStream: fs.WriteStream | null = null;
+/** Default max log file size in bytes (100 MB). Overridable via ORAGER_LOG_MAX_SIZE_MB. */
+const DEFAULT_LOG_MAX_SIZE_BYTES = 100 * 1024 * 1024;
 
-function getLogStream(): fs.WriteStream | null {
-  if (!LOG_FILE) return null;
-  if (!_logStream) {
-    _logStream = fs.createWriteStream(LOG_FILE, { flags: "a", encoding: "utf8" });
-    _logStream.on("error", () => {}); // Silently discard write errors
+/**
+ * Return the current size of the log file in bytes.
+ * Returns 0 if the file does not exist (ENOENT) or cannot be stat'd.
+ * Exported for testing.
+ */
+export function _getLogFileSizeBytes(logPath: string): number {
+  try {
+    return fs.statSync(logPath).size;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    return 0; // Any other error — treat as unknown / not rotated
   }
-  return _logStream;
 }
 
 /**
- * Emit a structured log event. Non-blocking and never throws.
+ * If the log file at `logPath` exceeds `maxBytes`, rotate it to `logPath.1`
+ * (overwriting any previous rotation) then proceed fresh.
+ * Exported for testing.
+ */
+export function _maybeRotate(logPath: string, maxBytes: number): void {
+  if (_getLogFileSizeBytes(logPath) > maxBytes) {
+    try {
+      fs.renameSync(logPath, `${logPath}.1`);
+    } catch {
+      // Rotation failure is non-fatal — just continue writing to the existing file
+    }
+  }
+}
+
+/**
+ * Emit a structured log event. Synchronous and never throws.
  */
 export function logEvent(event: LogEvent): void {
   const line = JSON.stringify({ ...event, ts: event.ts ?? new Date().toISOString() }) + "\n";
   try {
-    const stream = getLogStream();
-    if (stream) {
-      stream.write(line);
+    if (LOG_FILE) {
+      const maxBytes = parseFloat(process.env["ORAGER_LOG_MAX_SIZE_MB"] ?? "100") * 1024 * 1024;
+      _maybeRotate(LOG_FILE, isNaN(maxBytes) ? DEFAULT_LOG_MAX_SIZE_BYTES : maxBytes);
+      fs.appendFileSync(LOG_FILE, line, { encoding: "utf8" });
     } else if (LOG_STRUCTURED) {
       process.stderr.write(line);
     }
