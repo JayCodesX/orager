@@ -51,6 +51,8 @@ function createTestServer(): http.Server {
         uptimeMs: 0,
         model: "test-model",
         usedModels: ["test-model"],
+        recentModels: [],
+        modelUsageTimestamps: {},
         activeRunsByAgent: {},
         providerHealth: {},
         degradedProviders: [],
@@ -58,6 +60,7 @@ function createTestServer(): http.Server {
         dbPath: null,
         rateLimit: null,
         keyInfo: null,
+        circuitBreakersByAgent: {},
       }));
       return;
     }
@@ -210,6 +213,27 @@ describe("GET /metrics", () => {
     const { status, body } = await get("/metrics");
     expect(status).toBe(200);
     expect(body).toHaveProperty("activeRuns");
+  });
+
+  it("includes circuitBreakersByAgent field in metrics response", async () => {
+    const { status, body } = await get("/metrics");
+    expect(status).toBe(200);
+    expect(body).toHaveProperty("circuitBreakersByAgent");
+    expect(typeof (body as Record<string, unknown>).circuitBreakersByAgent).toBe("object");
+  });
+
+  it("includes recentModels field in metrics response", async () => {
+    const { status, body } = await get("/metrics");
+    expect(status).toBe(200);
+    expect(body).toHaveProperty("recentModels");
+    expect(Array.isArray((body as Record<string, unknown>).recentModels)).toBe(true);
+  });
+
+  it("includes modelUsageTimestamps field in metrics response", async () => {
+    const { status, body } = await get("/metrics");
+    expect(status).toBe(200);
+    expect(body).toHaveProperty("modelUsageTimestamps");
+    expect(typeof (body as Record<string, unknown>).modelUsageTimestamps).toBe("object");
   });
 });
 

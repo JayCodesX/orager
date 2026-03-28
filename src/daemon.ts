@@ -34,7 +34,9 @@ import { getRateLimitState } from "./rate-limit-tracker.js";
 import { initTelemetry } from "./telemetry.js";
 import { checkAndLogApiKeyHealth, fetchApiKeyInfo } from "./openrouter-key.js";
 import type { ApiKeyInfo } from "./openrouter-key.js";
-import { openRouterCircuitBreaker } from "./circuit-breaker.js";
+import { getAgentCircuitBreaker, getAllAgentCircuitBreakerStates } from "./circuit-breaker.js";
+import { fetchModelContextLengths } from "./loop-helpers.js";
+import { fetchLiveModelMeta } from "./openrouter-model-meta.js";
 
 // ── Port file ─────────────────────────────────────────────────────────────────
 // Written on startup so clients (adapter) can discover the port without config.
@@ -276,6 +278,8 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
   let lastActivityAt = Date.now();
   let keepAliveTimer: ReturnType<typeof setInterval> | null = null;
   const usedModels = new Set<string>([model]);
+  /** Maps model id → last-used timestamp (ms). Used to compute recentModels in /metrics. */
+  const modelLastUsedAt = new Map<string, number>([[model, Date.now()]]);
   let lastRealRequestAt = Date.now();
 
   // ── Audit log (metadata only — no prompt/response content) ─────────────────
@@ -426,6 +430,13 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
           uptimeMs: Date.now() - daemonStartedAt,
           model,
           usedModels: Array.from(usedModels),
+          recentModels: (() => {
+            const cutoff = Date.now() - 60 * 60 * 1000; // 1 hour
+            return Array.from(modelLastUsedAt.entries())
+              .filter(([, ts]) => ts >= cutoff)
+              .map(([m]) => m);
+          })(),
+          modelUsageTimestamps: Object.fromEntries(modelLastUsedAt),
           activeRunsByAgent: Object.fromEntries(activeRunsByAgent),
           providerHealth: getAllProviderStats(),
           degradedProviders: getDegradedProviders(),
@@ -433,6 +444,7 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
           dbPath: process.env["ORAGER_DB_PATH"] ?? null,
           rateLimit: getRateLimitState(),
           keyInfo: await getCachedKeyInfo(apiKey),
+          circuitBreakersByAgent: getAllAgentCircuitBreakerStates(),
         }));
       })();
       return;
@@ -669,7 +681,10 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
       }
 
       // Track which models are being used for multi-model keep-alive (#5)
-      if (runReq.opts?.model) usedModels.add(runReq.opts.model);
+      if (runReq.opts?.model) {
+        usedModels.add(runReq.opts.model);
+        modelLastUsedAt.set(runReq.opts.model, Date.now());
+      }
       lastRealRequestAt = Date.now();
 
       activeRuns++;
@@ -711,6 +726,17 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
       // ── Execute run ─────────────────────────────────────────────────────
 
       const { safe: safeOpts, rejected: rejectedOpts } = sanitizeDaemonRunOpts(runReq.opts as unknown as Record<string, unknown>);
+      // settingsFile is intentionally excluded from ALLOWED_DAEMON_OPTS — the daemon
+      // resolves its own settings file from the local environment to prevent callers
+      // from redirecting settings to arbitrary paths. Emit a specific warning so
+      // callers don't spend time debugging the generic "ignoring disallowed opts" message.
+      if ((rejectedOpts as string[]).includes("settingsFile")) {
+        const sfMsg = "[orager daemon] NOTE: settingsFile is not forwarded to the daemon — " +
+          "the daemon always uses its own local settings (ORAGER_SETTINGS_FILE or ~/.orager/settings.json). " +
+          "Remove settingsFile from daemonOpts to suppress this message.";
+        process.stderr.write(sfMsg + "\n");
+        res.write(JSON.stringify({ type: "info", message: sfMsg, field: "settingsFile" }) + "\n");
+      }
       if (rejectedOpts.length > 0) {
         const msg = `[orager daemon] WARNING: ignoring disallowed opts fields from caller: ${rejectedOpts.join(", ")}`;
         process.stderr.write(msg + "\n");
@@ -747,12 +773,13 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
 
       // Only check circuit breaker for OpenRouter calls (direct Anthropic path bypasses it)
       const isDirectPath = typeof runReq.opts?.model === "string" && runReq.opts.model.startsWith("anthropic/") && !!process.env.ANTHROPIC_API_KEY?.trim();
-      if (!isDirectPath && openRouterCircuitBreaker.isOpen()) {
+      const agentCb = getAgentCircuitBreaker(agentId);
+      if (!isDirectPath && agentCb.isOpen()) {
         res.writeHead(503, { "Content-Type": "application/json" });
         res.end(JSON.stringify({
           type: "result",
           subtype: "error_circuit_open",
-          result: "OpenRouter API circuit breaker is open due to sustained failures. Retry in " + Math.ceil(openRouterCircuitBreaker.retryInMs / 1000) + "s.",
+          result: "OpenRouter API circuit breaker is open due to sustained failures. Retry in " + Math.ceil(agentCb.retryInMs / 1000) + "s.",
           session_id: "",
           turn_count: 0,
           total_cost_usd: 0,
@@ -761,8 +788,11 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
         return;
       }
 
+      let _runFailed = false;
       runAgentLoop(loopOpts)
         .catch((err: unknown) => {
+          _runFailed = true;
+          if (!isDirectPath) agentCb.recordFailure();
           const msg = err instanceof Error ? err.message : String(err);
           if (!timedOut && !res.destroyed) {
             res.write(
@@ -772,6 +802,7 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
           errorRuns++;
         })
         .finally(() => {
+          if (!_runFailed && !isDirectPath) agentCb.recordSuccess();
           activeRunControllers.delete(runId);
           if (!timedOut) {
             clearTimeout(timeoutHandle);
@@ -817,6 +848,14 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
   // Warm cache on startup (Phase 4c)
   await warmCache();
   startKeepAlive();
+
+  // Pre-warm model metadata caches at startup so the first runAgentLoop call
+  // does not incur the network fetch latency. Fire-and-forget — if it fails,
+  // runAgentLoop will retry on the first real request.
+  Promise.all([
+    fetchModelContextLengths(apiKey).catch(() => {}),
+    fetchLiveModelMeta(apiKey).catch(() => {}),
+  ]).catch(() => {});
 
   // ── Session auto-prune ─────────────────────────────────────────────────────
   // Prune sessions older than 30 days once at startup and then every 24 hours.
