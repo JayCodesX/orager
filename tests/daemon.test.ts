@@ -481,11 +481,8 @@ describe("ALLOWED_DAEMON_OPTS completeness", () => {
       "settingsFile", // daemon resolves its own settings
     ]);
 
-    // Fields excluded by DaemonRunRequest type or resolved at CLI level before reaching daemon
-    // - apiKey: comes from daemon's own env, not the POST body
-    // - profile: a CliOptions field resolved to AgentLoopOptions fields before runAgentLoop;
-    //            the daemon currently does not expand profiles (loop.ts has no profile support)
-    const typeExcluded = new Set(["apiKey", "profile"]);
+    // Fields excluded by DaemonRunRequest type (apiKey comes from daemon's own env, not POST body)
+    const typeExcluded = new Set(["apiKey"]);
 
     // Fields that should be in ALLOWED_DAEMON_OPTS
     const shouldBeAllowed = adapterSentFields.filter(
@@ -575,27 +572,30 @@ describe("sanitizeDaemonRunOpts — removed legacy keys are rejected (S6)", () =
     expect(safe).not.toHaveProperty("systemPrompt");
   });
 
-  it("rejects 'profile' (CLI-only field, not AgentLoopOptions)", () => {
+  it("allows 'profile' (now an AgentLoopOptions field — expanded by runAgentLoop)", () => {
+    // profile was previously CLI-only; it is now part of AgentLoopOptions so the
+    // daemon passes it through to runAgentLoop which calls applyProfileAsync().
     const { safe, rejected } = sanitizeDaemonRunOpts({ profile: "code-review" });
-    expect(rejected).toContain("profile");
-    expect(safe).not.toHaveProperty("profile");
+    expect(rejected).not.toContain("profile");
+    expect(safe.profile).toBe("code-review");
   });
 
   it("rejects multiple removed keys in a single call", () => {
-    const { rejected } = sanitizeDaemonRunOpts({
+    const { rejected, safe } = sanitizeDaemonRunOpts({
       hooksEnabled: true,
       source: "daemon",
       site_url: "https://x.com",
       site_name: "X",
       systemPrompt: "hi",
-      profile: "default",
     });
     expect(rejected).toContain("hooksEnabled");
     expect(rejected).toContain("source");
     expect(rejected).toContain("site_url");
     expect(rejected).toContain("site_name");
     expect(rejected).toContain("systemPrompt");
-    expect(rejected).toContain("profile");
+    // profile is now allowed (AgentLoopOptions field)
+    expect(safe).not.toHaveProperty("hooksEnabled");
+    expect(safe).not.toHaveProperty("source");
   });
 
   it("still allows the camelCase replacements (siteUrl, siteName, appendSystemPrompt)", () => {

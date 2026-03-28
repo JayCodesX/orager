@@ -178,7 +178,7 @@ const ALLOWED_DAEMON_OPTS = new Set<keyof AgentLoopOptions>([
   "temperature", "top_p", "top_k", "seed", "stop",
   "frequency_penalty", "presence_penalty", "repetition_penalty", "min_p",
   // Model control
-  "reasoning", "provider", "transforms", "preset",
+  "reasoning", "provider", "transforms", "preset", "profile",
   "parallel_tool_calls", "tool_choice", "response_format",
   // Cost limits
   "maxCostUsd", "maxCostUsdSoft", "costPerInputToken", "costPerOutputToken",

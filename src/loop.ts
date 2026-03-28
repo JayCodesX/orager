@@ -10,6 +10,7 @@ import type {
   TurnContext,
   UserMessage,
 } from "./types.js";
+import { applyProfileAsync } from "./profiles.js";
 import { loadProjectInstructions } from "./project-instructions.js";
 import { loadProjectCommands, resolveCommandPrompt, buildCommandsSystemPrompt } from "./project-commands.js";
 import { connectAllMcpServers } from "./mcp-client.js";
@@ -108,6 +109,14 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   const summarizeModel = opts.summarizeModel ?? model;
   const summarizeKeepRecentTurns = opts.summarizeKeepRecentTurns ?? 0;
   const toolErrorBudgetHardStop = opts.toolErrorBudgetHardStop ?? false;
+
+  // ── Profile expansion ─────────────────────────────────────────────────────
+  // Expand named profile (e.g. "code-review") into AgentLoopOptions defaults
+  // before merging settings. Caller opts always override profile defaults, so
+  // this expansion only fills fields the caller hasn't set explicitly.
+  if (opts.profile) {
+    opts = await applyProfileAsync(opts.profile, opts);
+  }
 
   // ── Load and merge settings file ─────────────────────────────────────────
   const fileSettings = await loadSettings(opts.settingsFile);
