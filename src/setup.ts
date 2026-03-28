@@ -119,7 +119,9 @@ async function writeConfig(cfg: OragerUserConfig): Promise<void> {
   const tmp = CONFIG_PATH + ".tmp." + process.pid;
   await fs.writeFile(tmp, JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
   await fs.rename(tmp, CONFIG_PATH);
-  await fs.chmod(CONFIG_PATH, 0o600);
+  if (process.platform !== "win32") {
+    await fs.chmod(CONFIG_PATH, 0o600);
+  }
 }
 
 function pc(code: number, text: string): string {

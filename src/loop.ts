@@ -17,7 +17,8 @@ import { connectAllMcpServers } from "./mcp-client.js";
 import type { McpClientHandle } from "./mcp-client.js";
 import { makeTodoTools } from "./tools/todo.js";
 import { makeRememberTool } from "./tools/remember.js";
-import { loadMemoryStoreAny, pruneExpired, renderMemoryBlock, renderRetrievedBlock, retrieveEntries, retrieveEntriesWithEmbeddings, memoryKeyFromCwd } from "./memory.js";
+import { loadMemoryStoreAny, pruneExpired, renderMemoryBlock, renderRetrievedBlock, retrieveEntries, retrieveEntriesWithEmbeddings, memoryKeyFromCwd, shouldUseFtsRetrieval } from "./memory.js";
+import { isSqliteMemoryEnabled, searchMemoryFts } from "./memory-sqlite.js";
 import { runHook } from "./hooks.js";
 import type { HookConfig } from "./hooks.js";
 import { loadSettings, mergeSettings, loadClaudeDesktopMcpServers } from "./settings.js";
@@ -57,6 +58,15 @@ import {
   MAX_PARALLEL_TOOLS,
   evaluateTurnModelRules,
 } from "./loop-helpers.js";
+
+// ── Cost anomaly detection ────────────────────────────────────────────────────
+//
+// Fires a warning when a single turn's actual cost exceeds COST_ANOMALY_MULTIPLIER × rolling average.
+// The multiplier defaults to 2.0 but is overridable via ORAGER_COST_ANOMALY_MULTIPLIER.
+
+export const COST_ANOMALY_MULTIPLIER = parseFloat(
+  process.env["ORAGER_COST_ANOMALY_MULTIPLIER"] ?? "2.0",
+);
 
 // ── Agent loop ────────────────────────────────────────────────────────────────
 
@@ -436,7 +446,10 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   if (memoryEnabled) {
     // Load + prune the store, inject into system prompt, and register the tool
     try {
-      const memStore = pruneExpired(await loadMemoryStoreAny(effectiveMemoryKey));
+      const memStore = pruneExpired(await withSpan("memory.load", {
+        memoryKey: effectiveMemoryKey,
+        backend: isSqliteMemoryEnabled() ? "sqlite" : "file",
+      }, async () => loadMemoryStoreAny(effectiveMemoryKey)));
       const threshold = typeof opts.memoryRetrievalThreshold === "number"
         ? opts.memoryRetrievalThreshold
         : 15;
@@ -447,11 +460,16 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           // Check in-memory cache before calling the embeddings API
           let queryVec = getCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt);
           if (!queryVec) {
-            [queryVec] = await callEmbeddings(apiKey, opts.memoryEmbeddingModel, [prompt]);
+            queryVec = await withSpan("memory.embed_query", {
+              model: opts.memoryEmbeddingModel,
+            }, async () => {
+              const vecs = await callEmbeddings(apiKey, opts.memoryEmbeddingModel!, [prompt]);
+              return vecs[0] ?? [];
+            });
             setCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt, queryVec);
           }
           memBlock = renderRetrievedBlock(
-            retrieveEntriesWithEmbeddings(memStore, queryVec, { topK: 12 }),
+            retrieveEntriesWithEmbeddings(memStore, queryVec ?? [], { topK: 12 }),
             memoryMaxChars,
           );
         } catch {
@@ -460,6 +478,19 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             ? renderMemoryBlock(memStore, memoryMaxChars)
             : renderRetrievedBlock(retrieveEntries(memStore, prompt, { topK: 12 }), memoryMaxChars);
         }
+      } else if (shouldUseFtsRetrieval(opts.memoryRetrieval)) {
+        // SQLite + local retrieval: use FTS5 for efficient full-text search
+        const ftsResults = searchMemoryFts(effectiveMemoryKey, prompt, 12);
+        // Deduplicate by id and render
+        const seen = new Set<string>();
+        const deduped = ftsResults.filter((e) => {
+          if (seen.has(e.id)) return false;
+          seen.add(e.id);
+          return true;
+        });
+        memBlock = deduped.length > 0
+          ? renderRetrievedBlock(deduped, memoryMaxChars)
+          : renderMemoryBlock(memStore, memoryMaxChars);
       } else {
         // Phase 1 path (existing logic from Phase 1)
         memBlock = memStore.entries.length <= threshold
@@ -995,6 +1026,10 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
 
     const firedOnce = new Set<number>();
 
+    // Rolling average for cost anomaly detection (P3-5)
+    // Track per-turn actual costs to compute a running average.
+    const _turnCosts: number[] = [];
+
     // Summarization failure cooldown — after a failed summarization attempt,
     // skip re-attempting for SUMMARIZE_COOLDOWN_TURNS turns to avoid hammering
     // the API when the summarize model is unavailable or the context is malformed.
@@ -1212,6 +1247,20 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
                   `[orager] cost estimate divergence: estimated $${estimatedTurnCost.toFixed(6)}, actual $${meta.totalCost.toFixed(6)} (${(divergence * 100).toFixed(1)}% off) — update costPerInputToken/costPerOutputToken for accuracy\n`,
                 );
                 log.warn("cost_estimate_divergence", { sessionId, turn, estimatedTurnCost, actualTurnCost: meta.totalCost, divergencePct: Math.round(divergence * 100) });
+              }
+            }
+            // ── Cost anomaly detection (P3-5) ────────────────────────────────
+            // Warn when this turn's actual cost exceeds COST_ANOMALY_MULTIPLIER × rolling average.
+            _turnCosts.push(meta.totalCost);
+            if (_turnCosts.length >= 2) {
+              // Compute rolling average excluding the current turn
+              const prevCosts = _turnCosts.slice(0, -1);
+              const rollingAvg = prevCosts.reduce((s, c) => s + c, 0) / prevCosts.length;
+              if (rollingAvg > 0 && meta.totalCost > COST_ANOMALY_MULTIPLIER * rollingAvg) {
+                onLog?.("stderr",
+                  `[orager] WARNING: cost anomaly — turn ${turn} cost $${meta.totalCost.toFixed(6)} is ${(meta.totalCost / rollingAvg).toFixed(1)}× the rolling average ($${rollingAvg.toFixed(6)})\n`,
+                );
+                log.warn("cost_anomaly", { sessionId, turn, turnCost: meta.totalCost, rollingAvg, multiplier: meta.totalCost / rollingAvg });
               }
             }
           }

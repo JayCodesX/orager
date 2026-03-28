@@ -23,6 +23,7 @@ import {
   removeMemoryEntrySqlite,
 } from "../memory-sqlite.js";
 import { callEmbeddings } from "../openrouter.js";
+import { withSpan } from "../telemetry.js";
 import type { ToolExecutor, ToolResult } from "../types.js";
 
 const MAX_CONTENT_CHARS = 500;
@@ -135,7 +136,9 @@ export function makeRememberTool(
             ...(expiresAt ? { expiresAt } : {}),
             importance,
           };
-          const saved = addMemoryEntrySqlite(memoryKey, entryData);
+          const saved = await withSpan("memory.save", { memoryKey, action: "add" }, async () =>
+            addMemoryEntrySqlite(memoryKey, entryData)
+          );
           return {
             toolCallId: "",
             content: `Memory saved (id: ${saved.id}, importance: ${importance}${tags && tags.length > 0 ? `, tags: ${tags.join(", ")}` : ""}): ${content}`,
@@ -174,7 +177,9 @@ export function makeRememberTool(
             }
           }
 
-          await saveMemoryStoreAny(memoryKey, lockedStore);
+          await withSpan("memory.save", { memoryKey, action: "add" }, async () =>
+            saveMemoryStoreAny(memoryKey, lockedStore)
+          );
           savedEntry = lockedStore.entries[lockedStore.entries.length - 1];
         });
 
