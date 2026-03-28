@@ -4,6 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import type { SessionData, SessionSummary, PruneResult } from "./types.js";
 import type { SessionStore } from "./session-store.js";
+import { log } from "./logger.js";
 
 /** Increment when SessionData structure changes in a breaking way. */
 export const CURRENT_SESSION_SCHEMA_VERSION = 1;
@@ -20,15 +21,36 @@ export function migrateSession(data: SessionData): SessionData {
 
 export type { SessionSummary, PruneResult };
 
-export const SESSIONS_DIR =
-  process.env["ORAGER_SESSIONS_DIR"] ?? path.join(os.homedir(), ".orager", "sessions");
+/**
+ * Return the sessions directory. Re-reads ORAGER_SESSIONS_DIR on every call so
+ * that the env var takes effect even when set after module import (e.g. in tests
+ * or when the variable is inherited late from a parent process).
+ */
+export function getSessionsDir(): string {
+  return process.env["ORAGER_SESSIONS_DIR"] ?? path.join(os.homedir(), ".orager", "sessions");
+}
+
+/**
+ * @deprecated Use getSessionsDir() so ORAGER_SESSIONS_DIR overrides set after
+ * import are honoured. This const is frozen at module-load time.
+ */
+export const SESSIONS_DIR = getSessionsDir();
+
+/** Reject sessionIds that could escape SESSIONS_DIR via path traversal. */
+function assertSafeSessionId(sessionId: string): void {
+  if (!/^[a-zA-Z0-9_-]{1,256}$/.test(sessionId)) {
+    throw new Error(`Invalid sessionId "${sessionId}": must match [a-zA-Z0-9_-]{1,256}`);
+  }
+}
 
 function sessionPath(sessionId: string): string {
-  return path.join(SESSIONS_DIR, `${sessionId}.json`);
+  assertSafeSessionId(sessionId);
+  return path.join(getSessionsDir(), `${sessionId}.json`);
 }
 
 function lockPath(sessionId: string): string {
-  return path.join(SESSIONS_DIR, `${sessionId}.run.lock`);
+  assertSafeSessionId(sessionId);
+  return path.join(getSessionsDir(), `${sessionId}.run.lock`);
 }
 
 // ── Session resume locking ────────────────────────────────────────────────────
@@ -37,8 +59,13 @@ function lockPath(sessionId: string): string {
 // (e.g. two Paperclip wake events arriving in quick succession).
 // Uses an exclusive-create lock file (O_EXCL = atomic).
 // Lock files older than LOCK_STALE_MS are treated as stale and overwritten.
+// Override with ORAGER_LOCK_STALE_MS env var (milliseconds) for environments
+// where agent runs legitimately exceed 5 minutes.
 
-const LOCK_STALE_MS = 5 * 60 * 1000; // 5 minutes
+const LOCK_STALE_MS = (() => {
+  const v = parseInt(process.env["ORAGER_LOCK_STALE_MS"] ?? "", 10);
+  return Number.isFinite(v) && v > 0 ? v : 5 * 60 * 1000; // default: 5 minutes
+})();
 
 // ── Store factory ─────────────────────────────────────────────────────────────
 //
@@ -54,10 +81,21 @@ async function getStore(): Promise<SessionStore> {
 
   const dbPath = process.env["ORAGER_DB_PATH"];
   if (dbPath) {
-    _storeCachePromise = import("./session-sqlite.js").then((m) => {
-      _storeCache = new m.SqliteSessionStore(dbPath);
-      return _storeCache as SessionStore;
-    });
+    _storeCachePromise = import("./session-sqlite.js")
+      .then((m) => {
+        _storeCache = new m.SqliteSessionStore(dbPath);
+        return _storeCache as SessionStore;
+      })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.error("session_store_init_failed", { dbPath, message: msg });
+        process.stderr.write(
+          `[orager] ERROR: failed to open SQLite session store at "${dbPath}": ${msg}\n` +
+          `[orager] Sessions will NOT be persisted. Fix ORAGER_DB_PATH or unset it to use the file store.\n`,
+        );
+        // Re-throw so callers get a clear error rather than silently losing sessions.
+        throw err;
+      });
     return _storeCachePromise;
   }
 
@@ -81,7 +119,7 @@ async function _fileSave(data: SessionData): Promise<void> {
   const { sessionId } = data;
 
   const doSave = async (): Promise<void> => {
-    await fs.mkdir(SESSIONS_DIR, { recursive: true, mode: 0o700 });
+    await fs.mkdir(getSessionsDir(), { recursive: true, mode: 0o700 });
     const target = sessionPath(sessionId);
     // Include pid + timestamp in the tmp name to avoid cross-process collisions
     const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
@@ -166,7 +204,7 @@ async function _fileDelete(sessionId: string): Promise<void> {
 async function _fileList(): Promise<SessionSummary[]> {
   let entries: string[];
   try {
-    entries = await fs.readdir(SESSIONS_DIR);
+    entries = await fs.readdir(getSessionsDir());
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw err;
@@ -203,7 +241,7 @@ async function _filePrune(olderThanMs: number): Promise<PruneResult> {
 
   let entries: string[];
   try {
-    entries = await fs.readdir(SESSIONS_DIR);
+    entries = await fs.readdir(getSessionsDir());
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return { deleted: 0, kept: 0, errors: 0 };
     throw err;
@@ -211,7 +249,7 @@ async function _filePrune(olderThanMs: number): Promise<PruneResult> {
 
   for (const entry of entries) {
     if (!entry.endsWith(".json")) continue;
-    const filePath = path.join(SESSIONS_DIR, entry);
+    const filePath = path.join(getSessionsDir(), entry);
     try {
       const stat = await fs.stat(filePath);
       if (stat.mtimeMs < cutoff) {
@@ -341,18 +379,22 @@ function _makeFileStore(): SessionStore {
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export async function saveSession(data: SessionData): Promise<void> {
+  assertSafeSessionId(data.sessionId);
   return (await getStore()).save(data);
 }
 
 export async function loadSession(sessionId: string): Promise<SessionData | null> {
+  assertSafeSessionId(sessionId);
   return (await getStore()).load(sessionId);
 }
 
 export async function loadSessionRaw(sessionId: string): Promise<SessionData | null> {
+  assertSafeSessionId(sessionId);
   return (await getStore()).loadRaw(sessionId);
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
+  assertSafeSessionId(sessionId);
   return (await getStore()).delete(sessionId);
 }
 
@@ -369,6 +411,7 @@ export async function deleteTrashedSessions(): Promise<PruneResult> {
 }
 
 export async function acquireSessionLock(sessionId: string): Promise<() => Promise<void>> {
+  assertSafeSessionId(sessionId);
   return (await getStore()).acquireLock(sessionId);
 }
 
@@ -490,9 +533,9 @@ export async function rollbackSession(
  */
 export async function ensureSessionsDirPermissions(): Promise<void> {
   try {
-    await fs.mkdir(SESSIONS_DIR, { recursive: true, mode: 0o700 });
+    await fs.mkdir(getSessionsDir(), { recursive: true, mode: 0o700 });
     // Tighten permissions if directory already exists with wrong mode
-    await fs.chmod(SESSIONS_DIR, 0o700);
+    await fs.chmod(getSessionsDir(), 0o700);
   } catch {
     // Non-fatal
   }

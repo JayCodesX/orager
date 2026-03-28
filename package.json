@@ -5,6 +5,11 @@
   "description": "OpenRouter agentic CLI for Paperclip agent loops",
   "license": "MIT",
   "type": "module",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "bin": {
     "orager": "./dist/index.js",
     "orager-mcp": "./dist/mcp.js"

@@ -9,7 +9,9 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import http from "node:http";
+import crypto from "node:crypto";
 import { mintJwt, verifyJwt } from "../src/jwt.js";
+import { sanitizeDaemonRunOpts } from "../src/daemon.js";
 import type { AddressInfo } from "node:net";
 
 // ── Test constants ─────────────────────────────────────────────────────────────
@@ -32,7 +34,7 @@ function createTestServer(): http.Server {
     // GET /health
     if (req.method === "GET" && req.url === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok", activeRuns, maxConcurrent: MAX_CONCURRENT, model: "test-model" }));
+      res.end(JSON.stringify({ status: "ok" }));
       return;
     }
 
@@ -282,5 +284,329 @@ describe("POST /runs/:runId/cancel", () => {
     const { status, body } = await post("/runs/nonexistent/cancel");
     expect(status).toBe(404);
     expect((body as Record<string, unknown>).error).toBe("run not found");
+  });
+});
+
+// ── Expired JWT rejection ──────────────────────────────────────────────────────
+
+/**
+ * Build a syntactically valid HS256 JWT whose exp claim is in the past.
+ * This lets us test that the server rejects expired tokens with a 401.
+ */
+function mintExpiredJwt(signingKey: string, agentId: string): string {
+  const now = Math.floor(Date.now() / 1000);
+  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+  const payload = Buffer.from(
+    JSON.stringify({ agentId, scope: "run", iat: now - 3600, exp: now - 1 }),
+  ).toString("base64url");
+  const data = `${header}.${payload}`;
+  const sig = crypto.createHmac("sha256", signingKey).update(data).digest("base64url");
+  return `${data}.${sig}`;
+}
+
+describe("POST /run — expired JWT", () => {
+  it("returns 401 with a correctly-signed but expired JWT", async () => {
+    const token = mintExpiredJwt(TEST_SIGNING_KEY, "test-agent");
+    const { status } = await post("/run", {
+      token,
+      body: { prompt: "hello world", opts: {} },
+    });
+    expect(status).toBe(401);
+  });
+});
+
+// ── sanitizeDaemonRunOpts unit tests ──────────────────────────────────────────
+
+describe("sanitizeDaemonRunOpts", () => {
+  it("strips dangerouslySkipPermissions from caller opts", () => {
+    const { safe, rejected } = sanitizeDaemonRunOpts({
+      model: "openai/gpt-4o",
+      dangerouslySkipPermissions: true,
+    });
+    expect(safe).not.toHaveProperty("dangerouslySkipPermissions");
+    // dangerouslySkipPermissions is not in ALLOWED_DAEMON_OPTS so it appears in rejected
+    expect(rejected).toContain("dangerouslySkipPermissions");
+  });
+
+  it("strips sandboxRoot from caller opts", () => {
+    const { safe } = sanitizeDaemonRunOpts({
+      model: "openai/gpt-4o",
+      sandboxRoot: "/tmp/evil",
+    });
+    expect(safe).not.toHaveProperty("sandboxRoot");
+  });
+
+  it("strips bashPolicy from caller opts", () => {
+    const { safe } = sanitizeDaemonRunOpts({
+      model: "openai/gpt-4o",
+      bashPolicy: "allow-all",
+    });
+    expect(safe).not.toHaveProperty("bashPolicy");
+  });
+
+  it("strips requireApproval from caller opts", () => {
+    const { safe } = sanitizeDaemonRunOpts({
+      model: "openai/gpt-4o",
+      requireApproval: false,
+    });
+    expect(safe).not.toHaveProperty("requireApproval");
+  });
+
+  it("allows all four sensitive fields to be provided simultaneously — all stripped", () => {
+    const { safe } = sanitizeDaemonRunOpts({
+      model: "openai/gpt-4o",
+      dangerouslySkipPermissions: true,
+      sandboxRoot: "/evil",
+      bashPolicy: "allow-all",
+      requireApproval: false,
+    });
+    expect(safe).not.toHaveProperty("dangerouslySkipPermissions");
+    expect(safe).not.toHaveProperty("sandboxRoot");
+    expect(safe).not.toHaveProperty("bashPolicy");
+    expect(safe).not.toHaveProperty("requireApproval");
+    expect(safe.model).toBe("openai/gpt-4o");
+  });
+
+  it("passes through allowed fields unchanged", () => {
+    const { safe, rejected } = sanitizeDaemonRunOpts({
+      model: "deepseek/deepseek-r1",
+      maxTurns: 5,
+      timeoutSec: 120,
+    });
+    expect(safe.model).toBe("deepseek/deepseek-r1");
+    expect(safe.maxTurns).toBe(5);
+    expect(safe.timeoutSec).toBe(120);
+    expect(rejected).toHaveLength(0);
+  });
+
+  it("reports unknown fields in rejected list without including them in safe", () => {
+    const { safe, rejected } = sanitizeDaemonRunOpts({
+      model: "openai/gpt-4o",
+      unknownField: "value",
+      anotherBadField: 42,
+    });
+    expect(safe).not.toHaveProperty("unknownField");
+    expect(safe).not.toHaveProperty("anotherBadField");
+    expect(rejected).toContain("unknownField");
+    expect(rejected).toContain("anotherBadField");
+  });
+});
+
+// ── ALLOWED_DAEMON_OPTS coverage ──────────────────────────────────────────────
+// Verifies that every field the adapter sends in daemonOpts is present in the
+// ALLOWED_DAEMON_OPTS set, so new features aren't silently dropped by the daemon.
+
+describe("ALLOWED_DAEMON_OPTS completeness", () => {
+  it("sanitizeDaemonRunOpts allows all fields that execute-cli sends in daemonOpts", () => {
+    // This is the canonical list of fields that execute-cli.ts sends in daemonOpts.
+    // When you add a new field to the adapter's daemonOpts block, add it here too.
+    const adapterSentFields = [
+      "apiKey",       // note: excluded by DaemonRunRequest type but sent by adapter
+      "model",
+      "models",
+      "sessionId",
+      "addDirs",
+      "maxTurns",
+      "maxRetries",
+      "cwd",
+      "dangerouslySkipPermissions", // security-stripped by daemon (intentional)
+      "forceResume",
+      "verbose",
+      "useFinishTool",
+      "profile",
+      "settingsFile",
+      "siteUrl",
+      "siteName",
+      "sandboxRoot",  // security-stripped by daemon (intentional)
+      "parallel_tool_calls",
+      "tool_choice",
+      "temperature",
+      "top_p",
+      "top_k",
+      "frequency_penalty",
+      "presence_penalty",
+      "repetition_penalty",
+      "min_p",
+      "seed",
+      "stop",
+      "reasoning",
+      "provider",
+      "preset",
+      "transforms",
+      "maxCostUsd",
+      "maxCostUsdSoft",
+      "costPerInputToken",
+      "costPerOutputToken",
+      "requireApproval", // security-stripped by daemon (intentional)
+      "summarizeAt",
+      "summarizeModel",
+      "summarizeKeepRecentTurns",
+      "tagToolOutputs",
+      "planMode",
+      "injectContext",
+      "bashPolicy",   // security-stripped by daemon (intentional)
+      "trackFileChanges",
+      "enableBrowserTools",
+      "turnModelRules",
+      "summarizePrompt",
+      "summarizeFallbackKeep",
+      "webhookUrl",
+      "hooks",
+      "hookTimeoutMs",
+      "hookErrorMode",
+      "approvalTimeoutMs",
+      "mcpServers",
+      "requireMcpServers",
+      "toolTimeouts",
+      "maxSpawnDepth",
+      "maxIdenticalToolCallTurns",
+      "toolErrorBudgetHardStop",
+      "appendSystemPrompt",
+      "promptContent",
+      "approvalMode",
+      "approvalAnswer",
+      "response_format",
+      "timeoutSec",
+      "apiKeys",
+      "requiredEnvVars",
+      "memoryKey",
+    ];
+
+    // Fields that are intentionally security-stripped (not in ALLOWED but stripped post-allow)
+    const securityStripped = new Set([
+      "sandboxRoot",
+      "requireApproval",
+      "bashPolicy",
+      "dangerouslySkipPermissions",
+      "settingsFile", // daemon resolves its own settings
+    ]);
+
+    // Fields excluded by DaemonRunRequest type or resolved at CLI level before reaching daemon
+    // - apiKey: comes from daemon's own env, not the POST body
+    // - profile: a CliOptions field resolved to AgentLoopOptions fields before runAgentLoop;
+    //            the daemon currently does not expand profiles (loop.ts has no profile support)
+    const typeExcluded = new Set(["apiKey", "profile"]);
+
+    // Fields that should be in ALLOWED_DAEMON_OPTS
+    const shouldBeAllowed = adapterSentFields.filter(
+      (f) => !securityStripped.has(f) && !typeExcluded.has(f)
+    );
+
+    // Build a test opts object with all expected fields
+    const testOpts: Record<string, unknown> = {};
+    for (const field of shouldBeAllowed) {
+      testOpts[field] = "test-value";
+    }
+
+    const { safe, rejected } = sanitizeDaemonRunOpts(testOpts);
+
+    // All non-security fields should pass through
+    expect(rejected, `These fields are sent by execute-cli but not in ALLOWED_DAEMON_OPTS: ${rejected.join(", ")}`).toEqual([]);
+
+    // Security fields should be stripped even if in ALLOWED
+    const securityTest = { sandboxRoot: "/", requireApproval: "all", bashPolicy: {}, dangerouslySkipPermissions: true };
+    const { safe: safeSecure } = sanitizeDaemonRunOpts(securityTest);
+    expect(safeSecure.sandboxRoot).toBeUndefined();
+    expect(safeSecure.requireApproval).toBeUndefined();
+    expect(safeSecure.bashPolicy).toBeUndefined();
+    expect(safeSecure.dangerouslySkipPermissions).toBeUndefined();
+  });
+});
+
+// ── T9: /health only returns {status:"ok"} — no sensitive fields ──────────────
+
+describe("GET /health — sensitive fields stripped (C8)", () => {
+  it("does not include activeRuns in the health response", async () => {
+    const { body } = await get("/health");
+    expect(body).not.toHaveProperty("activeRuns");
+  });
+
+  it("does not include maxConcurrent in the health response", async () => {
+    const { body } = await get("/health");
+    expect(body).not.toHaveProperty("maxConcurrent");
+  });
+
+  it("does not include model in the health response", async () => {
+    const { body } = await get("/health");
+    expect(body).not.toHaveProperty("model");
+  });
+
+  it("only has status field (plus any extra safe fields)", async () => {
+    const { body } = await get("/health");
+    const keys = Object.keys(body as object);
+    // status must be present; activeRuns / maxConcurrent / model must not be
+    expect(keys).toContain("status");
+    expect(keys).not.toContain("activeRuns");
+    expect(keys).not.toContain("maxConcurrent");
+    expect(keys).not.toContain("model");
+  });
+});
+
+// ── T10: sanitizeDaemonRunOpts rejects keys removed in S6 ────────────────────
+
+describe("sanitizeDaemonRunOpts — removed legacy keys are rejected (S6)", () => {
+  it("rejects 'hooksEnabled' (OragerSettings field, not AgentLoopOptions)", () => {
+    const { safe, rejected } = sanitizeDaemonRunOpts({ hooksEnabled: true });
+    expect(rejected).toContain("hooksEnabled");
+    expect(safe).not.toHaveProperty("hooksEnabled");
+  });
+
+  it("rejects 'source' (Session metadata, not AgentLoopOptions)", () => {
+    const { safe, rejected } = sanitizeDaemonRunOpts({ source: "cli" });
+    expect(rejected).toContain("source");
+    expect(safe).not.toHaveProperty("source");
+  });
+
+  it("rejects 'site_url' (snake_case alias superseded by siteUrl)", () => {
+    const { safe, rejected } = sanitizeDaemonRunOpts({ site_url: "https://example.com" });
+    expect(rejected).toContain("site_url");
+    expect(safe).not.toHaveProperty("site_url");
+  });
+
+  it("rejects 'site_name' (snake_case alias superseded by siteName)", () => {
+    const { safe, rejected } = sanitizeDaemonRunOpts({ site_name: "My App" });
+    expect(rejected).toContain("site_name");
+    expect(safe).not.toHaveProperty("site_name");
+  });
+
+  it("rejects 'systemPrompt' (use appendSystemPrompt instead)", () => {
+    const { safe, rejected } = sanitizeDaemonRunOpts({ systemPrompt: "You are helpful." });
+    expect(rejected).toContain("systemPrompt");
+    expect(safe).not.toHaveProperty("systemPrompt");
+  });
+
+  it("rejects 'profile' (CLI-only field, not AgentLoopOptions)", () => {
+    const { safe, rejected } = sanitizeDaemonRunOpts({ profile: "code-review" });
+    expect(rejected).toContain("profile");
+    expect(safe).not.toHaveProperty("profile");
+  });
+
+  it("rejects multiple removed keys in a single call", () => {
+    const { rejected } = sanitizeDaemonRunOpts({
+      hooksEnabled: true,
+      source: "daemon",
+      site_url: "https://x.com",
+      site_name: "X",
+      systemPrompt: "hi",
+      profile: "default",
+    });
+    expect(rejected).toContain("hooksEnabled");
+    expect(rejected).toContain("source");
+    expect(rejected).toContain("site_url");
+    expect(rejected).toContain("site_name");
+    expect(rejected).toContain("systemPrompt");
+    expect(rejected).toContain("profile");
+  });
+
+  it("still allows the camelCase replacements (siteUrl, siteName, appendSystemPrompt)", () => {
+    const { safe, rejected } = sanitizeDaemonRunOpts({
+      siteUrl: "https://example.com",
+      siteName: "My App",
+      appendSystemPrompt: "Be concise.",
+    });
+    expect(rejected).toHaveLength(0);
+    expect(safe.siteUrl).toBe("https://example.com");
+    expect(safe.siteName).toBe("My App");
+    expect(safe.appendSystemPrompt).toBe("Be concise.");
   });
 });

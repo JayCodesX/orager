@@ -227,7 +227,7 @@ export interface ToolMetric {
 
 export interface EmitResultEvent {
   type: "result";
-  subtype: "success" | "error_max_turns" | "error_max_cost" | "error" | "error_circuit_open" | "interrupted" | "error_cancelled" | "error_tool_budget";
+  subtype: "success" | "error_max_turns" | "error_max_cost" | "error" | "error_circuit_open" | "interrupted" | "error_cancelled" | "error_tool_budget" | "error_loop_abort";
   result: string;
   session_id: string;
   finish_reason: string | null;
@@ -276,6 +276,17 @@ export interface EmitThinkingDeltaEvent {
   delta: string;
 }
 
+/**
+ * Daemon-only warning — emitted when the caller passes options that the daemon
+ * is configured to reject (e.g. fields not on the allowed list). The run
+ * continues with those options dropped.
+ */
+export interface EmitWarnEvent {
+  type: "warn";
+  message: string;
+  dropped_opts: string[];
+}
+
 export type EmitEvent =
   | EmitInitEvent
   | EmitAssistantEvent
@@ -283,7 +294,8 @@ export type EmitEvent =
   | EmitResultEvent
   | EmitQuestionEvent
   | EmitTextDeltaEvent
-  | EmitThinkingDeltaEvent;
+  | EmitThinkingDeltaEvent
+  | EmitWarnEvent;
 
 // ── OpenRouter API types ─────────────────────────────────────────────────────
 
@@ -694,6 +706,18 @@ export interface CliOptions {
   apiKeys?: string[];
   /** Env var names that must be present before the loop starts. */
   requiredEnvVars?: string[];
+  /** What to do when a hook exits non-zero: "ignore", "warn", or "fail". */
+  hookErrorMode?: "ignore" | "warn" | "fail";
+  /** Run in plan-mode: model must call exit_plan_mode before taking any actions. */
+  planMode?: boolean;
+  /** Inject workspace/directory context into the first user message. */
+  injectContext?: boolean;
+  /** Load browser automation tools (Puppeteer). */
+  enableBrowserTools?: boolean;
+  /** Track file changes made during the run and report them in the result event. */
+  trackFileChanges?: boolean;
+  /** Wrap tool outputs in XML tags for cleaner context. Default true. */
+  tagToolOutputs?: boolean;
 }
 
 // ── Bash policy ──────────────────────────────────────────────────────────────
