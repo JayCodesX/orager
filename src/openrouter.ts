@@ -597,6 +597,51 @@ export function shouldUseDirect(model: string): boolean {
 }
 
 /**
+ * Call the OpenRouter embeddings endpoint.
+ * Returns embedding vectors in input order.
+ * Throws an Error with message "callEmbeddings: <reason>" on any failure.
+ */
+export async function callEmbeddings(
+  apiKey: string,
+  model: string,
+  inputs: string[],
+): Promise<number[][]> {
+  let response: Response;
+  try {
+    response = await fetch(`${OPENROUTER_BASE}/embeddings`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({ model, input: inputs }),
+    });
+  } catch (err) {
+    throw new Error(`callEmbeddings: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  if (!response.ok) {
+    let body = "(unreadable)";
+    try { body = await response.text(); } catch { /* ignore */ }
+    throw new Error(`callEmbeddings: HTTP ${response.status} ${response.statusText}: ${body.slice(0, 300)}`);
+  }
+
+  let json: unknown;
+  try {
+    json = await response.json();
+  } catch (err) {
+    throw new Error(`callEmbeddings: failed to parse JSON response: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  try {
+    const data = (json as { data: Array<{ embedding: number[] }> }).data;
+    return data.map((item) => item.embedding);
+  } catch (err) {
+    throw new Error(`callEmbeddings: unexpected response shape: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
  * Fetch generation metadata from OpenRouter after a completed turn.
  * Fire-and-forget safe — never throws.
  */
