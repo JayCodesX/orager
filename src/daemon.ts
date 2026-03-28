@@ -157,6 +157,90 @@ async function releasePidLock(): Promise<void> {
   await fs.unlink(PID_FILE).catch(() => {});
 }
 
+// ── In-process token-bucket rate limiter ─────────────────────────────────────
+//
+// Tracks request counts per IP in a sliding 60-second window.
+// /run gets the stricter limit (default 60 RPM).
+// All other endpoints get the looser limit (default 300 RPM).
+//
+// State is module-level so it persists across requests in the same process.
+// Exported helpers allow tests to inspect and reset state without restarting.
+
+const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
+
+/** Per-IP state: request count in the current window + window start timestamp */
+interface RateLimitEntry {
+  count: number;
+  windowStart: number;
+}
+
+const _rateLimitMap = new Map<string, RateLimitEntry>();
+let _rateLimitCleanupTimer: ReturnType<typeof setInterval> | null = null;
+
+/** Start a background cleanup timer (idempotent — called once per daemon start). */
+function _startRateLimitCleanup(): void {
+  if (_rateLimitCleanupTimer) return;
+  _rateLimitCleanupTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [ip, entry] of _rateLimitMap) {
+      if (now - entry.windowStart >= RATE_LIMIT_WINDOW_MS) {
+        _rateLimitMap.delete(ip);
+      }
+    }
+  }, 5 * 60_000); // every 5 minutes
+  if (_rateLimitCleanupTimer.unref) _rateLimitCleanupTimer.unref();
+}
+
+/** Exported for testing only. */
+export function _getRateLimitState(): Map<string, RateLimitEntry> {
+  return _rateLimitMap;
+}
+
+/** Exported for testing only. */
+export function _clearRateLimitState(): void {
+  _rateLimitMap.clear();
+}
+
+/**
+ * Check whether an IP has exceeded its rate limit for the given endpoint type.
+ *
+ * Returns `{ allowed: true }` when under the limit (and increments the counter).
+ * Returns `{ allowed: false, retryAfter: number }` when over the limit.
+ *
+ * @param ip        - The client IP address
+ * @param isRunEndpoint - true for /run (strict limit), false for others (loose limit)
+ */
+export function checkRateLimit(
+  ip: string,
+  isRunEndpoint: boolean,
+): { allowed: true } | { allowed: false; retryAfter: number } {
+  const runRpm = (() => {
+    const v = parseInt(process.env["ORAGER_RATE_LIMIT_RPM"] ?? "", 10);
+    return Number.isFinite(v) && v > 0 ? v : 60;
+  })();
+  const otherRpm = runRpm * 5; // default 300 RPM for non-run endpoints
+
+  const limit = isRunEndpoint ? runRpm : otherRpm;
+  const now = Date.now();
+  const entry = _rateLimitMap.get(ip);
+
+  if (!entry || now - entry.windowStart >= RATE_LIMIT_WINDOW_MS) {
+    // New window
+    _rateLimitMap.set(ip, { count: 1, windowStart: now });
+    return { allowed: true };
+  }
+
+  if (entry.count < limit) {
+    entry.count++;
+    return { allowed: true };
+  }
+
+  // Over limit
+  const windowRemainingMs = RATE_LIMIT_WINDOW_MS - (now - entry.windowStart);
+  const retryAfter = Math.ceil(windowRemainingMs / 1000);
+  return { allowed: false, retryAfter };
+}
+
 // ── Daemon run request schema ─────────────────────────────────────────────────
 
 export interface DaemonRunRequest {
@@ -278,8 +362,33 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
     model,
   } = daemonOpts;
 
-  const signingKey = await loadOrCreateSigningKey();
+  let signingKey = await loadOrCreateSigningKey();
   process.stderr.write(`[orager daemon] signing key loaded from ${KEY_PATH}\n`);
+
+  // ── Key rotation support ──────────────────────────────────────────────────
+  // After rotation, the old key is kept for PREVIOUS_KEY_TTL_MS so that
+  // JWTs issued before the rotation remain valid during the overlap window.
+  const PREVIOUS_KEY_TTL_MS = 20 * 60 * 1000; // 20 minutes
+  let _previousKey: string | null = null;
+  let _previousKeyExpiresAt: Date | null = null;
+
+  /** Verify a JWT against both current and (if still valid) previous key. */
+  function verifyJwtDualKey(token: string): ReturnType<typeof verifyJwt> {
+    // Try current key first
+    try {
+      return verifyJwt(token, signingKey);
+    } catch (currentKeyErr) {
+      // Try previous key if within overlap window
+      if (
+        _previousKey &&
+        _previousKeyExpiresAt &&
+        Date.now() < _previousKeyExpiresAt.getTime()
+      ) {
+        return verifyJwt(token, _previousKey);
+      }
+      throw currentKeyErr;
+    }
+  }
 
   let activeRuns = 0;
   const activeRunsByAgent = new Map<string, number>();
@@ -406,6 +515,25 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
   const server = http.createServer((req, res) => {
     lastActivityAt = Date.now();
 
+    // ── Rate limiting (applies to all endpoints) ─────────────────────────────
+    // Extract the real client IP, falling back to remoteAddress.
+    const ip =
+      (Array.isArray(req.headers["x-forwarded-for"])
+        ? req.headers["x-forwarded-for"][0]
+        : req.headers["x-forwarded-for"]?.split(",")[0])?.trim() ??
+      req.socket.remoteAddress ??
+      "unknown";
+    const isRunEndpoint = req.method === "POST" && req.url === "/run";
+    const rl = checkRateLimit(ip, isRunEndpoint);
+    if (!rl.allowed) {
+      res.writeHead(429, {
+        "Content-Type": "application/json",
+        "Retry-After": String(rl.retryAfter),
+      });
+      res.end(JSON.stringify({ error: "rate limit exceeded", retryAfter: rl.retryAfter }));
+      return;
+    }
+
     // Health check — deep checks for key file, sessions dir, and optional SQLite DB.
     // Operational metrics (activeRuns, maxConcurrent, model, provider health) are
     // available at the authenticated /metrics endpoint to prevent info leakage to
@@ -475,7 +603,7 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
         return;
       }
       try {
-        verifyJwt(metricsToken, signingKey);
+        verifyJwtDualKey(metricsToken);
       } catch {
         res.writeHead(403);
         res.end();
@@ -525,7 +653,7 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
       const sessAuthHeader = req.headers["authorization"] ?? "";
       const sessToken = sessAuthHeader.startsWith("Bearer ") ? sessAuthHeader.slice(7) : "";
       if (!sessToken) { res.writeHead(401); res.end(); return; }
-      try { verifyJwt(sessToken, signingKey); } catch { res.writeHead(403); res.end(); return; }
+      try { verifyJwtDualKey(sessToken); } catch { res.writeHead(403); res.end(); return; }
 
       void (async () => {
         try {
@@ -614,6 +742,54 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
       return;
     }
 
+    // POST /rotate-key — JWT-authenticated with current key; generates a new signing key
+    if (req.method === "POST" && req.url === "/rotate-key") {
+      const rkAuthHeader = req.headers["authorization"] ?? "";
+      const rkToken = rkAuthHeader.startsWith("Bearer ") ? rkAuthHeader.slice(7) : "";
+      if (!rkToken) { res.writeHead(401); res.end(); return; }
+      try { verifyJwt(rkToken, signingKey); } catch { res.writeHead(401); res.end(); return; }
+
+      void (async () => {
+        try {
+          // Generate new key
+          const { randomBytes } = await import("node:crypto");
+          const newKey = randomBytes(32).toString("base64url");
+          const newKeyPath = KEY_PATH + ".new";
+
+          // Atomic write: write to .new then rename
+          await fs.writeFile(newKeyPath, newKey, { encoding: "utf8", mode: 0o600 });
+          await fs.rename(newKeyPath, KEY_PATH);
+
+          // Keep old key for overlap window
+          _previousKey = signingKey;
+          const expiresAt = new Date(Date.now() + PREVIOUS_KEY_TTL_MS);
+          _previousKeyExpiresAt = expiresAt;
+
+          // Update in-memory signing key
+          signingKey = newKey;
+
+          // Schedule previous key expiry
+          setTimeout(() => {
+            if (_previousKeyExpiresAt && Date.now() >= _previousKeyExpiresAt.getTime()) {
+              _previousKey = null;
+              _previousKeyExpiresAt = null;
+            }
+          }, PREVIOUS_KEY_TTL_MS).unref();
+
+          process.stderr.write(`[orager daemon] signing key rotated; old key expires at ${expiresAt.toISOString()}\n`);
+
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ rotated: true, previousKeyExpiresAt: expiresAt.toISOString() }));
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          process.stderr.write(`[orager daemon] key rotation failed: ${msg}\n`);
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: msg }));
+        }
+      })();
+      return;
+    }
+
     // POST /runs/:runId/cancel
     if (req.method === "POST" && req.url?.startsWith("/runs/") && req.url.endsWith("/cancel")) {
       const runId = req.url.slice("/runs/".length, -"/cancel".length);
@@ -663,7 +839,7 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
     }
     let claims: { agentId: string };
     try {
-      claims = verifyJwt(token, signingKey);
+      claims = verifyJwtDualKey(token);
       agentId = claims.agentId;
     } catch {
       res.writeHead(401);
@@ -914,6 +1090,7 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
   // ── Start server ────────────────────────────────────────────────────────────
   await acquirePidLock(port);
   await ensureSessionsDirPermissions();
+  _startRateLimitCleanup();
 
   // Non-blocking API key health check at startup
   checkAndLogApiKeyHealth(
@@ -944,10 +1121,80 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
     fetchLiveModelMeta(apiKey).catch(() => {}),
   ]).catch(() => {});
 
+  // ── Embedding cache prewarm (P2-7) ─────────────────────────────────────────
+  // Find agents that recently ran with embedding memory retrieval and prewarm
+  // the embedding cache so their first run doesn't pay cold-start latency.
+  if (apiKey) {
+    void (async () => {
+      try {
+        const { callEmbeddings } = await import("./openrouter.js");
+        const { setCachedQueryEmbedding } = await import("./embedding-cache.js");
+        const sessionsDir = getSessionsDir();
+        let sessionFiles: string[] = [];
+        try {
+          const allFiles = await fs.readdir(sessionsDir);
+          sessionFiles = allFiles.filter((f) => f.endsWith(".json") && !f.includes(".run.lock"));
+        } catch {
+          return; // sessions dir doesn't exist yet — skip
+        }
+
+        // Sort by mtime descending, take up to 5 most recent
+        const withMtime: Array<{ file: string; mtimeMs: number }> = [];
+        for (const f of sessionFiles) {
+          try {
+            const stat = await fs.stat(path.join(sessionsDir, f));
+            withMtime.push({ file: f, mtimeMs: stat.mtimeMs });
+          } catch {
+            withMtime.push({ file: f, mtimeMs: 0 });
+          }
+        }
+        withMtime.sort((a, b) => b.mtimeMs - a.mtimeMs);
+        const candidates = withMtime.slice(0, 5);
+
+        const prewarmTasks: Promise<void>[] = [];
+        for (const { file } of candidates) {
+          const sessionId = file.slice(0, -5);
+          prewarmTasks.push((async () => {
+            try {
+              const raw = await fs.readFile(path.join(sessionsDir, file), "utf8");
+              const session = JSON.parse(raw) as {
+                opts?: { memoryEmbeddingModel?: string };
+                messages?: Array<{ role: string; content?: string }>;
+              };
+              const embeddingModel = session.opts?.memoryEmbeddingModel;
+              if (!embeddingModel) return;
+              // Find the last user message as the prompt to prewarm
+              const msgs = session.messages ?? [];
+              let lastPrompt = "";
+              for (let i = msgs.length - 1; i >= 0; i--) {
+                const m = msgs[i];
+                if (m.role === "user" && typeof m.content === "string" && m.content.trim()) {
+                  lastPrompt = m.content.trim().slice(0, 1000); // cap at 1000 chars
+                  break;
+                }
+              }
+              if (!lastPrompt) return;
+              const [vec] = await callEmbeddings(apiKey, embeddingModel, [lastPrompt]);
+              setCachedQueryEmbedding(embeddingModel, lastPrompt, vec);
+              process.stderr.write(`[orager daemon] embedding prewarm: cached ${embeddingModel} for session ${sessionId}\n`);
+            } catch {
+              // silently ignore — prewarm is best-effort
+            }
+          })());
+        }
+        await Promise.all(prewarmTasks);
+      } catch {
+        // silently ignore — prewarm is best-effort
+      }
+    })();
+  }
+
   // ── Session auto-prune ─────────────────────────────────────────────────────
-  // Prune sessions older than 30 days once at startup and then every 24 hours.
-  // Runs fire-and-forget so they never delay request handling.
-  const SESSION_PRUNE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+  // Prune sessions older than SESSION_RETENTION_DAYS days once at startup and
+  // then every 24 hours. Override with ORAGER_SESSION_RETENTION_DAYS env var.
+  const SESSION_RETENTION_DAYS = parseInt(process.env["ORAGER_SESSION_RETENTION_DAYS"] ?? "30", 10);
+  const SESSION_PRUNE_TTL_MS = SESSION_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  console.log(`Session retention: ${SESSION_RETENTION_DAYS} days`);
   const runSessionPrune = (): void => {
     pruneOldSessions(SESSION_PRUNE_TTL_MS).then((result) => {
       if (result.deleted > 0) {
