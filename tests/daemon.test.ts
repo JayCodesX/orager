@@ -58,6 +58,7 @@ function createTestServer(): http.Server {
         dbPath: null,
         rateLimit: null,
         keyInfo: null,
+        circuitBreakersByAgent: {},
       }));
       return;
     }
@@ -210,6 +211,13 @@ describe("GET /metrics", () => {
     const { status, body } = await get("/metrics");
     expect(status).toBe(200);
     expect(body).toHaveProperty("activeRuns");
+  });
+
+  it("includes circuitBreakersByAgent field in metrics response", async () => {
+    const { status, body } = await get("/metrics");
+    expect(status).toBe(200);
+    expect(body).toHaveProperty("circuitBreakersByAgent");
+    expect(typeof (body as Record<string, unknown>).circuitBreakersByAgent).toBe("object");
   });
 });
 

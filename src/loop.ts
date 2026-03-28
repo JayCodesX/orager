@@ -26,7 +26,7 @@ import path from "node:path";
 import { loadSession, saveSession, newSessionId, acquireSessionLock } from "./session.js";
 import { callWithRetry } from "./retry.js";
 import { fetchGenerationMeta, shouldUseDirect } from "./openrouter.js";
-import { fetchLiveModelMeta, getLiveModelPricing, liveModelSupportsTools } from "./openrouter-model-meta.js";
+import { fetchLiveModelMeta, getLiveModelPricing, isLiveModelMetaCacheWarm, liveModelSupportsTools } from "./openrouter-model-meta.js";
 import { recordProviderSuccess } from "./provider-health.js";
 import { loadSkillsFromDirs, buildSkillsSystemPrompt, buildSkillTools } from "./skills.js";
 import { ALL_TOOLS, finishTool, BROWSER_TOOLS } from "./tools/index.js";
@@ -48,6 +48,7 @@ import {
   estimateTokens,
   fetchModelContextLengths,
   getContextWindow,
+  isModelContextCacheWarm,
   MAX_SESSION_MESSAGES,
   summarizeSession,
   CACHE_TTL_MS,
@@ -199,7 +200,9 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   // Skipped for the direct Anthropic path — the OpenRouter /models endpoint requires an
   // OpenRouter key and returns no data the direct path can use. The static fallback map
   // (200k for anthropic/* models) is authoritative and used instead.
-  if (!shouldUseDirect(model)) {
+  // Also skipped when both caches are warm (e.g. pre-warmed at daemon startup) to avoid
+  // the function-call overhead on every run in long-lived daemon processes.
+  if (!shouldUseDirect(model) && !(isModelContextCacheWarm() && isLiveModelMetaCacheWarm())) {
     await Promise.all([
       fetchModelContextLengths(apiKey),
       fetchLiveModelMeta(apiKey),
