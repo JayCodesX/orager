@@ -597,7 +597,7 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
     }
 
     // ── Parse body ──────────────────────────────────────────────────────────
-    const MAX_REQUEST_BODY_BYTES = 50 * 1024 * 1024; // 50 MB
+    const MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024; // 4 MB
     let body = "";
     let bodySize = 0;
     let bodyTooLarge = false;
@@ -625,7 +625,7 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
       if (bodyTooLarge) {
         if (!res.destroyed) {
           res.writeHead(413);
-          res.end(JSON.stringify({ error: "request body too large (max 50 MB)" }));
+          res.end(JSON.stringify({ error: "request body too large (max 4 MB)" }));
         }
         return;
       }
