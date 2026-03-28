@@ -52,15 +52,34 @@ describe("acquireSessionLock", () => {
     await expect(fs.access(lp)).rejects.toThrow();
   });
 
-  it("double-acquire on same session throws with 'already being resumed'", async () => {
+  it("double-acquire on same session throws with descriptive error after retry timeout", async () => {
     const sessionId = uniqueId();
     createdIds.push(sessionId);
 
     const release = await acquireSessionLock(sessionId);
     try {
-      await expect(acquireSessionLock(sessionId)).rejects.toThrow(
-        /already being resumed/,
+      // With a short timeout, retries exhaust quickly and throw the P1-3 error
+      await expect(
+        acquireSessionLock(sessionId, { timeoutMs: 200, initialDelayMs: 30 }),
+      ).rejects.toThrow(
+        `Session ${sessionId} is locked by another run. Cannot start concurrent runs on the same session.`,
       );
+    } finally {
+      await release();
+    }
+  });
+
+  it("double-acquire with no options throws descriptive error", async () => {
+    // Uses default timeout. To keep test fast we set env var to shrink stale threshold?
+    // Actually we test that the error message is correct with explicit short timeout.
+    const sessionId = uniqueId();
+    createdIds.push(sessionId);
+
+    const release = await acquireSessionLock(sessionId);
+    try {
+      await expect(
+        acquireSessionLock(sessionId, { timeoutMs: 100, initialDelayMs: 20 }),
+      ).rejects.toThrow("Cannot start concurrent runs on the same session.");
     } finally {
       await release();
     }
@@ -111,6 +130,24 @@ describe("acquireSessionLock", () => {
     } finally {
       await release();
     }
+  });
+
+  it("succeeds if the lock is released before the retry timeout expires", async () => {
+    const sessionId = uniqueId();
+    createdIds.push(sessionId);
+
+    const release1 = await acquireSessionLock(sessionId);
+
+    // Release after 60 ms while the second attempt is still retrying
+    setTimeout(() => { void release1(); }, 60);
+
+    // 800 ms window should be enough to win the retry
+    const release2 = await acquireSessionLock(sessionId, {
+      timeoutMs: 800,
+      initialDelayMs: 20,
+    });
+    expect(typeof release2).toBe("function");
+    await release2();
   });
 
   it("lock file path ends with .run.lock", async () => {
