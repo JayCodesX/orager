@@ -18,6 +18,7 @@ import {
 } from "./session.js";
 import type { CliOptions, EmitResultEvent, TurnModelRule, UserMessageContentBlock, AgentLoopOptions } from "./types.js";
 import { startDaemon, readDaemonPort } from "./daemon.js";
+import { mintJwt, KEY_PATH } from "./jwt.js";
 import { applyProfileAsync } from "./profiles.js";
 import { initTelemetry } from "./telemetry.js";
 import { runSetupWizard } from "./setup.js";
@@ -410,6 +411,75 @@ process.on("SIGTERM", () => handleInterrupt("SIGTERM"));
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
+// ── Help command ─────────────────────────────────────────────────────────────
+
+function handleHelp(): void {
+  process.stdout.write(`orager ${_ORAGER_VERSION} — autonomous AI agent runner
+
+USAGE
+  orager [OPTIONS] [PROMPT]
+  echo "prompt" | orager --print -
+
+BASIC
+  --model <id>              Model to use (default: deepseek/deepseek-chat-v3-2)
+  --max-turns <n>           Maximum agent turns (default: 30)
+  --timeout-sec <n>         Run-level timeout in seconds (default: 300)
+  --session-id <id>         Resume an existing session
+  --cwd <path>              Working directory for the agent
+  --print                   Print result to stdout (non-interactive mode)
+  --verbose                 Verbose logging
+
+DAEMON
+  --serve                   Start the HTTP daemon (persistent server mode)
+  --port <n>                Daemon port (default: 3456)
+  --max-concurrent <n>      Max concurrent runs (default: 3)
+  --idle-timeout <duration> Idle shutdown timeout, e.g. 30m, 1h (default: 30m)
+  --status                  Check if the daemon is running
+  --status --json           Machine-readable status output
+  --clear-model-cache       Delete cached model metadata (force fresh fetch)
+
+PROFILES
+  --profile <name>          Apply a named profile preset (code-review, bug-fix,
+                            research, refactor, test-writer, devops)
+
+SESSIONS
+  --list-sessions           List all sessions
+  --search-sessions <q>     Search sessions by content
+  --trash-session <id>      Move a session to trash
+  --restore-session <id>    Restore a trashed session
+  --delete-session <id>     Permanently delete a session
+  --delete-trashed          Delete all trashed sessions
+  --rollback-session <id>   Roll back a session to previous turn
+  --prune-sessions          Delete sessions older than 30 days
+
+TOOLS & SAFETY
+  --dangerously-skip-permissions  Skip all tool-use permission checks
+  --require-approval <mode>       Approval mode: all, none, tools
+  --bash-policy <json>            Bash tool policy (blocked commands, env vars)
+  --settings-file <path>          Path to a custom settings JSON file
+
+COST
+  --max-cost-usd <n>        Hard stop if cost exceeds this value
+  --max-cost-usd-soft <n>   Warn (but continue) when cost exceeds this value
+
+OTHER
+  --version, -v             Print version and exit
+  --help, -h                Print this help and exit
+  setup                     Run the interactive setup wizard
+
+ENVIRONMENT
+  OPENROUTER_API_KEY        OpenRouter API key (required)
+  ORAGER_API_KEY            Alternative API key env var
+  ORAGER_SESSIONS_DIR       Override sessions directory
+  ORAGER_PROFILES_DIR       Override profiles directory
+  ORAGER_SETTINGS_ALLOWED_ROOTS  Colon-separated absolute path roots for settingsFile
+
+DOCS
+  https://github.com/JayCodesX/orager
+`);
+  process.exit(0);
+}
+
 // ── Status command ────────────────────────────────────────────────────────────
 
 async function handleStatus(jsonMode = false): Promise<void> {
@@ -425,23 +495,15 @@ async function handleStatus(jsonMode = false): Promise<void> {
 
   const url = `http://127.0.0.1:${port}`;
   try {
-    const res = await fetch(`${url}/health`, {
+    const healthRes = await fetch(`${url}/health`, {
       signal: AbortSignal.timeout(3000),
     });
-    if (res.ok) {
+    if (!healthRes.ok) {
       if (jsonMode) {
-        process.stdout.write(JSON.stringify({ running: true, port, url }) + "\n");
-      } else {
-        process.stdout.write(`orager daemon: running on port ${port}\n`);
-        process.stdout.write(`  url: ${url}\n`);
-      }
-      process.exit(0);
-    } else {
-      if (jsonMode) {
-        process.stdout.write(JSON.stringify({ running: false, port, url, error: `/health returned HTTP ${res.status}` }) + "\n");
+        process.stdout.write(JSON.stringify({ running: false, port, url, error: `/health returned HTTP ${healthRes.status}` }) + "\n");
       } else {
         process.stdout.write(
-          `orager daemon: port file found (port ${port}) but /health returned HTTP ${res.status}\n`,
+          `orager daemon: port file found (port ${port}) but /health returned HTTP ${healthRes.status}\n`,
         );
       }
       process.exit(1);
@@ -451,12 +513,75 @@ async function handleStatus(jsonMode = false): Promise<void> {
     if (jsonMode) {
       process.stdout.write(JSON.stringify({ running: false, port, url, error: msg }) + "\n");
     } else {
-      process.stdout.write(
-        `orager daemon: port file found (port ${port}) but ${msg}\n`,
-      );
+      process.stdout.write(`orager daemon: port file found (port ${port}) but ${msg}\n`);
     }
     process.exit(1);
   }
+
+  // Daemon is alive — attempt to fetch uptime from /metrics using the signing key.
+  // Non-fatal: if the key can't be read or /metrics fails, we still report running.
+  let uptimeMs: number | null = null;
+  try {
+    const keyData = await fs.readFile(KEY_PATH, "utf8");
+    const signingKey = keyData.trim();
+    if (signingKey) {
+      const token = mintJwt(signingKey, "orager-cli-status");
+      const metricsRes = await fetch(`${url}/metrics`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(3000),
+      });
+      if (metricsRes.ok) {
+        const metricsBody = await metricsRes.json() as { uptimeMs?: number };
+        if (typeof metricsBody.uptimeMs === "number") {
+          uptimeMs = metricsBody.uptimeMs;
+        }
+      }
+    }
+  } catch {
+    // Key not found or metrics call failed — proceed without uptime
+  }
+
+  if (jsonMode) {
+    process.stdout.write(JSON.stringify({ running: true, port, url, uptimeMs }) + "\n");
+  } else {
+    process.stdout.write(`orager daemon: running on port ${port}\n`);
+    process.stdout.write(`  url: ${url}\n`);
+    if (uptimeMs !== null) {
+      const uptimeSec = Math.floor(uptimeMs / 1000);
+      const h = Math.floor(uptimeSec / 3600);
+      const m = Math.floor((uptimeSec % 3600) / 60);
+      const s = uptimeSec % 60;
+      process.stdout.write(`  uptime: ${h}h ${m}m ${s}s\n`);
+    }
+  }
+  process.exit(0);
+}
+
+// ── Clear model cache command ─────────────────────────────────────────────────
+
+async function handleClearModelCache(): Promise<void> {
+  const cacheFiles = [
+    path.join(os.homedir(), ".orager", "model-meta-cache.json"),
+    path.join(os.homedir(), ".orager", "model-context-cache.json"),
+  ];
+  let cleared = 0;
+  for (const f of cacheFiles) {
+    try {
+      await fs.unlink(f);
+      process.stdout.write(`cleared: ${f}\n`);
+      cleared++;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        process.stderr.write(`orager: failed to delete ${f}: ${(err as Error).message}\n`);
+      }
+    }
+  }
+  if (cleared === 0) {
+    process.stdout.write("orager: no model cache files found (already clear)\n");
+  } else {
+    process.stdout.write(`orager: cleared ${cleared} cache file(s). Next run will fetch fresh model metadata.\n`);
+  }
+  process.exit(0);
 }
 
 // ── Session management subcommands ───────────────────────────────────────────
@@ -1001,6 +1126,12 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // ── Help ─────────────────────────────────────────────────────────────────────
+  if (argv.includes("--help") || argv.includes("-h")) {
+    handleHelp();
+    return;
+  }
+
   // ── Setup wizard ─────────────────────────────────────────────────────────────
   if (argv[0] === "setup") {
     await runSetupWizard(argv.slice(1));
@@ -1057,6 +1188,7 @@ async function main(): Promise<void> {
   if (argv.includes("--delete-trashed"))   { await handleDeleteTrashed();       return; }
   if (argv.includes("--rollback-session")) { await handleRollbackSession(argv); return; }
   if (argv.includes("--prune-sessions"))   { await handlePrune(argv);           return; }
+  if (argv.includes("--clear-model-cache")) { await handleClearModelCache(); return; }
 
   // ── User config (~/.orager/config.json) — base defaults ──────────────────
   // Loaded before CLI flags so that explicit args always win. The file is
