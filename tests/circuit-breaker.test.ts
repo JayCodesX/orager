@@ -124,3 +124,86 @@ describe("getAgentCircuitBreaker — per-agent isolation (A1)", () => {
     expect(fresh.currentState).toBe("closed");
   });
 });
+
+// ── T-gap2: daemon run handler — circuit breaker state transitions ─────────────
+// Simulates the daemon's runAgentLoop integration pattern:
+//   let _runFailed = false;
+//   runAgentLoop(loopOpts)
+//     .catch(() => { _runFailed = true; agentCb.recordFailure(); })
+//     .finally(() => { if (!_runFailed) agentCb.recordSuccess(); });
+// This verifies the glue code logic between daemon.ts and circuit-breaker.ts.
+
+describe("daemon run pattern — circuit breaker state transitions (T-gap2)", () => {
+  afterEach(() => {
+    clearAllAgentCircuitBreakers();
+  });
+
+  /** Simulate the daemon's runAgentLoop .catch/.finally CB update pattern. */
+  async function simulateDaemonRun(agentId: string, succeeds: boolean): Promise<void> {
+    const agentCb = getAgentCircuitBreaker(agentId);
+    let _runFailed = false;
+    const runPromise = succeeds
+      ? Promise.resolve()
+      : Promise.reject(new Error("mock run failure"));
+    await runPromise
+      .catch(() => {
+        _runFailed = true;
+        agentCb.recordFailure();
+      })
+      .finally(() => {
+        if (!_runFailed) agentCb.recordSuccess();
+      });
+  }
+
+  it("three consecutive failures open the agent circuit breaker (threshold=3)", async () => {
+    const agentId = "daemon-agent-fail";
+    const cb = getAgentCircuitBreaker(agentId);
+
+    await simulateDaemonRun(agentId, false);
+    await simulateDaemonRun(agentId, false);
+    expect(cb.currentState).toBe("closed"); // not yet at threshold
+    await simulateDaemonRun(agentId, false);
+    expect(cb.isOpen()).toBe(true); // threshold reached
+  });
+
+  it("a successful run records success and keeps the CB closed", async () => {
+    const agentId = "daemon-agent-ok";
+    const cb = getAgentCircuitBreaker(agentId);
+
+    await simulateDaemonRun(agentId, true);
+    expect(cb.currentState).toBe("closed");
+    expect(cb.isOpen()).toBe(false);
+  });
+
+  it("a successful run after partial failures keeps the CB closed", async () => {
+    const agentId = "daemon-agent-partial";
+    const cb = getAgentCircuitBreaker(agentId);
+
+    // Two failures (below threshold)
+    await simulateDaemonRun(agentId, false);
+    await simulateDaemonRun(agentId, false);
+    expect(cb.currentState).toBe("closed");
+
+    // A successful run resets consecutive failures
+    await simulateDaemonRun(agentId, true);
+    expect(cb.currentState).toBe("closed");
+
+    // Would need 3 more consecutive failures to open again
+    await simulateDaemonRun(agentId, false);
+    await simulateDaemonRun(agentId, false);
+    expect(cb.currentState).toBe("closed"); // still under threshold
+  });
+
+  it("different agents accumulate independent failure counts", async () => {
+    const agentA = "daemon-agent-a";
+    const agentB = "daemon-agent-b";
+
+    // Trip agentA to threshold
+    for (let i = 0; i < 3; i++) await simulateDaemonRun(agentA, false);
+    // agentB only has 2 failures
+    for (let i = 0; i < 2; i++) await simulateDaemonRun(agentB, false);
+
+    expect(getAgentCircuitBreaker(agentA).isOpen()).toBe(true);
+    expect(getAgentCircuitBreaker(agentB).isOpen()).toBe(false);
+  });
+});
