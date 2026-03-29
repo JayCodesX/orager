@@ -744,6 +744,14 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   // Start from the session's prior cumulative cost so cost limits apply to the
   // full session total rather than resetting to $0 on every resume.
   let totalCostUsd = priorCumulativeCostUsd;
+  // Per-category cost accumulators — only populated when pricing is available.
+  let inputCostUsd = 0;
+  let outputCostUsd = 0;
+  /** Returns the cost breakdown if any pricing data was captured, else undefined. */
+  function costBreakdown(): { input_usd: number; output_usd: number } | undefined {
+    if (inputCostUsd === 0 && outputCostUsd === 0) return undefined;
+    return { input_usd: inputCostUsd, output_usd: outputCostUsd };
+  }
   let lastResponseModel = model;
   let lastFinishReason: string | null = null;
   let lastAssistantText = "";
@@ -1100,6 +1108,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
               cache_write_tokens: cumulativeCacheWriteTokens,
             },
             total_cost_usd: totalCostUsd,
+          cost_breakdown: costBreakdown(),
             turnCount: turn,
             toolMetrics: Object.fromEntries(toolMetrics),
             filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
@@ -1168,6 +1177,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
               cache_write_tokens: cumulativeCacheWriteTokens,
             },
             total_cost_usd: totalCostUsd,
+          cost_breakdown: costBreakdown(),
             turnCount: turn,
             toolMetrics: Object.fromEntries(toolMetrics),
             filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
@@ -1276,8 +1286,12 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       const inputCost = opts.costPerInputToken ?? livePricing?.prompt ?? 0;
       const outputCost = opts.costPerOutputToken ?? livePricing?.completion ?? 0;
       if (inputCost > 0 || outputCost > 0) {
-        totalCostUsd += inputCost * response.usage.prompt_tokens + outputCost * response.usage.completion_tokens;
-        totalCostUsd = Math.round(totalCostUsd * 1e8) / 1e8;
+        const turnInputCost  = inputCost  * response.usage.prompt_tokens;
+        const turnOutputCost = outputCost * response.usage.completion_tokens;
+        totalCostUsd += turnInputCost + turnOutputCost;
+        totalCostUsd  = Math.round(totalCostUsd  * 1e8) / 1e8;
+        inputCostUsd  += turnInputCost;
+        outputCostUsd += turnOutputCost;
       }
 
       // ── Generation metadata (fire-and-forget) ────────────────────────────
@@ -1496,6 +1510,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             cache_write_tokens: cumulativeCacheWriteTokens,
           },
           total_cost_usd: totalCostUsd,
+          cost_breakdown: costBreakdown(),
           turnCount: turn,
           toolMetrics: Object.fromEntries(toolMetrics),
           filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
@@ -1618,6 +1633,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
               cache_write_tokens: cumulativeCacheWriteTokens,
             },
             total_cost_usd: totalCostUsd,
+          cost_breakdown: costBreakdown(),
             turnCount: turn,
             toolMetrics: Object.fromEntries(toolMetrics),
             filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
@@ -1766,6 +1782,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
               cache_write_tokens: cumulativeCacheWriteTokens,
             },
             total_cost_usd: totalCostUsd,
+          cost_breakdown: costBreakdown(),
             turnCount: turn,
             toolMetrics: Object.fromEntries(toolMetrics),
             filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
@@ -1833,6 +1850,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           cache_write_tokens: cumulativeCacheWriteTokens,
         },
         total_cost_usd: totalCostUsd,
+        cost_breakdown: costBreakdown(),
         turnCount: turn,
         toolMetrics: Object.fromEntries(toolMetrics),
         filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
@@ -1881,6 +1899,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           cache_write_tokens: cumulativeCacheWriteTokens,
         },
         total_cost_usd: totalCostUsd,
+        cost_breakdown: costBreakdown(),
         turnCount: turn,
         toolMetrics: Object.fromEntries(toolMetrics),
         filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
@@ -1925,6 +1944,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           cache_write_tokens: cumulativeCacheWriteTokens,
         },
         total_cost_usd: totalCostUsd,
+        cost_breakdown: costBreakdown(),
         turnCount: turn,
         toolMetrics: Object.fromEntries(toolMetrics),
         filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,

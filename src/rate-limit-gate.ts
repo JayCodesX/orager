@@ -11,6 +11,7 @@
  */
 
 import type { RateLimitState } from "./rate-limit-tracker.js";
+import { trace } from "@opentelemetry/api";
 
 /** Fraction of remaining budget below which the gate activates. */
 const GATE_THRESHOLD = 0.05;
@@ -61,9 +62,15 @@ export async function waitIfRateLimited(
   if (waitMs <= 0) return;
 
   const kind = reqExhausted ? "requests" : "tokens";
+  const remaining = reqExhausted ? state.remainingRequests : state.remainingTokens;
   onLog?.(
-    `[orager] rate-limit ${kind} near exhaustion (${reqExhausted ? state.remainingRequests : state.remainingTokens} remaining)` +
+    `[orager] rate-limit ${kind} near exhaustion (${remaining} remaining)` +
       ` — waiting ${waitMs}ms for reset\n`,
   );
+  trace.getActiveSpan()?.addEvent("rate_limit.gate_wait", {
+    "rate_limit.kind": kind,
+    "rate_limit.remaining": remaining,
+    "rate_limit.wait_ms": waitMs,
+  });
   await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
 }
