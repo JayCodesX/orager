@@ -1,16 +1,31 @@
 /**
  * Tests for openrouter-model-meta disk cache persistence.
+ *
+ * IMPORTANT: these tests use an isolated temp path, NOT the real
+ * ~/.orager/model-meta-cache.json.  The real path is written by
+ * openrouter-model-meta.ts during other tests; sharing it would cause
+ * concurrent-write corruption (invalid JSON) and flaky failures.
  */
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 
-const DISK_CACHE_PATH = path.join(os.homedir(), ".orager", "model-meta-cache.json");
+// Use a unique temp path per test-suite invocation to avoid conflicts with
+// the real module or parallel test files writing to the same location.
+const TEST_CACHE_DIR = path.join(os.tmpdir(), `orager-test-meta-${randomBytes(8).toString("hex")}`);
+const DISK_CACHE_PATH = path.join(TEST_CACHE_DIR, "model-meta-cache.json");
 
 describe("model-meta disk cache persistence", () => {
+  beforeEach(async () => {
+    // Ensure the dir exists and the file is absent before each test
+    await fs.mkdir(TEST_CACHE_DIR, { recursive: true });
+    await fs.unlink(DISK_CACHE_PATH).catch(() => {});
+  });
+
   afterEach(async () => {
-    // Clean up any test-written cache file
+    // Clean up after each test
     await fs.unlink(DISK_CACHE_PATH).catch(() => {});
   });
 
