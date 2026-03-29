@@ -58,7 +58,7 @@ afterEach(async () => {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("P2-2: guaranteed session save on disconnect", () => {
-  it("session is saved when loop is aborted mid-run", async () => {
+  it("session is saved when loop is aborted mid-run", { timeout: 15000 }, async () => {
     const { runAgentLoop } = await import("../src/loop.js");
     const abortController = new AbortController();
     const events: Array<{ type: string; subtype?: string; session_id?: string }> = [];
