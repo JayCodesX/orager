@@ -19,6 +19,8 @@ import type { OragerUserConfig } from "./setup.js";
 import { DEFAULT_CONFIG } from "./setup.js";
 import type { OragerSettings } from "./settings.js";
 import { mintJwt, KEY_PATH } from "./jwt.js";
+import { getSpanBuffer, type BufferedSpan } from "./telemetry.js";
+import split2 from "split2";
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -322,6 +324,204 @@ async function handleDaemonSessions(
   }
 }
 
+// ── Logs API ──────────────────────────────────────────────────────────────────
+
+interface LogEntry {
+  ts?: string;
+  level?: string;
+  event?: string;
+  sessionId?: string;
+  agentId?: string;
+  model?: string;
+  [key: string]: unknown;
+}
+
+async function handleGetLogs(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  const logFile = process.env["ORAGER_LOG_FILE"];
+  if (!logFile) {
+    jsonResponse(res, 200, { entries: [], total: 0, configured: false });
+    return;
+  }
+
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const q      = url.searchParams.get("q")?.toLowerCase() ?? "";
+  const level  = url.searchParams.get("level") ?? "";
+  const from   = url.searchParams.get("from") ?? "";
+  const to     = url.searchParams.get("to") ?? "";
+  const limit  = Math.min(parseInt(url.searchParams.get("limit") ?? "200", 10), 500);
+  const offset = parseInt(url.searchParams.get("offset") ?? "0", 10);
+
+  const entries: LogEntry[] = [];
+
+  await new Promise<void>((resolve, reject) => {
+    let readStream: fsSync.ReadStream;
+    try {
+      readStream = fsSync.createReadStream(logFile, { encoding: "utf8" });
+    } catch (err) {
+      reject(err);
+      return;
+    }
+
+    const splitter = split2();
+    readStream.pipe(splitter);
+
+    splitter.on("data", (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      let entry: LogEntry;
+      try { entry = JSON.parse(trimmed) as LogEntry; } catch { return; }
+
+      if (level && entry.level !== level) return;
+      if (from && entry.ts && entry.ts < from) return;
+      if (to   && entry.ts && entry.ts > to)   return;
+      if (q) {
+        const haystack = JSON.stringify(entry).toLowerCase();
+        if (!haystack.includes(q)) return;
+      }
+      entries.push(entry);
+    });
+
+    splitter.on("end",   resolve);
+    splitter.on("error", reject);
+    readStream.on("error", reject);
+  }).catch(() => { /* file read errors → return what we have */ });
+
+  const total = entries.length;
+  const page  = entries.slice(offset, offset + limit);
+  jsonResponse(res, 200, {
+    entries: page,
+    total,
+    truncated: total > offset + limit,
+    configured: true,
+  });
+}
+
+async function handleLogStream(
+  _req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  const logFile = process.env["ORAGER_LOG_FILE"];
+  if (!logFile) {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    res.write("data: " + JSON.stringify({ configured: false }) + "\n\n");
+    res.end();
+    return;
+  }
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "Access-Control-Allow-Origin": "http://localhost:5173",
+  });
+  res.write(": connected\n\n");
+
+  // Tail: watch for file changes, read new bytes since last position
+  let filePos = 0;
+  try {
+    const stat = await fs.stat(logFile);
+    filePos = stat.size; // start from end of file (only new lines)
+  } catch { /* file may not exist yet */ }
+
+  let closed = false;
+  res.on("close", () => { closed = true; fsSync.unwatchFile(logFile); });
+
+  fsSync.watchFile(logFile, { interval: 500 }, async () => {
+    if (closed) return;
+    try {
+      const stat = await fs.stat(logFile);
+      if (stat.size <= filePos) return; // truncated or unchanged
+      const buf = Buffer.alloc(stat.size - filePos);
+      const fd  = fsSync.openSync(logFile, "r");
+      fsSync.readSync(fd, buf, 0, buf.length, filePos);
+      fsSync.closeSync(fd);
+      filePos = stat.size;
+
+      const lines = buf.toString("utf8").split("\n");
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const entry = JSON.parse(trimmed) as LogEntry;
+          res.write("data: " + JSON.stringify(entry) + "\n\n");
+        } catch { /* skip malformed lines */ }
+      }
+    } catch { /* ignore */ }
+  });
+}
+
+// ── Telemetry API ─────────────────────────────────────────────────────────────
+
+async function handleGetSpans(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  const url    = new URL(req.url ?? "/", "http://localhost");
+  const traceId = url.searchParams.get("traceId") ?? "";
+  const name   = url.searchParams.get("name")?.toLowerCase() ?? "";
+  const limit  = Math.min(parseInt(url.searchParams.get("limit") ?? "200", 10), 500);
+  const offset = parseInt(url.searchParams.get("offset") ?? "0", 10);
+
+  const buf    = getSpanBuffer();
+  let spans    = buf.getAll();
+
+  if (traceId) spans = spans.filter((s) => s.traceId === traceId);
+  if (name)    spans = spans.filter((s) => s.name.toLowerCase().includes(name));
+
+  const total = spans.length;
+  const page  = spans.slice(offset, offset + limit);
+
+  jsonResponse(res, 200, {
+    spans:      page,
+    total,
+    bufferSize: buf.size,
+    bufferMax:  buf.max,
+    configured: true,
+  });
+}
+
+async function handleGetTraces(
+  _req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  const buf   = getSpanBuffer();
+  const spans = buf.getAll();
+
+  // Group by traceId
+  const traceMap = new Map<string, BufferedSpan[]>();
+  for (const s of spans) {
+    const list = traceMap.get(s.traceId) ?? [];
+    list.push(s);
+    traceMap.set(s.traceId, list);
+  }
+
+  const traces = [...traceMap.entries()]
+    .map(([traceId, traceSpans]) => {
+      const root    = traceSpans.find((s) => !s.parentSpanId) ?? traceSpans[0];
+      const start   = Math.min(...traceSpans.map((s) => s.startTimeMs));
+      const end     = Math.max(...traceSpans.map((s) => s.endTimeMs));
+      const errors  = traceSpans.filter((s) => s.status === "error").length;
+      return {
+        traceId,
+        rootSpanName:     root?.name ?? "unknown",
+        startTimeMs:      start,
+        totalDurationMs:  end - start,
+        spanCount:        traceSpans.length,
+        errorCount:       errors,
+      };
+    })
+    .sort((a, b) => b.startTimeMs - a.startTimeMs);
+
+  jsonResponse(res, 200, { traces, total: traces.length, configured: true });
+}
+
 // ── Static file serving ───────────────────────────────────────────────────────
 
 async function serveStatic(
@@ -415,6 +615,14 @@ async function handleRequest(
       await handleDaemonMetrics(req, res);
     } else if (pathname === "/api/daemon/sessions" && req.method === "GET") {
       await handleDaemonSessions(req, res);
+    } else if (pathname === "/api/logs" && req.method === "GET") {
+      await handleGetLogs(req, res);
+    } else if (pathname === "/api/logs/stream" && req.method === "GET") {
+      await handleLogStream(req, res);
+    } else if (pathname === "/api/telemetry/spans" && req.method === "GET") {
+      await handleGetSpans(req, res);
+    } else if (pathname === "/api/telemetry/traces" && req.method === "GET") {
+      await handleGetTraces(req, res);
     } else if (pathname.startsWith("/api/")) {
       jsonResponse(res, 404, { error: "Not found" });
     } else {
