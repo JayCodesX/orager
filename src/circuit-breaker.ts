@@ -116,7 +116,24 @@ export const openRouterCircuitBreaker = new CircuitBreaker({
 
 // ── Per-agent circuit breaker map ─────────────────────────────────────────────
 // Keyed by agentId so one agent's failure streak cannot block other agents.
-const _agentCircuitBreakers = new Map<string, CircuitBreaker>();
+// Each entry records a lastUsed timestamp so idle entries can be evicted.
+const CB_IDLE_EVICT_MS = 60 * 60 * 1000; // 1 hour
+const CB_EVICT_INTERVAL_MS = 10 * 60 * 1000; // check every 10 minutes
+
+interface AgentCbEntry {
+  cb: CircuitBreaker;
+  lastUsed: number;
+}
+const _agentCircuitBreakers = new Map<string, AgentCbEntry>();
+
+// Start a background eviction timer (unref'd so it doesn't keep the process alive).
+const _cbEvictTimer = setInterval(() => {
+  const cutoff = Date.now() - CB_IDLE_EVICT_MS;
+  for (const [id, entry] of _agentCircuitBreakers) {
+    if (entry.lastUsed < cutoff) _agentCircuitBreakers.delete(id);
+  }
+}, CB_EVICT_INTERVAL_MS);
+if (typeof _cbEvictTimer.unref === "function") _cbEvictTimer.unref();
 
 /**
  * Returns (or lazily creates) a per-agent CircuitBreaker keyed by agentId.
@@ -127,15 +144,20 @@ export function getAgentCircuitBreaker(
   agentId: string,
   opts: CircuitBreakerOptions = {},
 ): CircuitBreaker {
-  let cb = _agentCircuitBreakers.get(agentId);
-  if (!cb) {
-    cb = new CircuitBreaker({
-      threshold:    opts.threshold    ?? 3,
-      resetAfterMs: opts.resetAfterMs ?? 30_000,
-    });
-    _agentCircuitBreakers.set(agentId, cb);
+  let entry = _agentCircuitBreakers.get(agentId);
+  if (!entry) {
+    entry = {
+      cb: new CircuitBreaker({
+        threshold:    opts.threshold    ?? 3,
+        resetAfterMs: opts.resetAfterMs ?? 30_000,
+      }),
+      lastUsed: Date.now(),
+    };
+    _agentCircuitBreakers.set(agentId, entry);
+  } else {
+    entry.lastUsed = Date.now();
   }
-  return cb;
+  return entry.cb;
 }
 
 /** Remove a specific agent's circuit breaker (e.g. to reset state after a clean run). */
@@ -146,6 +168,20 @@ export function clearAgentCircuitBreaker(agentId: string): void {
 /** Clear ALL per-agent circuit breakers — intended for test teardown only. */
 export function clearAllAgentCircuitBreakers(): void {
   _agentCircuitBreakers.clear();
+}
+
+/** Set the lastUsed timestamp for a specific agent — for testing only. */
+export function _setAgentLastUsedForTesting(agentId: string, timestamp: number): void {
+  const entry = _agentCircuitBreakers.get(agentId);
+  if (entry) entry.lastUsed = timestamp;
+}
+
+/** Run the eviction pass immediately using the real cutoff — for testing only. */
+export function _runEvictionNowForTesting(): void {
+  const cutoff = Date.now() - CB_IDLE_EVICT_MS;
+  for (const [id, entry] of _agentCircuitBreakers) {
+    if (entry.lastUsed < cutoff) _agentCircuitBreakers.delete(id);
+  }
 }
 
 /**
@@ -159,7 +195,7 @@ export function getAllAgentCircuitBreakerStates(): Record<string, {
   retryInMs: number;
 }> {
   const result: Record<string, { state: string; consecutiveFailures: number; retryInMs: number }> = {};
-  for (const [agentId, cb] of _agentCircuitBreakers) {
+  for (const [agentId, { cb }] of _agentCircuitBreakers) {
     result[agentId] = {
       state: cb.currentState,
       consecutiveFailures: cb.consecutiveFailures,

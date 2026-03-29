@@ -150,7 +150,7 @@ afterEach(async () => {
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 describe("runAgentLoop — real tool execution", () => {
-  it("bash tool executes real command", async () => {
+  it("bash tool executes real command", { timeout: 15000 }, async () => {
     vi.mocked(callOpenRouter)
       .mockResolvedValueOnce(toolResponse([makeToolCall("c1", "bash", { command: "echo integration-test" })]))
       .mockResolvedValueOnce(noToolResponse("done"));

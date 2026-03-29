@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import {
   withMemoryLock,
   _clearMemoryLocksForTesting,
+  _getMemoryLocksMapSizeForTesting,
 } from "../src/memory.js";
 
 beforeEach(() => {
@@ -87,6 +88,41 @@ describe("withMemoryLock", () => {
     expect(order).toContain(1);
     expect(order).toContain(2);
     expect(order).toContain(3);
+  });
+
+  it("Map entry is cleaned up after the lock is released (no leak)", async () => {
+    const key = "cleanup-test-key";
+    expect(_getMemoryLocksMapSizeForTesting()).toBe(0);
+
+    await withMemoryLock(key, async () => {
+      // Map should hold the sentinel while the lock is held
+      expect(_getMemoryLocksMapSizeForTesting()).toBe(1);
+    });
+
+    // Sentinel must be deleted once the last waiter finishes
+    expect(_getMemoryLocksMapSizeForTesting()).toBe(0);
+  });
+
+  it("Map entry stays while a second waiter is queued, then cleans up after both finish", async () => {
+    const key = "cleanup-chain-key";
+
+    let innerResolve!: () => void;
+    const innerHeld = new Promise<void>((res) => { innerResolve = res; });
+
+    // Start first lock and hold it until we're ready
+    const first = withMemoryLock(key, () => innerHeld);
+    // Queue a second waiter
+    const second = withMemoryLock(key, async () => {});
+
+    // While both are in-flight the Map must have the entry
+    expect(_getMemoryLocksMapSizeForTesting()).toBe(1);
+
+    // Release the first — second will run
+    innerResolve();
+    await Promise.all([first, second]);
+
+    // After both complete, Map must be empty
+    expect(_getMemoryLocksMapSizeForTesting()).toBe(0);
   });
 
   it("_clearMemoryLocksForTesting resets state so subsequent operations are independent", async () => {
