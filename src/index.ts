@@ -23,6 +23,7 @@ import { mintJwt, KEY_PATH } from "./jwt.js";
 import { applyProfileAsync } from "./profiles.js";
 import { initTelemetry } from "./telemetry.js";
 import { runSetupWizard } from "./setup.js";
+import { startUiServer } from "./ui-server.js";
 import { createRequire } from "node:module";
 import { loadMemoryStoreAny, MEMORY_DIR } from "./memory.js";
 import { parseArgs, readStdin } from "./cli/parse-args.js";
@@ -143,6 +144,7 @@ OTHER
   --help, -h                Print this help and exit
   setup                     Run the interactive setup wizard
   setup --check             Validate config and test the API key
+  ui [--port <n>]           Start the browser-based UI server (default port: 3457)
 
 ENVIRONMENT
   OPENROUTER_API_KEY        OpenRouter API key (required)
@@ -684,6 +686,14 @@ async function main(): Promise<void> {
   // ── Setup wizard ─────────────────────────────────────────────────────────────
   if (argv[0] === "setup") {
     await runSetupWizard(argv.slice(1));
+    return;
+  }
+
+  // ── UI server ─────────────────────────────────────────────────────────────
+  if (argv[0] === "ui") {
+    const portIdx = argv.indexOf("--port");
+    const port = portIdx !== -1 ? parseInt(argv[portIdx + 1] ?? "3457", 10) : 3457;
+    await startUiServer({ port });
     return;
   }
 
