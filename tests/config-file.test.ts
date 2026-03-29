@@ -185,10 +185,12 @@ describe("loadConfigFile — daemonIdleTimeout (M1)", () => {
     expect(result.args[idx + 1]).toBe("1.5h");
   });
 
-  it("omits --idle-timeout when format is invalid (seconds)", async () => {
+  it("converts '30s' to --idle-timeout argv token", async () => {
     const p = await writeTmpConfig({ daemonIdleTimeout: "30s" });
     const result = await loadConfigFile(p);
-    expect(result.args).not.toContain("--idle-timeout");
+    const idx = result.args.indexOf("--idle-timeout");
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(result.args[idx + 1]).toBe("30s");
   });
 
   it("omits --idle-timeout when format is invalid (bare number)", async () => {

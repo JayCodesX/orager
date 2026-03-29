@@ -38,6 +38,7 @@ import { checkAndLogApiKeyHealth, fetchApiKeyInfo } from "./openrouter-key.js";
 import type { ApiKeyInfo } from "./openrouter-key.js";
 import { getAgentCircuitBreaker, getAllAgentCircuitBreakerStates } from "./circuit-breaker.js";
 import { fetchModelContextLengths } from "./loop-helpers.js";
+import { isSqliteMemoryEnabled, closeDb } from "./memory-sqlite.js";
 import { fetchLiveModelMeta } from "./openrouter-model-meta.js";
 
 // ── Port file ─────────────────────────────────────────────────────────────────
@@ -319,7 +320,18 @@ export function sanitizeDaemonRunOpts(raw: Record<string, unknown>): { safe: Rec
       rejected.push(k);
     }
   }
-  // Security-sensitive fields: never allow callers to override sandboxRoot or requireApproval
+  // Security-sensitive fields: ALWAYS stripped from per-request opts, regardless
+  // of ALLOWED_DAEMON_OPTS, because they control the security boundary of every run:
+  //   sandboxRoot         — per-agent sandboxing must be configured at daemon startup, not
+  //                         per-request, so that a misconfigured caller cannot widen the
+  //                         filesystem boundary for all agents sharing the process.
+  //   requireApproval     — same rationale; approval policy is operator-level, not user-level.
+  //   bashPolicy          — bash command blocklists must be set at daemon startup; per-request
+  //                         override would allow one caller to weaken another agent's policy.
+  //   dangerouslySkipPermissions — always locked down; callers cannot opt out of permissions.
+  // NOTE: these fields ARE supported on the spawn path (one orager process per run), so
+  // operators migrating from spawn to daemon mode should bake these into the daemon startup
+  // flags rather than passing them per-run.
   delete safe["sandboxRoot"];
   delete safe["requireApproval"];
   delete safe["bashPolicy"];
@@ -502,8 +514,10 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
     const timer = setInterval(() => {
       if (activeRuns === 0 && Date.now() - lastActivityAt > idleTimeoutMs) {
         process.stderr.write("[orager daemon] idle timeout — shutting down\n");
-        stopKeepAlive();
-        removePortFile().finally(() => process.exit(0));
+        // Use the same drain path as SIGTERM so session saves and SQLite WAL
+        // are flushed before exit. DRAIN_TIMEOUT_MS is always defined before
+        // the first timer fires (60 s later), so the closure reference is safe.
+        void drainAndExit(DRAIN_TIMEOUT_MS);
       }
     }, 60_000); // check every minute
     if (timer.unref) timer.unref();
@@ -1107,7 +1121,7 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
   scheduleIdleCheck();
 
   process.stderr.write(`[orager daemon] listening on 127.0.0.1:${port} (max ${maxConcurrent} concurrent runs)\n`);
-  process.stderr.write(`[orager daemon] idle shutdown after ${idleTimeoutMs / 60_000}min\n`);
+  process.stderr.write(`[orager daemon] idle shutdown after ${idleTimeoutMs >= 60_000 ? `${idleTimeoutMs / 60_000}min` : `${idleTimeoutMs / 1_000}s`}\n`);
 
   // Warm cache on startup (Phase 4c)
   await warmCache();
@@ -1194,7 +1208,7 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
   // then every 24 hours. Override with ORAGER_SESSION_RETENTION_DAYS env var.
   const SESSION_RETENTION_DAYS = parseInt(process.env["ORAGER_SESSION_RETENTION_DAYS"] ?? "30", 10);
   const SESSION_PRUNE_TTL_MS = SESSION_RETENTION_DAYS * 24 * 60 * 60 * 1000;
-  console.log(`Session retention: ${SESSION_RETENTION_DAYS} days`);
+  process.stderr.write(`[orager daemon] session retention: ${SESSION_RETENTION_DAYS} days\n`);
   const runSessionPrune = (): void => {
     pruneOldSessions(SESSION_PRUNE_TTL_MS).then((result) => {
       if (result.deleted > 0) {
@@ -1236,6 +1250,8 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
     } else {
       process.stderr.write("[orager daemon] all runs completed — exiting\n");
     }
+    // Flush SQLite WAL before exiting so no memory data is lost
+    if (isSqliteMemoryEnabled()) closeDb();
     server.close(() => process.exit(0));
   }
 

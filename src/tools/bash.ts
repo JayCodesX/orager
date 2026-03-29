@@ -187,11 +187,20 @@ export const bashTool: ToolExecutor = {
       }
 
       if (hasEval) {
-        // Check if the eval/exec might be invoking a blocked command
-        // Since we can't safely parse the eval string statically, block if
-        // any blocked command name appears anywhere in the command after eval/exec
-        const afterEval = command.replace(/^[^;|&]*\beval\b/i, "").replace(/^[^;|&]*\bexec\b/i, "");
-        const evalExecs = extractExecutables(afterEval);
+        // Check if the eval/exec might be invoking a blocked command.
+        // Split on shell separators so eval appearing after a semicolon,
+        // pipe, or && is still caught (e.g. "safe_cmd; eval blocked_cmd").
+        // For each segment that starts with eval/exec, extract the rest of
+        // that segment and check its executables.
+        const segments = command.split(/[;|&`()\n]|\$\(/).map((s) => s.trimStart());
+        const evalExecs: string[] = [];
+        for (const seg of segments) {
+          if (/^\s*(?:eval|exec)\b/i.test(seg)) {
+            // Grab everything after the eval/exec keyword as the inner command
+            const inner = seg.replace(/^\s*(?:eval|exec)\s+/i, "");
+            evalExecs.push(...extractExecutables(inner));
+          }
+        }
         const evalBlocked = evalExecs.find((e) => blockedSet.has(e)) ?? (blockedSet.has("eval") ? "eval" : null);
         if (evalBlocked) {
           return {

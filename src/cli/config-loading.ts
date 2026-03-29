@@ -309,7 +309,16 @@ export async function loadConfigFile(filePath: string): Promise<LoadConfigFileRe
   // Daemon defaults — push as CLI flags so the --serve branch reads them via argv.indexOf
   if (cfg.daemonPort !== undefined && cfg.daemonPort > 0) args.push("--port", String(cfg.daemonPort));
   if (cfg.daemonMaxConcurrent !== undefined && cfg.daemonMaxConcurrent > 0) args.push("--max-concurrent", String(cfg.daemonMaxConcurrent));
-  if (typeof cfg.daemonIdleTimeout === "string" && /^\d+(?:\.\d+)?[mh]$/.test(cfg.daemonIdleTimeout)) args.push("--idle-timeout", cfg.daemonIdleTimeout);
+  if (typeof cfg.daemonIdleTimeout === "string") {
+    if (/^\d+(?:\.\d+)?[smh]$/.test(cfg.daemonIdleTimeout)) {
+      args.push("--idle-timeout", cfg.daemonIdleTimeout);
+    } else if (cfg.daemonIdleTimeout.trim()) {
+      process.stderr.write(
+        `[orager] WARNING: daemonIdleTimeout "${cfg.daemonIdleTimeout}" is not a valid duration ` +
+        `(expected a number followed by s, m, or h, e.g. "30m" or "1h") — using default\n`
+      );
+    }
+  }
   // Memory — pass via result object so they can be stored in globalThis
   if (cfg.memory !== undefined) result.memory = cfg.memory;
   if (typeof cfg.memoryKey === "string" && cfg.memoryKey.trim()) result.memoryKey = cfg.memoryKey.trim();

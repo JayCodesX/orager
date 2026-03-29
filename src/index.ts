@@ -108,7 +108,7 @@ DAEMON
   --serve                   Start the HTTP daemon (persistent server mode)
   --port <n>                Daemon port (default: 3456)
   --max-concurrent <n>      Max concurrent runs (default: 3)
-  --idle-timeout <duration> Idle shutdown timeout, e.g. 30m, 1h (default: 30m)
+  --idle-timeout <duration> Idle shutdown timeout, e.g. 30s, 30m, 1h (default: 30m)
   --status                  Check if the daemon is running
   --status --json           Machine-readable status output
   --clear-model-cache       Delete cached model metadata (force fresh fetch)
@@ -690,8 +690,8 @@ async function main(): Promise<void> {
     let idleTimeoutMs = 30 * 60 * 1000; // default 30 min
     if (idleIdx !== -1) {
       const raw = argv[idleIdx + 1] ?? "";
-      const m = /^(\d+(?:\.\d+)?)(m|h)$/.exec(raw);
-      if (m) idleTimeoutMs = parseFloat(m[1]) * (m[2] === "h" ? 3600_000 : 60_000);
+      const m = /^(\d+(?:\.\d+)?)(s|m|h)$/.exec(raw);
+      if (m) idleTimeoutMs = parseFloat(m[1]) * (m[2] === "h" ? 3600_000 : m[2] === "m" ? 60_000 : 1_000);
     }
 
     const modelIdx = argv.indexOf("--model");
