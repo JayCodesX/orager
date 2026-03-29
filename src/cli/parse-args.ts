@@ -307,6 +307,14 @@ export function parseArgs(argv: string[]): CliOptions {
         if (!isNaN(n) && n >= 0) opts.maxSpawnDepth = n;
         break;
       }
+      case "--online-search": {
+        opts.onlineSearch = true;
+        break;
+      }
+      case "--agent-id": {
+        opts.agentId = argv[++i];
+        break;
+      }
       case "--inject-context": {
         opts.injectContext = true;
         break;

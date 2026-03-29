@@ -212,6 +212,14 @@ async function handleStatus(jsonMode = false): Promise<void> {
     errorRuns?: number;
     circuitBreakersByAgent?: Record<string, unknown>;
     recentModels?: string[];
+    keyInfo?: {
+      label?: string;
+      disabled?: boolean;
+      remaining?: number | null;
+      usage?: number;
+      limit?: number | null;
+      isUnlimited?: boolean;
+    } | null;
   }
   let metrics: MetricsBody | null = null;
   try {
@@ -242,6 +250,7 @@ async function handleStatus(jsonMode = false): Promise<void> {
       out["circuitBreakersByAgent"] = metrics.circuitBreakersByAgent ?? {};
       out["recentModels"] = metrics.recentModels ?? [];
       if (typeof uptimeMs === "number") out["uptime"] = formatUptime(uptimeMs);
+      if (metrics.keyInfo !== undefined) out["credits"] = metrics.keyInfo;
     }
     process.stdout.write(JSON.stringify(out) + "\n");
   } else {
@@ -265,6 +274,18 @@ async function handleStatus(jsonMode = false): Promise<void> {
       const recentModels = metrics.recentModels ?? [];
       if (recentModels.length > 0) {
         process.stdout.write(`  recentModels: ${recentModels.join(", ")}\n`);
+      }
+      const ki = metrics.keyInfo;
+      if (ki) {
+        const credLine = ki.isUnlimited
+          ? `  credits: unlimited (key: ${ki.label ?? "?"})`
+          : ki.remaining !== null && ki.remaining !== undefined
+            ? `  credits: $${ki.remaining.toFixed(4)} remaining of $${(ki.limit ?? 0).toFixed(2)} (key: ${ki.label ?? "?"})`
+            : `  credits: $${(ki.usage ?? 0).toFixed(4)} used (key: ${ki.label ?? "?"})`;
+        process.stdout.write(credLine + "\n");
+        if (ki.disabled) {
+          process.stdout.write("  WARNING: API key is disabled\n");
+        }
       }
     }
   }
