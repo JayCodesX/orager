@@ -94,7 +94,8 @@ interface MemoryRow {
   expires_at: string | null;
   run_id: string | null;
   importance: number;
-  embedding: string | null;
+  /** better-sqlite3 returns BLOBs as Buffer; legacy rows may be JSON strings. */
+  embedding: Buffer | string | null;
   embedding_model: string | null;
 }
 
@@ -113,7 +114,20 @@ function rowToEntry(row: MemoryRow): MemoryEntry {
   if (row.expires_at) entry.expiresAt = row.expires_at;
   if (row.run_id) entry.runId = row.run_id;
   if (row.embedding) {
-    try { entry._embedding = JSON.parse(row.embedding) as number[]; } catch { /* ignore */ }
+    try {
+      if (Buffer.isBuffer(row.embedding)) {
+        // New format: raw Float32 binary BLOB
+        const f32 = new Float32Array(
+          row.embedding.buffer,
+          row.embedding.byteOffset,
+          row.embedding.byteLength / 4,
+        );
+        entry._embedding = Array.from(f32);
+      } else {
+        // Legacy format: JSON string
+        entry._embedding = JSON.parse(row.embedding) as number[];
+      }
+    } catch { /* ignore */ }
   }
   if (row.embedding_model) entry._embeddingModel = row.embedding_model;
   return entry;
@@ -179,7 +193,9 @@ export function saveMemoryStoreSqlite(memoryKey: string, store: MemoryStore): vo
         expiresAt: e.expiresAt ?? null,
         runId: e.runId ?? null,
         importance: e.importance,
-        embedding: e._embedding ? JSON.stringify(e._embedding) : null,
+        embedding: e._embedding
+          ? Buffer.from(new Float32Array(e._embedding).buffer)
+          : null,
         embeddingModel: e._embeddingModel ?? null,
       });
     }
@@ -226,7 +242,9 @@ export function addMemoryEntrySqlite(
     expiresAt: entry.expiresAt ?? null,
     runId: entry.runId ?? null,
     importance: entry.importance ?? 2,
-    embedding: entry._embedding ? JSON.stringify(entry._embedding) : null,
+    embedding: entry._embedding
+      ? Buffer.from(new Float32Array(entry._embedding).buffer)
+      : null,
     embeddingModel: entry._embeddingModel ?? null,
   });
 
