@@ -16,20 +16,30 @@
   },
   "scripts": {
     "build": "tsc",
+    "build:ui": "vite build --config ui/vite.config.ts",
+    "build:all": "npm run build && npm run build:ui",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "test": "node node_modules/vitest/vitest.mjs run --config vitest.config.ts",
     "test:watch": "node node_modules/vitest/vitest.mjs --config vitest.config.ts",
     "test:coverage": "node node_modules/vitest/vitest.mjs run --coverage --config vitest.config.ts",
     "dev": "tsx src/index.ts",
+    "dev:ui": "vite --config ui/vite.config.ts",
     "mcp": "tsx src/mcp.ts"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.6.0",
+    "@types/react": "^18.3.28",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.7.0",
     "@vitest/coverage-v8": "^3.2.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.30.3",
     "tsx": "^4.19.0",
     "typescript": "^5.9.3",
+    "vite": "^5.4.21",
     "vitest": "^3.0.0"
   },
   "engines": {
