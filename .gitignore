@@ -1,4 +1,7 @@
 node_modules/
 dist/
+dist-binary/
+bin/
 .DS_Store
 *.js.map
+*.bun-build
