@@ -73,6 +73,11 @@ export interface OragerUserConfig {
   memory?: boolean;
   memoryKey?: string;
   memoryMaxChars?: number;
+  memoryRetrieval?: "local" | "embedding";
+  memoryEmbeddingModel?: string;
+
+  // Per-agent API key isolation
+  agentApiKey?: string;
 
   // Identity
   siteUrl?: string;
@@ -413,6 +418,28 @@ async function customSetup(rl: readline.Interface): Promise<void> {
   const mmcn = parseOptionalNumber(mmc);
   if (mmcn !== undefined && mmcn > 0) cfg.memoryMaxChars = mmcn;
 
+  {
+    const MR_VALUES = ["local", "embedding"] as const;
+    process.stdout.write(cyan("memoryRetrieval") + dim(` [${displayValue(cfg.memoryRetrieval ?? "local")}]`) + " — local (FTS) or embedding (cosine similarity)  (blank = default)\n");
+    for (;;) {
+      const mr = await ask(rl, "  > ");
+      if (!mr.trim()) break;
+      if ((MR_VALUES as readonly string[]).includes(mr.trim())) {
+        cfg.memoryRetrieval = mr.trim() as "local" | "embedding";
+        break;
+      }
+      process.stdout.write(yellow(`  Invalid value "${mr.trim()}". Choose from: ${MR_VALUES.join(", ")}\n`));
+    }
+  }
+
+  process.stdout.write(cyan("memoryEmbeddingModel") + dim(` [${displayValue(cfg.memoryEmbeddingModel ?? "(none)")}]`) + " — OpenRouter model for embedding retrieval (e.g. openai/text-embedding-3-small)\n");
+  const mem2 = await ask(rl, "  > ");
+  if (mem2.trim()) cfg.memoryEmbeddingModel = mem2.trim();
+
+  process.stdout.write(cyan("agentApiKey") + dim(` [${displayValue(cfg.agentApiKey ? cfg.agentApiKey.slice(0, 8) + "..." : "(none)")}]`) + " — per-agent OpenRouter key (isolates rate limits; leave blank to use global key)\n");
+  const aak = await ask(rl, "  > ");
+  if (aak.trim()) cfg.agentApiKey = aak.trim();
+
   // ── Section 9: Identity ───────────────────────────────────────────────────
   process.stdout.write("\n" + bold("9. Identity (OpenRouter dashboards)\n"));
 
@@ -535,6 +562,118 @@ async function resetConfig(rl: readline.Interface): Promise<void> {
   }
 }
 
+async function checkConfig(): Promise<void> {
+  process.stdout.write("\n" + bold("── Config check ──") + "\n");
+
+  // ── 1. File existence & parse ──────────────────────────────────────────────
+  let cfg: OragerUserConfig;
+  try {
+    const raw = await fs.readFile(CONFIG_PATH, "utf8");
+    cfg = JSON.parse(raw) as OragerUserConfig;
+    process.stdout.write(green("✓ Config file found: ") + dim(CONFIG_PATH) + "\n");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      process.stdout.write(yellow("⚠ Config file not found — using built-in defaults.\n"));
+      process.stdout.write(dim("  Run `orager setup` to create one.\n\n"));
+    } else {
+      process.stdout.write(`✗ Config file unreadable: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+    return;
+  }
+
+  // ── 2. Field validation ────────────────────────────────────────────────────
+  const issues: string[] = [];
+
+  if (cfg.reasoningEffort !== undefined) {
+    const valid = ["xhigh", "high", "medium", "low", "minimal", "none"];
+    if (!valid.includes(cfg.reasoningEffort)) {
+      issues.push(`reasoningEffort "${cfg.reasoningEffort}" is not valid (expected: ${valid.join(", ")})`);
+    }
+  }
+  if (cfg.sort !== undefined) {
+    const valid = ["price", "throughput", "latency"];
+    if (!valid.includes(cfg.sort)) {
+      issues.push(`sort "${cfg.sort}" is not valid (expected: ${valid.join(", ")})`);
+    }
+  }
+  if (cfg.dataCollection !== undefined) {
+    const valid = ["allow", "deny"];
+    if (!valid.includes(cfg.dataCollection)) {
+      issues.push(`dataCollection "${cfg.dataCollection}" is not valid (expected: ${valid.join(", ")})`);
+    }
+  }
+  if (cfg.siteUrl !== undefined) {
+    try {
+      const u = new URL(cfg.siteUrl);
+      if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("not http/https");
+    } catch {
+      issues.push(`siteUrl "${cfg.siteUrl}" is not a valid http/https URL`);
+    }
+  }
+  if (cfg.webhookUrl !== undefined) {
+    try {
+      const u = new URL(cfg.webhookUrl);
+      if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("not http/https");
+    } catch {
+      issues.push(`webhookUrl "${cfg.webhookUrl}" is not a valid http/https URL`);
+    }
+  }
+  if (cfg.daemonIdleTimeout !== undefined) {
+    if (!/^\d+(?:\.\d+)?[mh]$/.test(cfg.daemonIdleTimeout)) {
+      issues.push(`daemonIdleTimeout "${cfg.daemonIdleTimeout}" is not valid (expected e.g. 30m or 1h)`);
+    }
+  }
+  if (cfg.memoryRetrieval !== undefined && cfg.memoryRetrieval !== "local" && cfg.memoryRetrieval !== "embedding") {
+    issues.push(`memoryRetrieval "${cfg.memoryRetrieval}" is not valid (expected: local, embedding)`);
+  }
+  if (cfg.memoryRetrieval === "embedding" && !cfg.memoryEmbeddingModel) {
+    issues.push("memoryRetrieval is \"embedding\" but memoryEmbeddingModel is not set");
+  }
+
+  if (issues.length > 0) {
+    process.stdout.write(yellow(`⚠ ${issues.length} validation issue${issues.length > 1 ? "s" : ""} found:\n`));
+    for (const issue of issues) {
+      process.stdout.write(`  • ${issue}\n`);
+    }
+  } else {
+    process.stdout.write(green("✓ All config fields are valid\n"));
+  }
+
+  // ── 3. API key check ───────────────────────────────────────────────────────
+  const apiKey = process.env["OPENROUTER_API_KEY"] ?? process.env["ORAGER_API_KEY"] ?? cfg.agentApiKey ?? "";
+  if (!apiKey) {
+    process.stdout.write(yellow("⚠ No API key found — set OPENROUTER_API_KEY in your environment.\n"));
+  } else {
+    process.stdout.write(dim(`\nChecking API key (${apiKey.slice(0, 8)}...) against OpenRouter...\n`));
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      const res = await fetch("https://openrouter.ai/api/v1/auth/key", {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      if (res.ok) {
+        const data = await res.json() as { data?: { label?: string; usage?: number; limit?: number | null } };
+        const label = data?.data?.label ?? "(unnamed)";
+        const usage = data?.data?.usage ?? 0;
+        const limit = data?.data?.limit;
+        const limitStr = limit != null ? `$${limit.toFixed(2)} limit` : "no limit";
+        process.stdout.write(green(`✓ API key valid — "${label}" | $${usage.toFixed(4)} used | ${limitStr}\n`));
+      } else if (res.status === 401) {
+        process.stdout.write(`✗ API key is invalid or revoked (HTTP 401)\n`);
+      } else {
+        process.stdout.write(yellow(`⚠ OpenRouter returned HTTP ${res.status} — key may still be valid\n`));
+      }
+    } catch (err) {
+      process.stdout.write(yellow(`⚠ Could not reach OpenRouter: ${err instanceof Error ? err.message : String(err)}\n`));
+    }
+  }
+
+  // ── 4. Summary ─────────────────────────────────────────────────────────────
+  process.stdout.write("\n" + dim("Run `orager setup --show` to see full config.\n\n"));
+}
+
 async function editConfig(): Promise<void> {
   await fs.mkdir(ORAGER_DIR, { recursive: true });
   // Ensure file exists with defaults if missing
@@ -566,6 +705,10 @@ export async function runSetupWizard(args: string[]): Promise<void> {
   }
   if (args.includes("--edit")) {
     await editConfig();
+    return;
+  }
+  if (args.includes("--check")) {
+    await checkConfig();
     return;
   }
 
