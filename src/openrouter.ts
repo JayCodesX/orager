@@ -349,7 +349,10 @@ export async function callOpenRouter(
     };
   }
 
+  // Update the process-global tracker (used by /metrics) and, when provided,
+  // the per-agent tracker so one agent's 429 doesn't pollute other agents.
   updateRateLimitState(response.headers);
+  opts.rateLimitTracker?.updateFromHeaders(response.headers);
 
   if (!response.body) {
     throw new Error("OpenRouter response has no body");
@@ -505,7 +508,10 @@ export async function callDirect(
     };
   }
 
+  // Update the process-global tracker (used by /metrics) and, when provided,
+  // the per-agent tracker so one agent's 429 doesn't pollute other agents.
   updateRateLimitState(response.headers);
+  opts.rateLimitTracker?.updateFromHeaders(response.headers);
 
   if (!response.body) {
     throw new Error("Anthropic API response has no body");

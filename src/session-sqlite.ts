@@ -48,13 +48,45 @@ export class SqliteSessionStore implements SessionStore {
         locked_at  INTEGER NOT NULL
       );
     `);
-    // FTS5 virtual table for full-text search over session summaries
+    // FTS5 virtual table for full-text search over session summaries.
+    // session_id is UNINDEXED (stored but not tokenised — used for JOIN).
     this.db.exec(`
       CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
         session_id UNINDEXED,
         content,
         tokenize = 'porter ascii'
       );
+    `);
+
+    // Triggers to keep sessions_fts in sync with the sessions table.
+    // Without these, the previous approach rebuilt the entire FTS index on
+    // every search() call (O(N) blocking work). These triggers maintain the
+    // index incrementally at write time instead.
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS sessions_ai AFTER INSERT ON sessions BEGIN
+        INSERT INTO sessions_fts(session_id, content)
+        VALUES (new.session_id,
+                new.model || ' ' || new.cwd || ' ' || substr(new.data, 1, 2000));
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS sessions_au AFTER UPDATE ON sessions BEGIN
+        DELETE FROM sessions_fts WHERE session_id = old.session_id;
+        INSERT INTO sessions_fts(session_id, content)
+        VALUES (new.session_id,
+                new.model || ' ' || new.cwd || ' ' || substr(new.data, 1, 2000));
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS sessions_ad AFTER DELETE ON sessions BEGIN
+        DELETE FROM sessions_fts WHERE session_id = old.session_id;
+      END;
+    `);
+
+    // Back-fill the FTS index for any sessions that existed before these
+    // triggers were added (idempotent: INSERT OR IGNORE skips existing rows).
+    this.db.exec(`
+      INSERT OR IGNORE INTO sessions_fts(session_id, content)
+      SELECT session_id, model || ' ' || cwd || ' ' || substr(data, 1, 2000)
+      FROM sessions;
     `);
   }
 
@@ -105,11 +137,13 @@ export class SqliteSessionStore implements SessionStore {
     this.db.prepare("DELETE FROM sessions WHERE session_id = ?").run(sessionId);
   }
 
-  async list(_opts?: { offset?: number; limit?: number }): Promise<SessionSummary[]> {
+  async list(opts?: { offset?: number; limit?: number }): Promise<SessionSummary[]> {
+    const limit  = opts?.limit  ?? 100;
+    const offset = opts?.offset ?? 0;
     const rows = this.db.prepare(
       "SELECT session_id, model, created_at, updated_at, turn_count, cwd, trashed " +
-      "FROM sessions ORDER BY updated_at DESC"
-    ).all() as Array<{
+      "FROM sessions ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+    ).all(limit, offset) as Array<{
       session_id: string; model: string; created_at: string;
       updated_at: string; turn_count: number; cwd: string; trashed: number;
     }>;
@@ -156,18 +190,14 @@ export class SqliteSessionStore implements SessionStore {
     // Wrap in double-quotes to produce a phrase search; escape any remaining quotes
     const ftsQuery = `"${sanitized.replace(/"/g, '""')}"`;
 
-    // Update FTS index from sessions table
-    this.db.exec(`
-      INSERT OR REPLACE INTO sessions_fts(session_id, content)
-      SELECT session_id, model || ' ' || cwd || ' ' || substr(data, 1, 2000)
-      FROM sessions
-      WHERE trashed = 0
-    `);
+    // The FTS index is now maintained incrementally by triggers (sessions_ai,
+    // sessions_au, sessions_ad defined in _migrate). No manual rebuild needed here.
     const rows = this.db.prepare(`
       SELECT s.session_id, s.model, s.created_at, s.updated_at, s.turn_count, s.cwd, s.trashed
       FROM sessions_fts f
       JOIN sessions s ON s.session_id = f.session_id
       WHERE sessions_fts MATCH ?
+        AND s.trashed = 0
       ORDER BY rank
       LIMIT ?
     `).all(ftsQuery, limit) as Array<{

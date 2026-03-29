@@ -41,13 +41,7 @@ export function getSessionsDir(): string {
   return process.env["ORAGER_SESSIONS_DIR"] ?? path.join(os.homedir(), ".orager", "sessions");
 }
 
-/**
- * @deprecated Use getSessionsDir() so ORAGER_SESSIONS_DIR overrides set after
- * import are honoured. This const is frozen at module-load time.
- */
-export const SESSIONS_DIR = getSessionsDir();
-
-/** Reject sessionIds that could escape SESSIONS_DIR via path traversal. */
+/** Reject sessionIds that could escape getSessionsDir() via path traversal. */
 function assertSafeSessionId(sessionId: string): void {
   if (!/^[a-zA-Z0-9_-]{1,256}$/.test(sessionId)) {
     throw new Error(`Invalid sessionId "${sessionId}": must match [a-zA-Z0-9_-]{1,256}`);
@@ -358,7 +352,7 @@ async function _fileDeleteTrash(): Promise<PruneResult> {
  * process is actively resuming this session.
  */
 async function _fileAcquireLock(sessionId: string): Promise<() => Promise<void>> {
-  await fs.mkdir(SESSIONS_DIR, { recursive: true, mode: 0o700 });
+  await fs.mkdir(getSessionsDir(), { recursive: true, mode: 0o700 });
   const lp = lockPath(sessionId);
   const lockData = JSON.stringify({ pid: process.pid, at: Date.now(), host: os.hostname() });
 
