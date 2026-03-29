@@ -33,7 +33,7 @@ import { loadSkillsFromDirs, buildSkillsSystemPrompt, buildSkillTools } from "./
 import { ALL_TOOLS, finishTool, BROWSER_TOOLS } from "./tools/index.js";
 import { FINISH_TOOL_NAME } from "./tools/finish.js";
 import { promptApproval } from "./approval.js";
-import { CircuitBreaker, openRouterCircuitBreaker as _openRouterCircuitBreakerSingleton } from "./circuit-breaker.js";
+import { getAgentCircuitBreaker } from "./circuit-breaker.js";
 import { log } from "./logger.js";
 import { auditApproval } from "./audit.js";
 import { truncateContent } from "./truncate.js";
@@ -41,7 +41,7 @@ import { checkDeprecatedModel } from "./deprecated-models.js";
 import { getModelCapabilities } from "./model-capabilities.js";
 import { withSpan, spanSetAttributes } from "./telemetry.js";
 import { getCachedQueryEmbedding, setCachedQueryEmbedding } from "./embedding-cache.js";
-import { isNearRateLimit, rateLimitSummary, getRateLimitState } from "./rate-limit-tracker.js";
+import { RateLimitTracker, isNearRateLimit, rateLimitSummary, getRateLimitState } from "./rate-limit-tracker.js";
 import { gatherContext, formatContext } from "./context-injector.js";
 import { makeStuckMessage } from "./prompt-variation.js";
 import type { CacheEntry } from "./loop-helpers.js";
@@ -213,9 +213,18 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     });
   }
 
-  // Per-run circuit breaker — isolates circuit state between daemon runs so one
-  // agent's failure streak doesn't block all subsequent runs in the same process.
-  const circuitBreaker = new CircuitBreaker({ threshold: 3, resetAfterMs: 30_000 });
+  // Per-agent persistent circuit breaker — keyed by sessionId so the circuit
+  // state survives across daemon re-requests for the same session. When the
+  // daemon retries the same agent, a prior failure streak is still counted.
+  // For new sessions (opts.sessionId null) a throwaway key is used; the eviction
+  // timer in circuit-breaker.ts cleans up idle entries after 1 hour.
+  const _cbKey = opts.sessionId ?? newSessionId();
+  const circuitBreaker = getAgentCircuitBreaker(_cbKey);
+
+  // Per-agent rate-limit tracker — isolates rate-limit state per agent so a
+  // 429 on one agent does not suppress requests from other concurrent agents.
+  // The process-global singleton (used by /metrics) is still updated in openrouter.ts.
+  const rlTracker = new RateLimitTracker();
 
   // Fetch live model metadata (context windows + pricing + capabilities) from OpenRouter.
   // Skipped for the direct Anthropic path — the OpenRouter /models endpoint requires an
@@ -1097,17 +1106,22 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       };
 
       // ── Rate limit warning ───────────────────────────────────────────────
-      if (isNearRateLimit()) {
-        const rlState = getRateLimitState();
+      // Use the per-agent tracker so one agent's 429 doesn't delay other agents.
+      // Fall back to the global singleton when the per-agent tracker has no data
+      // yet (e.g. very first turn before any response headers have been seen).
+      const _rlActive = rlTracker.getState() ? rlTracker : null;
+      if ((_rlActive ? _rlActive.isNearLimit() : isNearRateLimit())) {
+        const rlState = _rlActive ? _rlActive.getState() : getRateLimitState();
         const resetAt = rlState?.resetRequestsAt ?? rlState?.resetTokensAt;
         const waitMs = resetAt ? Math.max(0, resetAt.getTime() - Date.now()) : 0;
+        const summary = _rlActive ? _rlActive.summary() : rateLimitSummary();
         if (waitMs > 0 && waitMs <= 60_000) {
-          onLog?.("stderr", `[orager] near rate limit — waiting ${Math.ceil(waitMs / 1000)}s for reset (${rateLimitSummary()})\n`);
-          log.warn("rate_limit_wait", { sessionId, waitMs, summary: rateLimitSummary() });
+          onLog?.("stderr", `[orager] near rate limit — waiting ${Math.ceil(waitMs / 1000)}s for reset (${summary})\n`);
+          log.warn("rate_limit_wait", { sessionId, waitMs, summary });
           await new Promise<void>((r) => setTimeout(r, waitMs));
         } else {
-          onLog?.("stderr", `[orager] WARNING: approaching OpenRouter rate limit — ${rateLimitSummary()}\n`);
-          log.warn("rate_limit_near", { sessionId, summary: rateLimitSummary() });
+          onLog?.("stderr", `[orager] WARNING: approaching OpenRouter rate limit — ${summary}\n`);
+          log.warn("rate_limit_near", { sessionId, summary });
         }
       }
 
@@ -1180,6 +1194,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           siteName: opts.siteName,
           response_format: opts.response_format,
           disableContextCompression: summarizeAt > 0,
+          rateLimitTracker: rlTracker,
           // Stream partial tokens to consumers in real time.
           // Each delta is emitted as a separate event so the adapter can
           // forward it to Paperclip / other UIs without buffering the full turn.
