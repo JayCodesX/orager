@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { openWasmDb } from "../src/wasm-sqlite.js";
 
 // We must import after setting ORAGER_DB_PATH, so we use dynamic imports below.
 // But we also need to reset the singleton between tests.
@@ -180,6 +181,110 @@ describe("searchMemoryFts", () => {
 
       const results = searchMemoryFts("keyF", "unique phrase only in keyE");
       expect(results).toHaveLength(0);
+    } finally {
+      _resetDbForTesting();
+      fs.rmSync(dbPath, { force: true });
+    }
+  });
+});
+
+describe("_migrate — JSON text embedding → Float32 BLOB conversion", () => {
+  it("converts a JSON text embedding to binary BLOB on the next DB open", async () => {
+    const dbPath = makeTempDbPath();
+    process.env["ORAGER_DB_PATH"] = dbPath;
+    const { _resetDbForTesting, addMemoryEntrySqlite, loadMemoryStoreSqlite } = await importFresh();
+    _resetDbForTesting();
+
+    try {
+      // Create schema + insert a real entry via the module
+      const entry = addMemoryEntrySqlite("keyMig", { content: "migration test content", importance: 2 });
+      _resetDbForTesting(); // closes DB and flushes to file
+
+      // Directly overwrite the embedding column with a JSON text string (legacy format)
+      const embeddingJson = JSON.stringify([1.0, 2.0, 3.0]);
+      const dbRaw = openWasmDb(dbPath);
+      dbRaw.prepare("UPDATE memory_entries SET embedding = ? WHERE id = ?").run(embeddingJson, entry.id);
+      dbRaw.close();
+
+      // Confirm the embedding is stored as TEXT before migration
+      const dbBefore = openWasmDb(dbPath, { readonly: true });
+      const before = dbBefore.prepare(
+        "SELECT typeof(embedding) as t FROM memory_entries WHERE id = ?",
+      ).get(entry.id) as { t: string };
+      dbBefore.close();
+      expect(before.t).toBe("text");
+
+      // Re-open via memory-sqlite module — _migrate() converts TEXT → BLOB
+      _resetDbForTesting();
+      loadMemoryStoreSqlite("keyMig");
+      _resetDbForTesting(); // flush, close
+
+      // Confirm the embedding is now stored as BLOB
+      const dbAfter = openWasmDb(dbPath, { readonly: true });
+      const after = dbAfter.prepare(
+        "SELECT typeof(embedding) as t FROM memory_entries WHERE id = ?",
+      ).get(entry.id) as { t: string };
+      dbAfter.close();
+      expect(after.t).toBe("blob");
+    } finally {
+      _resetDbForTesting();
+      fs.rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("silently skips rows with malformed JSON — entry is preserved, embedding stays as text", async () => {
+    const dbPath = makeTempDbPath();
+    process.env["ORAGER_DB_PATH"] = dbPath;
+    const { _resetDbForTesting, addMemoryEntrySqlite, loadMemoryStoreSqlite } = await importFresh();
+    _resetDbForTesting();
+
+    try {
+      const entry = addMemoryEntrySqlite("keyMigBad", { content: "malformed embedding test", importance: 2 });
+      _resetDbForTesting();
+
+      // Inject invalid JSON as the embedding TEXT value
+      const dbRaw = openWasmDb(dbPath);
+      dbRaw.prepare("UPDATE memory_entries SET embedding = ? WHERE id = ?").run("not-valid-json!!", entry.id);
+      dbRaw.close();
+
+      // loadMemoryStoreSqlite must NOT throw despite the bad JSON
+      _resetDbForTesting();
+      expect(() => loadMemoryStoreSqlite("keyMigBad")).not.toThrow();
+      _resetDbForTesting();
+
+      // The row is still present (catch swallowed parse error; UPDATE was skipped)
+      const dbAfter = openWasmDb(dbPath, { readonly: true });
+      const row = dbAfter.prepare(
+        "SELECT id, typeof(embedding) as t FROM memory_entries WHERE id = ?",
+      ).get(entry.id) as { id: string; t: string } | undefined;
+      dbAfter.close();
+
+      expect(row).toBeDefined();
+      expect(row!.id).toBe(entry.id);
+      // The malformed row could not be converted — it stays as text
+      expect(row!.t).toBe("text");
+    } finally {
+      _resetDbForTesting();
+      fs.rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("is a no-op when no rows have text embeddings — zero-row query exits early", async () => {
+    const dbPath = makeTempDbPath();
+    process.env["ORAGER_DB_PATH"] = dbPath;
+    const { _resetDbForTesting, addMemoryEntrySqlite, loadMemoryStoreSqlite } = await importFresh();
+    _resetDbForTesting();
+
+    try {
+      // Insert entries with no embedding at all
+      addMemoryEntrySqlite("keyMigNone", { content: "no embedding here", importance: 2 });
+      _resetDbForTesting();
+
+      // Should open cleanly and return entries unchanged
+      _resetDbForTesting();
+      const store = loadMemoryStoreSqlite("keyMigNone");
+      expect(store.entries).toHaveLength(1);
+      expect(store.entries[0].content).toBe("no embedding here");
     } finally {
       _resetDbForTesting();
       fs.rmSync(dbPath, { force: true });
