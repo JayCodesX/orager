@@ -1,0 +1,119 @@
+/**
+ * Integration tests for rate-limit-gate.ts (waitIfRateLimited).
+ *
+ * Uses fake timers to assert that the gate sleeps for the correct duration
+ * based on the RateLimitState provided.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { waitIfRateLimited } from "../src/rate-limit-gate.js";
+import type { RateLimitState } from "../src/rate-limit-tracker.js";
+
+function makeState(overrides: Partial<RateLimitState> = {}): RateLimitState {
+  return {
+    limitRequests: 0,
+    remainingRequests: 0,
+    limitTokens: 0,
+    remainingTokens: 0,
+    resetRequestsAt: null,
+    resetTokensAt: null,
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}
+
+describe("waitIfRateLimited", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("returns immediately when state is null", async () => {
+    const p = waitIfRateLimited(null);
+    // resolve without advancing timers
+    await p;
+  });
+
+  it("returns immediately when both budgets are healthy (> 5%)", async () => {
+    const state = makeState({ limitRequests: 100, remainingRequests: 10 }); // 10%
+    const p = waitIfRateLimited(state);
+    await p; // should resolve without advancing timers
+  });
+
+  it("sleeps until resetRequestsAt when requests near exhaustion", async () => {
+    const resetAt = new Date(Date.now() + 5_000);
+    const state = makeState({ limitRequests: 100, remainingRequests: 2, resetRequestsAt: resetAt });
+
+    let resolved = false;
+    const p = waitIfRateLimited(state).then(() => { resolved = true; });
+
+    vi.advanceTimersByTime(4_999);
+    await Promise.resolve(); // flush microtasks
+    expect(resolved).toBe(false);
+
+    vi.advanceTimersByTime(2);
+    await p;
+    expect(resolved).toBe(true);
+  });
+
+  it("sleeps until resetTokensAt when tokens near exhaustion", async () => {
+    const resetAt = new Date(Date.now() + 3_000);
+    const state = makeState({ limitTokens: 10_000, remainingTokens: 100, resetTokensAt: resetAt }); // 1%
+
+    let resolved = false;
+    const p = waitIfRateLimited(state).then(() => { resolved = true; });
+
+    vi.advanceTimersByTime(2_999);
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+
+    vi.advanceTimersByTime(2);
+    await p;
+    expect(resolved).toBe(true);
+  });
+
+  it("caps wait at MAX_WAIT_MS (60 s) for far-future resets", async () => {
+    const farFuture = new Date(Date.now() + 300_000); // 5 minutes
+    const state = makeState({ limitRequests: 100, remainingRequests: 1, resetRequestsAt: farFuture });
+
+    let resolved = false;
+    const p = waitIfRateLimited(state).then(() => { resolved = true; });
+
+    vi.advanceTimersByTime(60_001);
+    await p;
+    expect(resolved).toBe(true);
+  });
+
+  it("falls back to 2 000 ms conservative back-off when no reset timestamp", async () => {
+    const state = makeState({ limitRequests: 100, remainingRequests: 1 });
+
+    let resolved = false;
+    const p = waitIfRateLimited(state).then(() => { resolved = true; });
+
+    vi.advanceTimersByTime(1_999);
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+
+    vi.advanceTimersByTime(2);
+    await p;
+    expect(resolved).toBe(true);
+  });
+
+  it("calls onLog with kind and remaining when gate activates", async () => {
+    const resetAt = new Date(Date.now() + 1_000);
+    const state = makeState({ limitRequests: 100, remainingRequests: 3, resetRequestsAt: resetAt });
+    const logs: string[] = [];
+
+    const p = waitIfRateLimited(state, (msg) => logs.push(msg));
+    vi.advanceTimersByTime(1_001);
+    await p;
+
+    expect(logs.length).toBeGreaterThan(0);
+    expect(logs[0]).toContain("requests");
+    expect(logs[0]).toContain("3");
+  });
+
+  it("does not call onLog when budget is healthy", async () => {
+    const state = makeState({ limitRequests: 100, remainingRequests: 50 });
+    const logs: string[] = [];
+    await waitIfRateLimited(state, (msg) => logs.push(msg));
+    expect(logs).toHaveLength(0);
+  });
+});

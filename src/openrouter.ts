@@ -479,6 +479,9 @@ export async function callDirect(
   if (opts.min_p !== undefined) body.min_p = opts.min_p;
   if (opts.reasoning !== undefined) body.reasoning = opts.reasoning;
   if (opts.structured_outputs !== undefined) body.structured_outputs = opts.structured_outputs;
+  // Pass user/agent identifier for Anthropic's user-tracking — uses metadata.user_id
+  // (Anthropic's shape) rather than the top-level `user` field used by OpenRouter.
+  if (opts.user) body.metadata = { user_id: opts.user };
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
