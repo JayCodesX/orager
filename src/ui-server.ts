@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import type { OragerUserConfig } from "./setup.js";
 import { DEFAULT_CONFIG } from "./setup.js";
 import type { OragerSettings } from "./settings.js";
+import { mintJwt, KEY_PATH } from "./jwt.js";
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -25,6 +26,8 @@ const ORAGER_DIR = path.join(os.homedir(), ".orager");
 const CONFIG_PATH = path.join(ORAGER_DIR, "config.json");
 const SETTINGS_PATH = path.join(ORAGER_DIR, "settings.json");
 const UI_PORT_PATH = path.join(ORAGER_DIR, "ui.port");
+const DAEMON_PORT_PATH = path.join(ORAGER_DIR, "daemon.port");
+const DAEMON_PID_PATH = path.join(ORAGER_DIR, "daemon.pid");
 
 // Static files live at dist/ui/ relative to this compiled file (dist/ui-server.js)
 const DIST_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -203,6 +206,122 @@ async function handlePostSettings(
   jsonResponse(res, 200, merged);
 }
 
+// ── Daemon proxy helpers ──────────────────────────────────────────────────────
+
+async function readDaemonPort(): Promise<number | null> {
+  try {
+    const raw = await fs.readFile(DAEMON_PORT_PATH, "utf8");
+    const port = parseInt(raw.trim(), 10);
+    return isNaN(port) ? null : port;
+  } catch {
+    return null;
+  }
+}
+
+async function readDaemonPid(): Promise<number | null> {
+  try {
+    const raw = await fs.readFile(DAEMON_PID_PATH, "utf8");
+    const pid = parseInt(raw.trim(), 10);
+    return isNaN(pid) ? null : pid;
+  } catch {
+    return null;
+  }
+}
+
+async function buildInternalJwt(): Promise<string | null> {
+  try {
+    const key = await fs.readFile(KEY_PATH, "utf8");
+    return mintJwt(key.trim(), "orager-ui");
+  } catch {
+    return null;
+  }
+}
+
+/** Recursively strip any key whose name contains a secret-sounding substring. */
+function deepStripSecrets(value: unknown): unknown {
+  if (typeof value !== "object" || value === null) return value;
+  if (Array.isArray(value)) return value.map(deepStripSecrets);
+  const SECRET_KEYS = ["key", "token", "secret", "apikey", "password", "credential"];
+  const result: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    const lower = k.toLowerCase();
+    if (SECRET_KEYS.some((s) => lower.includes(s))) continue;
+    result[k] = deepStripSecrets(v);
+  }
+  return result;
+}
+
+async function proxyDaemon(
+  port: number,
+  pathname: string,
+  jwt: string,
+  queryString?: string,
+): Promise<{ status: number; body: unknown }> {
+  const url = `http://127.0.0.1:${port}${pathname}${queryString ? `?${queryString}` : ""}`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${jwt}` },
+    signal: AbortSignal.timeout(3000),
+  });
+  const body = await res.json();
+  return { status: res.status, body };
+}
+
+// ── Daemon API routes ─────────────────────────────────────────────────────────
+
+async function handleDaemonStatus(
+  _req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  const port = await readDaemonPort();
+  if (!port) {
+    jsonResponse(res, 200, { running: false, port: null, pid: null });
+    return;
+  }
+  const pid = await readDaemonPid();
+  try {
+    const healthRes = await fetch(`http://127.0.0.1:${port}/health`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    const health = await healthRes.json();
+    jsonResponse(res, 200, { running: healthRes.ok, port, pid, health });
+  } catch {
+    jsonResponse(res, 200, { running: false, port, pid, health: null, error: "daemon not responding" });
+  }
+}
+
+async function handleDaemonMetrics(
+  _req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  const port = await readDaemonPort();
+  if (!port) { jsonResponse(res, 200, { running: false }); return; }
+  const jwt = await buildInternalJwt();
+  if (!jwt) { jsonResponse(res, 503, { error: "daemon key not available" }); return; }
+  try {
+    const { status, body } = await proxyDaemon(port, "/metrics", jwt);
+    jsonResponse(res, status, deepStripSecrets(body));
+  } catch {
+    jsonResponse(res, 503, { error: "daemon not responding" });
+  }
+}
+
+async function handleDaemonSessions(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  const port = await readDaemonPort();
+  if (!port) { jsonResponse(res, 200, { running: false, sessions: [], total: 0 }); return; }
+  const jwt = await buildInternalJwt();
+  if (!jwt) { jsonResponse(res, 503, { error: "daemon key not available" }); return; }
+  const qs = new URL(req.url ?? "/", "http://localhost").search.slice(1);
+  try {
+    const { status, body } = await proxyDaemon(port, "/sessions", jwt, qs);
+    jsonResponse(res, status, body);
+  } catch {
+    jsonResponse(res, 503, { error: "daemon not responding" });
+  }
+}
+
 // ── Static file serving ───────────────────────────────────────────────────────
 
 async function serveStatic(
@@ -290,6 +409,12 @@ async function handleRequest(
       await handleGetSettings(req, res);
     } else if (pathname === "/api/settings" && req.method === "POST") {
       await handlePostSettings(req, res);
+    } else if (pathname === "/api/daemon/status" && req.method === "GET") {
+      await handleDaemonStatus(req, res);
+    } else if (pathname === "/api/daemon/metrics" && req.method === "GET") {
+      await handleDaemonMetrics(req, res);
+    } else if (pathname === "/api/daemon/sessions" && req.method === "GET") {
+      await handleDaemonSessions(req, res);
     } else if (pathname.startsWith("/api/")) {
       jsonResponse(res, 404, { error: "Not found" });
     } else {
