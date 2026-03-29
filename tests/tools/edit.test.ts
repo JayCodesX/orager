@@ -98,4 +98,51 @@ describe("edit_file tool", () => {
     );
     expect(result.isError).toBe(true);
   });
+
+  // ── Fix 1: String.prototype.replace pattern injection guard ─────────────────
+  // If new_string is passed directly as the second arg to String.replace(), the
+  // JS engine expands special replacement patterns ($& = matched substring,
+  // $1..$N = capture groups, $` = pre-match, $' = post-match).  The replacer-fn
+  // form `() => new_string` bypasses this expansion entirely.
+
+  it("preserves $& literally in new_string (no match substitution)", async () => {
+    const file = path.join(tmpDir, "dollar-amp.txt");
+    fs.writeFileSync(file, "hello world\n");
+
+    const result = await editFileTool.execute!(
+      { path: file, edits: [{ old_string: "world", new_string: "$&_suffix" }] },
+      tmpDir,
+    );
+
+    expect(result.isError).toBe(false);
+    // Without the replacer-fn fix this would produce "world_suffix" (or "world world_suffix").
+    expect(fs.readFileSync(file, "utf8")).toBe("hello $&_suffix\n");
+  });
+
+  it("preserves $1 literally in new_string (no capture-group substitution)", async () => {
+    const file = path.join(tmpDir, "dollar-one.txt");
+    fs.writeFileSync(file, "foo bar\n");
+
+    const result = await editFileTool.execute!(
+      { path: file, edits: [{ old_string: "foo", new_string: "prefix_$1" }] },
+      tmpDir,
+    );
+
+    expect(result.isError).toBe(false);
+    expect(fs.readFileSync(file, "utf8")).toBe("prefix_$1 bar\n");
+  });
+
+  it("preserves $` and $' literally in new_string", async () => {
+    const file = path.join(tmpDir, "dollar-backtick.txt");
+    fs.writeFileSync(file, "A B C\n");
+
+    const result = await editFileTool.execute!(
+      { path: file, edits: [{ old_string: "B", new_string: "$`$'" }] },
+      tmpDir,
+    );
+
+    expect(result.isError).toBe(false);
+    // Without fix this would expand $` → "A " and $' → " C\n", producing "A A  C\n C\n".
+    expect(fs.readFileSync(file, "utf8")).toBe("A $`$' C\n");
+  });
 });

@@ -29,12 +29,20 @@ function getDb(): DB {
   return _db;
 }
 
-/** Reset the singleton — for testing only. */
-export function _resetDbForTesting(): void {
+/**
+ * Close the SQLite database cleanly — call before process exit to ensure the
+ * WAL is checkpointed and no data is lost. Safe to call when no DB is open.
+ */
+export function closeDb(): void {
   if (_db) {
     try { _db.close(); } catch { /* ignore */ }
     _db = null;
   }
+}
+
+/** Reset the singleton — for testing only. */
+export function _resetDbForTesting(): void {
+  closeDb();
 }
 
 function _migrate(db: DB): void {

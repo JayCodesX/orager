@@ -168,7 +168,7 @@ export const editFileTool: ToolExecutor = {
         };
       }
 
-      content = content.replace(old_string, new_string);
+      content = content.replace(old_string, () => new_string);
     }
 
     // Write back

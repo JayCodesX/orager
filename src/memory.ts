@@ -56,11 +56,22 @@ function memoryFilePath(memoryKey: string): string {
 
 export async function loadMemoryStore(memoryKey: string): Promise<MemoryStore> {
   const filePath = memoryFilePath(memoryKey);
+  let raw: string;
   try {
-    const raw = await fs.readFile(filePath, "utf8");
-    return JSON.parse(raw) as MemoryStore;
+    raw = await fs.readFile(filePath, "utf8");
   } catch {
-    // ENOENT or JSON parse error → return empty store (not an error)
+    // ENOENT — file doesn't exist yet, return empty store silently
+    return { memoryKey, entries: [], updatedAt: new Date().toISOString() };
+  }
+  try {
+    return JSON.parse(raw) as MemoryStore;
+  } catch (err) {
+    // Corrupted memory file (partial write, encoding error) — log a warning so
+    // operators can diagnose silent data loss, then return empty store
+    process.stderr.write(
+      `[orager] WARNING: memory file "${filePath}" contains invalid JSON — starting with empty store. ` +
+      `(${err instanceof Error ? err.message : String(err)})\n`
+    );
     return { memoryKey, entries: [], updatedAt: new Date().toISOString() };
   }
 }
@@ -340,8 +351,12 @@ export async function withMemoryLock<T>(key: string, fn: () => Promise<T>): Prom
   const prev = _memoryWriteLocks.get(key) ?? Promise.resolve();
   let resolve!: () => void;
   const next = new Promise<void>((res) => { resolve = res; });
-  // Store a non-rejecting sentinel so failures don't block subsequent waiters
-  _memoryWriteLocks.set(key, next.catch(() => {}));
+  // Store a non-rejecting sentinel so failures don't block subsequent waiters.
+  // Keep a reference to this exact Promise so we can compare it in the finally
+  // block — _memoryWriteLocks.get(key) === sentinel only when no newer waiter
+  // has replaced us, in which case we clean up the map entry.
+  const sentinel = next.catch(() => {});
+  _memoryWriteLocks.set(key, sentinel);
 
   await prev.catch(() => {}); // wait for any in-flight operation on this key
   try {
@@ -349,8 +364,8 @@ export async function withMemoryLock<T>(key: string, fn: () => Promise<T>): Prom
   } finally {
     resolve();
     // Clean up map entry if no newer waiter has replaced it
-    if (_memoryWriteLocks.get(key) === next.catch(() => {})) {
-      // Best-effort cleanup — map may have been updated by a queued waiter
+    if (_memoryWriteLocks.get(key) === sentinel) {
+      _memoryWriteLocks.delete(key);
     }
   }
 }
@@ -358,6 +373,11 @@ export async function withMemoryLock<T>(key: string, fn: () => Promise<T>): Prom
 /** Reset lock state — for testing only. */
 export function _clearMemoryLocksForTesting(): void {
   _memoryWriteLocks.clear();
+}
+
+/** Returns the current size of the lock Map — for testing only. */
+export function _getMemoryLocksMapSizeForTesting(): number {
+  return _memoryWriteLocks.size;
 }
 
 // ── Storage router ────────────────────────────────────────────────────────────
