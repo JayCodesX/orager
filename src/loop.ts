@@ -1182,14 +1182,22 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       // this turn so the downstream assistant event can set streamed: true and
       // consumers can skip re-rendering already-streamed text.
       let turnWasStreamed = false;
+      // Apply :online suffix when web-search mode is requested and the model
+      // doesn't already carry a variant suffix (:online, :nitro, :thinking, etc.)
+      const _baseModel = turnOverrides.model ?? model;
+      const _effectiveModel =
+        opts.onlineSearch && !_baseModel.includes(":")
+          ? `${_baseModel}:online`
+          : _baseModel;
+
       const response = await withSpan(
         "llm_turn",
-        { "orager.turn": turn, "orager.model": turnOverrides.model ?? model },
+        { "orager.turn": turn, "orager.model": _effectiveModel },
         async () => callWithRetry(
         {
           apiKey,
           apiKeys: opts.apiKeys,
-          model: turnOverrides.model ?? model,
+          model: _effectiveModel,
           models: opts.models,
           // Pass the session ID so openrouter.ts can set X-Session-Id for
           // sticky routing, maximising prompt cache hits across turns.
@@ -1220,6 +1228,9 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           response_format: opts.response_format,
           disableContextCompression: summarizeAt > 0,
           rateLimitTracker: rlTracker,
+          // Per-agent user identifier for OpenRouter attribution/abuse detection.
+          // Falls back to sessionId (stable UUID) when no explicit agentId is set.
+          user: opts.agentId ?? sessionId,
           // Stream partial tokens to consumers in real time.
           // Each delta is emitted as a separate event so the adapter can
           // forward it to Paperclip / other UIs without buffering the full turn.

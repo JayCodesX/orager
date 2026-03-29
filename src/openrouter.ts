@@ -296,6 +296,10 @@ export async function callOpenRouter(
     const traceId = span?.spanContext().traceId;
     return traceId ? { trace_id: traceId } : undefined;
   })();
+  // Per-user / per-agent identifier — used by OpenRouter for abuse detection
+  // and attribution in dashboards. Prefer sessionId (stable, already a UUID).
+  if (opts.user) body.user = opts.user;
+
   // Plugins (e.g. response-healing, context-compression)
   // When response_format is set (structured outputs), add response-healing by default
   // unless the caller has already supplied an explicit plugins array.

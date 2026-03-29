@@ -508,6 +508,14 @@ export interface OpenRouterCallOptions {
    * from other agents on the same daemon.
    */
   rateLimitTracker?: import("./rate-limit-tracker.js").RateLimitTracker;
+
+  /**
+   * Stable identifier for the end user / agent sent as the `user` field in
+   * every OpenRouter request.  OpenRouter uses this for per-user abuse
+   * detection and shows it in the dashboard.  Prefer `sessionId` as the
+   * value so sessions map 1-to-1 with OpenRouter user identifiers.
+   */
+  user?: string;
 }
 
 // ── OpenRouter call result ───────────────────────────────────────────────────
@@ -728,6 +736,10 @@ export interface CliOptions {
   planMode?: boolean;
   /** Inject workspace/directory context into the first user message. */
   injectContext?: boolean;
+  /** Append :online suffix to model to enable web-search-augmented responses. */
+  onlineSearch?: boolean;
+  /** Stable agent identifier sent as the OpenRouter `user` field for attribution. */
+  agentId?: string;
   /** Load browser automation tools (Puppeteer). */
   enableBrowserTools?: boolean;
   /** Track file changes made during the run and report them in the result event. */
@@ -1121,6 +1133,21 @@ export interface AgentLoopOptions {
    * descriptive error. Default: 5000 ms.
    */
   sessionLockTimeoutMs?: number;
+
+  /**
+   * Stable identifier for this agent sent as the `user` field on every
+   * OpenRouter request.  OpenRouter uses it for per-user abuse detection and
+   * dashboard attribution.  Defaults to the session ID when not set.
+   */
+  agentId?: string;
+
+  /**
+   * When true, appends `:online` to the model string so OpenRouter routes the
+   * request to a web-search-enabled variant of the model (e.g.
+   * "openai/gpt-4o" → "openai/gpt-4o:online").  Has no effect if the model
+   * already ends with a suffix like `:online`, `:nitro`, or `:thinking`.
+   */
+  onlineSearch?: boolean;
 }
 
 // ── Permission types ─────────────────────────────────────────────────────────
