@@ -1,27 +1,25 @@
 /**
- * SQLite-backed memory store using better-sqlite3 (synchronous API).
+ * SQLite-backed memory store using WASM SQLite (synchronous API).
  *
  * Activated when ORAGER_DB_PATH env var is set.
  * Schema: memory_entries table with FTS5 virtual table for full-text search.
- *
- * WAL mode is enabled for better concurrent read performance.
  */
-import Database from "better-sqlite3";
-import type { Database as DB } from "better-sqlite3";
+import { openWasmDb } from "./wasm-sqlite.js";
+import type { WasmDatabase } from "./wasm-sqlite.js";
 import crypto from "node:crypto";
 import type { MemoryStore, MemoryEntry } from "./memory.js";
 
 // ── Singleton DB ───────────────────────────────────────────────────────────────
 
-let _db: DB | null = null;
+let _db: WasmDatabase | null = null;
 
-function getDb(): DB {
+function getDb(): WasmDatabase {
   if (_db) return _db;
   const dbPath = process.env["ORAGER_DB_PATH"];
   if (!dbPath) {
     throw new Error("ORAGER_DB_PATH is not set — SQLite memory is not available");
   }
-  _db = new Database(dbPath);
+  _db = openWasmDb(dbPath);
   _db.pragma("journal_mode = WAL");
   _db.pragma("foreign_keys = ON");
   _db.pragma("synchronous = NORMAL");
@@ -45,7 +43,7 @@ export function _resetDbForTesting(): void {
   closeDb();
 }
 
-function _migrate(db: DB): void {
+function _migrate(db: WasmDatabase): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS memory_entries (
       id          TEXT PRIMARY KEY,
@@ -94,8 +92,8 @@ interface MemoryRow {
   expires_at: string | null;
   run_id: string | null;
   importance: number;
-  /** better-sqlite3 returns BLOBs as Buffer; legacy rows may be JSON strings. */
-  embedding: Buffer | string | null;
+  /** WASM sqlite returns BLOBs as Uint8Array; legacy rows may be JSON strings. */
+  embedding: Uint8Array | string | null;
   embedding_model: string | null;
 }
 
@@ -115,7 +113,7 @@ function rowToEntry(row: MemoryRow): MemoryEntry {
   if (row.run_id) entry.runId = row.run_id;
   if (row.embedding) {
     try {
-      if (Buffer.isBuffer(row.embedding)) {
+      if (row.embedding instanceof Uint8Array) {
         // New format: raw Float32 binary BLOB
         const f32 = new Float32Array(
           row.embedding.buffer,
@@ -153,7 +151,7 @@ export function loadMemoryStoreSqlite(memoryKey: string): MemoryStore {
     const rows = db.prepare(
       "SELECT id, memory_key, content, tags, created_at, expires_at, run_id, importance, embedding, embedding_model " +
       "FROM memory_entries WHERE memory_key = ?"
-    ).all(key) as MemoryRow[];
+    ).all(key) as unknown as MemoryRow[];
 
     return rows;
   });
@@ -194,7 +192,7 @@ export function saveMemoryStoreSqlite(memoryKey: string, store: MemoryStore): vo
         runId: e.runId ?? null,
         importance: e.importance,
         embedding: e._embedding
-          ? Buffer.from(new Float32Array(e._embedding).buffer)
+          ? new Uint8Array(new Float32Array(e._embedding).buffer)
           : null,
         embeddingModel: e._embeddingModel ?? null,
       });
@@ -294,7 +292,7 @@ export function searchMemoryFts(
       AND (m.expires_at IS NULL OR m.expires_at > ?)
     ORDER BY rank
     LIMIT ?
-  `).all(ftsQuery, memoryKey, now, limit) as MemoryRow[];
+  `).all(ftsQuery, memoryKey, now, limit) as unknown as MemoryRow[];
 
   return rows.map(rowToEntry);
 }

@@ -1,14 +1,12 @@
 /**
- * SQLite-backed session store using better-sqlite3 (synchronous API).
+ * SQLite-backed session store using WASM SQLite (synchronous API).
  *
  * Activated when ORAGER_DB_PATH env var is set.
  * Schema: sessions table (indexed columns + full JSON data column)
  *         session_locks table (advisory locking)
- *
- * WAL mode is enabled for better concurrent read performance.
  */
-import Database from "better-sqlite3";
-import type { Database as DB } from "better-sqlite3";
+import { openWasmDb } from "./wasm-sqlite.js";
+import type { WasmDatabase } from "./wasm-sqlite.js";
 import type { SessionData, SessionSummary, PruneResult } from "./types.js";
 import type { SessionStore } from "./session-store.js";
 import { CURRENT_SESSION_SCHEMA_VERSION, migrateSession } from "./session.js";
@@ -16,10 +14,10 @@ import { CURRENT_SESSION_SCHEMA_VERSION, migrateSession } from "./session.js";
 const LOCK_STALE_MS = 5 * 60 * 1000;
 
 export class SqliteSessionStore implements SessionStore {
-  private readonly db: DB;
+  private readonly db: WasmDatabase;
 
   constructor(dbPath: string) {
-    this.db = new Database(dbPath);
+    this.db = openWasmDb(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.db.pragma("synchronous = NORMAL");
