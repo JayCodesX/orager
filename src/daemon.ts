@@ -482,27 +482,16 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
    */
   async function checkCredits(key: string): Promise<void> {
     try {
-      const openrouterBase = (process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1").replace(/\/$/, "");
-      const res = await fetch(`${openrouterBase}/auth/key`, {
-        headers: { Authorization: `Bearer ${key}` },
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!res.ok) return;
-      const body = await res.json() as {
-        data?: { limit?: number | null; usage?: number; rate_limited?: boolean };
-      };
-      const { limit, usage } = body.data ?? {};
-      if (typeof limit === "number" && typeof usage === "number") {
-        const remaining = limit - usage;
-        if (remaining < 1.0) {
-          process.stderr.write(
-            `[orager daemon] WARNING: OpenRouter credit balance low ($${remaining.toFixed(2)} remaining)\n`
-          );
-        } else {
-          process.stderr.write(
-            `[orager daemon] OpenRouter credits OK ($${remaining.toFixed(2)} remaining)\n`
-          );
-        }
+      const info = await fetchApiKeyInfo(key);
+      if (!info) return;
+      if (info.remaining !== null && info.remaining < 1.0) {
+        process.stderr.write(
+          `[orager daemon] WARNING: OpenRouter credit balance low ($${info.remaining.toFixed(2)} remaining)\n`,
+        );
+      } else if (info.remaining !== null) {
+        process.stderr.write(
+          `[orager daemon] OpenRouter credits OK ($${info.remaining.toFixed(2)} remaining)\n`,
+        );
       }
     } catch {
       // Non-fatal — ignore check failures
