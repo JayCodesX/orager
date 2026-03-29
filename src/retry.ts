@@ -2,6 +2,7 @@ import { callOpenRouter, callDirect, shouldUseDirect } from "./openrouter.js";
 import type { OpenRouterCallOptions, OpenRouterCallResult } from "./types.js";
 import { recordProviderSuccess, recordProviderError, isProviderDegraded } from "./provider-health.js";
 import { waitIfRateLimited } from "./rate-limit-gate.js";
+import { trace } from "@opentelemetry/api";
 
 function classifyError(result: { httpStatus?: number; errorMessage?: string }): "fatal" | "rotate" | "retry" {
   // Classify by HTTP status code first (authoritative)
@@ -71,7 +72,14 @@ async function applyRetryDecision(
   modelLabel: () => string,
   onLog?: (msg: string) => void,
 ): Promise<RetryDecision> {
-  if (isFatal(errInfo) || state.attempt >= maxRetries) return { action: "surface" };
+  if (isFatal(errInfo) || state.attempt >= maxRetries) {
+    trace.getActiveSpan()?.addEvent("retry.give_up", {
+      "retry.attempt": state.attempt,
+      "retry.reason": isFatal(errInfo) ? "fatal_error" : "max_retries_exceeded",
+      "retry.error": errMsg,
+    });
+    return { action: "surface" };
+  }
 
   const rotate = shouldRotateModel(errInfo);
 
@@ -85,12 +93,22 @@ async function applyRetryDecision(
     onLog?.(
       `[orager] rate-limit/unavailable on model "${prevModel}", falling back to "${modelLabel()}" (attempt ${state.attempt}/${maxRetries + 1})\n`,
     );
+    trace.getActiveSpan()?.addEvent("retry.model_rotation", {
+      "retry.attempt": state.attempt,
+      "retry.prev_model": prevModel,
+      "retry.next_model": modelLabel(),
+      "retry.error": errMsg,
+    });
     return { action: "rotated" };
   }
 
   if (rotate && state.retriedCurrentModel && state.modelIndex >= fallbackModels.length && fallbackModels.length > 0) {
     // All fallback models exhausted
     onLog?.(`[orager] all ${fallbackModels.length + 1} models exhausted on rotate-class error — giving up\n`);
+    trace.getActiveSpan()?.addEvent("retry.all_models_exhausted", {
+      "retry.attempt": state.attempt,
+      "retry.model_count": fallbackModels.length + 1,
+    });
     return { action: "surface" };
   }
 
@@ -108,6 +126,13 @@ async function applyRetryDecision(
   onLog?.(
     `[orager] ${prefix} on "${modelLabel()}" (attempt ${state.attempt + 1}/${maxRetries + 1}): ${errMsg} — retrying in ${backoffMs}ms\n`,
   );
+  trace.getActiveSpan()?.addEvent("retry.backoff", {
+    "retry.attempt": state.attempt + 1,
+    "retry.backoff_ms": backoffMs,
+    "retry.model": modelLabel(),
+    "retry.error": errMsg,
+    "retry.error_class": rotate ? "rotate" : "transient",
+  });
   await sleep(backoffMs);
   state.attempt++;
   return { action: "wait", backoffMs };
@@ -178,6 +203,10 @@ export async function callWithRetry(
       onLog?.(
         `[orager] model "${skipped}" is degraded — skipping to "${currentModel()}" proactively\n`,
       );
+      trace.getActiveSpan()?.addEvent("retry.degradation_skip", {
+        "retry.skipped_model": skipped,
+        "retry.next_model": currentModel(),
+      });
     }
 
     const callOpts: OpenRouterCallOptions = {
@@ -202,6 +231,13 @@ export async function callWithRetry(
         // Record against "unknown" provider (the real provider name is recorded
         // later in loop.ts once generation metadata arrives via fetchGenerationMeta).
         recordProviderSuccess(callOpts.model, "unknown", Date.now() - attemptStart);
+        if (state.attempt > 0) {
+          // Only annotate when retries actually happened — keeps clean traces clean.
+          trace.getActiveSpan()?.setAttributes({
+            "retry.total_attempts": state.attempt + 1,
+            "retry.final_model": callOpts.model,
+          });
+        }
         return result;
       }
 

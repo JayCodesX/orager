@@ -5,6 +5,7 @@ import {
   isProviderDegraded,
   getDegradedProviders,
   getAllProviderStats,
+  avgProviderLatencyMs,
 } from "../src/provider-health.js";
 
 // provider-health uses a module-level Map, so we use unique model/provider keys
@@ -44,6 +45,58 @@ describe("provider health tracking", () => {
     recordProviderError(model, provider, 100);
     const degraded = getDegradedProviders();
     expect(degraded.some((k) => k.includes(model))).toBe(true);
+  });
+});
+
+// ── Computed fields (4-B) ────────────────────────────────────────────────────
+
+describe("provider health — computed fields in getAllProviderStats", () => {
+  it("getAllProviderStats includes avgLatencyMs and errorRate", () => {
+    const model = "4b-model-" + Math.random().toString(36).slice(2);
+    const provider = "4b-prov-" + Math.random().toString(36).slice(2);
+
+    recordProviderSuccess(model, provider, 100);
+    recordProviderSuccess(model, provider, 200);
+    recordProviderError(model, provider, 300);
+
+    const stats = getAllProviderStats()[`${model}::${provider}`];
+    expect(stats).toBeDefined();
+    // avgLatencyMs = (100 + 200 + 300) / 3
+    expect(stats!.avgLatencyMs).toBeCloseTo(200, 0);
+    // errorRate = 1 error / 3 requests
+    expect(stats!.errorRate).toBeCloseTo(1 / 3, 5);
+  });
+
+  it("avgLatencyMs is 0 when no requests recorded", () => {
+    const model = "4b-empty-" + Math.random().toString(36).slice(2);
+    const provider = "4b-prov2-" + Math.random().toString(36).slice(2);
+    // nothing recorded yet
+    expect(avgProviderLatencyMs(model, provider)).toBe(0);
+  });
+
+  it("errorRate is 0 for a provider with only successes", () => {
+    const model = "4b-ok-" + Math.random().toString(36).slice(2);
+    const provider = "4b-ok-prov-" + Math.random().toString(36).slice(2);
+
+    recordProviderSuccess(model, provider, 50);
+    recordProviderSuccess(model, provider, 80);
+
+    const stats = getAllProviderStats()[`${model}::${provider}`];
+    expect(stats!.errorRate).toBe(0);
+    expect(stats!.avgLatencyMs).toBeCloseTo(65, 0);
+  });
+
+  it("getDegradedProviders key matches getAllProviderStats key format", () => {
+    const model = "4b-deg-" + Math.random().toString(36).slice(2);
+    const provider = "4b-deg-prov-" + Math.random().toString(36).slice(2);
+    for (let i = 0; i < 3; i++) recordProviderError(model, provider, 100);
+
+    const degradedKeys = getDegradedProviders();
+    const statsKeys = Object.keys(getAllProviderStats());
+    const expectedKey = `${model}::${provider}`;
+
+    expect(degradedKeys).toContain(expectedKey);
+    expect(statsKeys).toContain(expectedKey);
   });
 });
 

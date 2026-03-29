@@ -99,9 +99,25 @@ export function avgProviderLatencyMs(model: string, provider: string): number {
   return s.totalLatencyMs / s.totalRequests;
 }
 
-/** Return all stats as a plain object (for /metrics endpoint). */
-export function getAllProviderStats(): Record<string, ProviderStats> {
-  return Object.fromEntries(_stats);
+/** Extended stats shape returned by getAllProviderStats — includes computed fields. */
+export type ProviderStatsSummary = ProviderStats & {
+  /** Average latency in ms across all recorded requests (0 when no data). */
+  avgLatencyMs: number;
+  /** Error rate as a fraction 0–1 (0 when no requests). */
+  errorRate: number;
+};
+
+/** Return all stats as a plain object with computed fields (for /metrics endpoint). */
+export function getAllProviderStats(): Record<string, ProviderStatsSummary> {
+  const out: Record<string, ProviderStatsSummary> = {};
+  for (const [k, s] of _stats) {
+    out[k] = {
+      ...s,
+      avgLatencyMs: s.totalRequests > 0 ? s.totalLatencyMs / s.totalRequests : 0,
+      errorRate: s.totalRequests > 0 ? s.errorCount / s.totalRequests : 0,
+    };
+  }
+  return out;
 }
 
 /**

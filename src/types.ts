@@ -245,6 +245,17 @@ export interface EmitResultEvent {
     cache_write_tokens?: number;
   };
   total_cost_usd: number;
+  /**
+   * Per-category cost breakdown (USD). Only populated when per-token pricing
+   * is available (live model metadata or caller-supplied costPerInputToken /
+   * costPerOutputToken). Absent when no pricing data is configured.
+   */
+  cost_breakdown?: {
+    /** Cost attributable to input (prompt) tokens. */
+    input_usd: number;
+    /** Cost attributable to output (completion) tokens. */
+    output_usd: number;
+  };
   /** Number of agent turns completed in this run. */
   turnCount?: number;
   /** Per-tool call counts, error counts, and total execution time for this run. */
