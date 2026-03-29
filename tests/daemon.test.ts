@@ -32,10 +32,14 @@ function createTestServer(): http.Server {
   const activeRunControllers = new Map<string, AbortController>();
 
   const srv = http.createServer((req, res) => {
-    // GET /health
+    // GET /health — mirrors the real handleHealth response shape:
+    // { status: "ok"|"degraded", checks: { keyFile, sessionsDir, db } }
     if (req.method === "GET" && req.url === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok" }));
+      res.end(JSON.stringify({
+        status: "ok",
+        checks: { keyFile: "ok", sessionsDir: "ok", db: "n/a" },
+      }));
       return;
     }
 
@@ -205,6 +209,21 @@ describe("GET /health", () => {
     const { status, body } = await get("/health");
     expect(status).toBe(200);
     expect((body as Record<string, unknown>).status).toBe("ok");
+  });
+
+  it("includes a checks object in the response", async () => {
+    const { body } = await get("/health");
+    const b = body as Record<string, unknown>;
+    expect(b).toHaveProperty("checks");
+    expect(typeof b.checks).toBe("object");
+  });
+
+  it("checks.keyFile, checks.sessionsDir, and checks.db are present", async () => {
+    const { body } = await get("/health");
+    const checks = (body as Record<string, unknown>).checks as Record<string, string>;
+    expect(checks).toHaveProperty("keyFile");
+    expect(checks).toHaveProperty("sessionsDir");
+    expect(checks).toHaveProperty("db");
   });
 });
 
@@ -553,11 +572,12 @@ describe("GET /health — sensitive fields stripped (C8)", () => {
     expect(body).not.toHaveProperty("model");
   });
 
-  it("only has status field (plus any extra safe fields)", async () => {
+  it("only exposes status and checks — no internal daemon state fields", async () => {
     const { body } = await get("/health");
     const keys = Object.keys(body as object);
-    // status must be present; activeRuns / maxConcurrent / model must not be
+    // status and checks must be present; internal state must not be
     expect(keys).toContain("status");
+    expect(keys).toContain("checks");
     expect(keys).not.toContain("activeRuns");
     expect(keys).not.toContain("maxConcurrent");
     expect(keys).not.toContain("model");
