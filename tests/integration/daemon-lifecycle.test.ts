@@ -14,7 +14,7 @@
  * returned shutdown() function (not process.exit) for cleanup.
  *
  * Test coverage:
- *   1. GET /health                      → 200 { status: "ok" }
+ *   1. GET /health                      → 200 { status: "ok", checks: {...} }
  *   2. POST /run (valid JWT)            → 200 NDJSON stream with result event
  *   3. POST /run (no JWT)               → 401
  *   4. POST /run (invalid JWT)          → 401
@@ -147,10 +147,16 @@ afterAll(async () => {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("daemon HTTP lifecycle", () => {
-  it("GET /health returns 200 { status: 'ok' }", async () => {
+  it("GET /health returns 200 { status: 'ok', checks: {...} }", async () => {
     const { status, body } = await fetchJson(`${daemonUrl}/health`);
     expect(status).toBe(200);
-    expect((body as { status: string }).status).toBe("ok");
+    const b = body as { status: string; checks: Record<string, string> };
+    expect(b.status).toBe("ok");
+    // checks object must be present with the three sub-checks
+    expect(b.checks).toBeDefined();
+    expect(b.checks).toHaveProperty("keyFile");
+    expect(b.checks).toHaveProperty("sessionsDir");
+    expect(b.checks).toHaveProperty("db");
   });
 
   it("POST /run without JWT returns 401", async () => {
@@ -254,5 +260,29 @@ describe("daemon HTTP lifecycle", () => {
   it("unknown route returns 404", async () => {
     const { status } = await fetchJson(`${daemonUrl}/does-not-exist`);
     expect(status).toBe(404);
+  });
+
+  it("GET /health returns 503 degraded when a check fails", async () => {
+    // Force the db check to fail by pointing ORAGER_DB_PATH at a directory.
+    // existsSync(dir) returns true so openWasmDb attempts readFileSync(dir),
+    // which throws EISDIR, triggering checks["db"] = "error" → 503 degraded.
+    // The health route reads process.env.ORAGER_DB_PATH at request time so
+    // this is safe to set mid-test without restarting the daemon.
+    const prev = process.env["ORAGER_DB_PATH"];
+    process.env["ORAGER_DB_PATH"] = "/tmp";
+    try {
+      const { status, body } = await fetchJson(`${daemonUrl}/health`);
+      expect(status).toBe(503);
+      const b = body as { status: string; reason: string; checks: Record<string, string> };
+      expect(b.status).toBe("degraded");
+      expect(b.checks.db).toBe("error");
+      expect(b.reason).toContain("db");
+    } finally {
+      if (prev === undefined) {
+        delete process.env["ORAGER_DB_PATH"];
+      } else {
+        process.env["ORAGER_DB_PATH"] = prev;
+      }
+    }
   });
 });
