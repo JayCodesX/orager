@@ -814,7 +814,8 @@ async function main(): Promise<void> {
     if (userCfg.memoryKey && !G.__oragerMemoryKey)         G.__oragerMemoryKey = userCfg.memoryKey;
     if (userCfg.memoryMaxChars !== undefined && !G.__oragerMemoryMaxChars) G.__oragerMemoryMaxChars = userCfg.memoryMaxChars;
     if (userCfg.apiKeys && !G.__oragerApiKeys)             G.__oragerApiKeys = userCfg.apiKeys;
-    if (userCfg.webhookUrl && !G.__oragerWebhookUrl)       G.__oragerWebhookUrl = userCfg.webhookUrl;
+    if (userCfg.webhookUrl && !G.__oragerWebhookUrl)             G.__oragerWebhookUrl = userCfg.webhookUrl;
+    if (userCfg.webhookFormat && !G.__oragerWebhookFormat)       G.__oragerWebhookFormat = userCfg.webhookFormat;
     if (userCfg.maxCostUsdSoft !== undefined && !G.__oragerMaxCostUsdSoft) G.__oragerMaxCostUsdSoft = userCfg.maxCostUsdSoft;
   }
 
@@ -891,6 +892,9 @@ async function main(): Promise<void> {
     }
     if (cfResult.webhookUrl) {
       (globalThis as Record<string, unknown>).__oragerWebhookUrl = cfResult.webhookUrl;
+    }
+    if (cfResult.webhookFormat) {
+      (globalThis as Record<string, unknown>).__oragerWebhookFormat = cfResult.webhookFormat;
     }
     if (cfResult.bashPolicy) {
       (globalThis as Record<string, unknown>).__oragerBashPolicy = cfResult.bashPolicy;
@@ -1126,6 +1130,7 @@ async function main(): Promise<void> {
     summarizePrompt: (globalThis as Record<string, unknown>).__oragerSummarizePrompt as string | undefined,
     summarizeFallbackKeep: (globalThis as Record<string, unknown>).__oragerSummarizeFallbackKeep as number | undefined,
     webhookUrl: (globalThis as Record<string, unknown>).__oragerWebhookUrl as string | undefined,
+    webhookFormat: (globalThis as Record<string, unknown>).__oragerWebhookFormat as "discord" | undefined,
     bashPolicy: (globalThis as Record<string, unknown>).__oragerBashPolicy as AgentLoopOptions["bashPolicy"] | undefined,
     trackFileChanges: (globalThis as Record<string, unknown>).__oragerTrackFileChanges as boolean | undefined ?? opts.trackFileChanges,
     enableBrowserTools: (globalThis as Record<string, unknown>).__oragerEnableBrowserTools as boolean | undefined ?? opts.enableBrowserTools,

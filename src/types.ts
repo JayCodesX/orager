@@ -973,6 +973,12 @@ export interface AgentLoopOptions {
   webhookUrl?: string;
 
   /**
+   * When set to "discord", shapes the webhook payload as a Discord embed
+   * instead of the raw result event JSON.
+   */
+  webhookFormat?: "discord";
+
+  /**
    * When true, wraps each tool result in XML tags identifying the source tool.
    * Helps the model resist prompt injection attacks from malicious tool outputs.
    * Example: <tool_result name="web_fetch" url="...">content</tool_result>

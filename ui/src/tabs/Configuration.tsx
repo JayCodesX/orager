@@ -227,6 +227,7 @@ interface ConfigForm {
   daemonIdleTimeout: string;
   profile: string;
   webhookUrl: string;
+  webhookFormat: "" | "discord";
   requiredEnvVars: string[];
 }
 
@@ -280,6 +281,7 @@ function configToForm(c: OragerUserConfig): ConfigForm {
     daemonIdleTimeout:      c.daemonIdleTimeout ?? "",
     profile:                c.profile ?? "",
     webhookUrl:             c.webhookUrl ?? "",
+    webhookFormat:          c.webhookFormat ?? "",
     requiredEnvVars:        c.requiredEnvVars ?? [],
   };
 }
@@ -335,6 +337,7 @@ function formToConfig(f: ConfigForm): OragerUserConfig {
     daemonIdleTimeout:   s(f.daemonIdleTimeout),
     profile:             s(f.profile),
     webhookUrl:          s(f.webhookUrl),
+    webhookFormat:       f.webhookFormat === "discord" ? "discord" : undefined,
     requiredEnvVars:     f.requiredEnvVars.length > 0 ? f.requiredEnvVars : undefined,
   };
 }
@@ -455,6 +458,10 @@ export default function Configuration() {
   const [setForm, setSetForm] = useState<SettingsForm | null>(null);
   const [setsSaving, setSetsSaving] = useState(false);
 
+  // Webhook test state
+  const [webhookTesting, setWebhookTesting] = useState(false);
+  const [webhookTestResult, setWebhookTestResult] = useState<string | null>(null);
+
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<"config" | "settings">("config");
 
@@ -516,6 +523,20 @@ export default function Configuration() {
       setSetsSaving(false);
     }
   }, [setForm, showToast]);
+
+  const handleWebhookTest = useCallback(async () => {
+    if (!cfgForm?.webhookUrl) return;
+    setWebhookTesting(true);
+    setWebhookTestResult(null);
+    try {
+      const r = await api.testWebhook(cfgForm.webhookUrl, cfgForm.webhookFormat === "discord" ? "discord" : undefined);
+      setWebhookTestResult(r.ok ? `✓ Delivered (HTTP ${r.status})` : `✗ Failed${r.error ? `: ${r.error}` : r.status ? ` (HTTP ${r.status})` : ""}`);
+    } catch (err) {
+      setWebhookTestResult(`✗ Error: ${(err as Error).message}`);
+    } finally {
+      setWebhookTesting(false);
+    }
+  }, [cfgForm?.webhookUrl, cfgForm?.webhookFormat]);
 
   if (loading) {
     return <div className="placeholder"><p>Loading configuration…</p></div>;
@@ -648,9 +669,55 @@ export default function Configuration() {
             <TextField label="Idle timeout (e.g. 30m, 1h)" value={f.daemonIdleTimeout} onChange={upd("daemonIdleTimeout")} error={cfgErrors.daemonIdleTimeout} placeholder="30m" />
           </Section>
 
+          <Section title="Webhooks" defaultOpen={false}>
+            <TextField
+              label="Webhook URL"
+              value={f.webhookUrl}
+              onChange={upd("webhookUrl")}
+              placeholder="https://discord.com/api/webhooks/…"
+            />
+            <div style={{ marginTop: 8 }}>
+              <label style={{ fontSize: 12, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
+                Payload format
+              </label>
+              <select
+                value={f.webhookFormat}
+                onChange={(e) => upd("webhookFormat")(e.target.value as "" | "discord")}
+                style={{ width: "100%", maxWidth: 220 }}
+              >
+                <option value="">Raw JSON (default)</option>
+                <option value="discord">Discord embed</option>
+              </select>
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                {f.webhookFormat === "discord"
+                  ? "Shapes the payload as a Discord embed — paste a Discord webhook URL above."
+                  : "Posts the raw orager result event JSON to the URL."}
+              </div>
+            </div>
+            {f.webhookUrl && (
+              <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 12 }}>
+                <button
+                  className="btn-ghost"
+                  style={{ fontSize: 12, padding: "4px 12px" }}
+                  disabled={webhookTesting}
+                  onClick={handleWebhookTest}
+                >
+                  {webhookTesting ? "Sending…" : "Send test payload"}
+                </button>
+                {webhookTestResult && (
+                  <span style={{
+                    fontSize: 12,
+                    color: webhookTestResult.startsWith("✓") ? "var(--accent)" : "var(--error)",
+                  }}>
+                    {webhookTestResult}
+                  </span>
+                )}
+              </div>
+            )}
+          </Section>
+
           <Section title="Misc" defaultOpen={false}>
             <TextField label="Profile" value={f.profile} onChange={upd("profile")} placeholder="code-review, bug-fix…" />
-            <TextField label="Webhook URL" value={f.webhookUrl} onChange={upd("webhookUrl")} />
             <TextField label="Site URL" value={f.siteUrl} onChange={upd("siteUrl")} />
             <TextField label="Site name" value={f.siteName} onChange={upd("siteName")} />
             <TextField label="Sandbox root" value={f.sandboxRoot} onChange={upd("sandboxRoot")} placeholder="/tmp/sandbox" />

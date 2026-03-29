@@ -33,6 +33,7 @@ interface ProfileDefaults {
   summarizeModel?: string;
   summarizePrompt?: string;
   webhookUrl?: string;
+  webhookFormat?: "discord";
 }
 
 const PROFILES: Record<ProfileName, ProfileDefaults> = {
@@ -182,6 +183,7 @@ export function applyProfile(
     summarizeModel:            profile.summarizeModel,
     summarizePrompt:           profile.summarizePrompt,
     webhookUrl:                profile.webhookUrl,
+    webhookFormat:             profile.webhookFormat,
     appendSystemPrompt:        mergedAppendSystemPrompt,
   };
   // Spread: profile defaults first, then caller opts override, then fix appendSystemPrompt
@@ -230,6 +232,7 @@ export async function applyProfileAsync(
     summarizeModel:            custom.summarizeModel,
     summarizePrompt:           custom.summarizePrompt,
     webhookUrl:                custom.webhookUrl,
+    webhookFormat:             custom.webhookFormat,
     appendSystemPrompt:        mergedAppendSystemPrompt,
   };
   return Object.assign({}, profileDefaults, opts, {
