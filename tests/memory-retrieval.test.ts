@@ -4,6 +4,8 @@ import {
   scoreEntry,
   retrieveEntries,
   renderRetrievedBlock,
+  cosineSimilarity,
+  retrieveEntriesWithEmbeddings,
 } from "../src/memory.js";
 import type { MemoryEntry, MemoryStore } from "../src/memory.js";
 
@@ -205,5 +207,136 @@ describe("renderRetrievedBlock", () => {
     const block = renderRetrievedBlock(entries);
     expect(block).toContain("unique test content abc");
     expect(block).toContain("importance: 3");
+  });
+});
+
+// ── cosineSimilarity ──────────────────────────────────────────────────────────
+
+describe("cosineSimilarity", () => {
+  it("returns 1.0 for identical unit vectors", () => {
+    expect(cosineSimilarity([1, 0, 0], [1, 0, 0])).toBeCloseTo(1.0);
+  });
+
+  it("returns 0 for orthogonal vectors", () => {
+    expect(cosineSimilarity([1, 0, 0], [0, 1, 0])).toBeCloseTo(0);
+  });
+
+  it("returns -1 for exactly opposite vectors", () => {
+    expect(cosineSimilarity([1, 0, 0], [-1, 0, 0])).toBeCloseTo(-1.0);
+  });
+
+  it("returns 0 for empty vectors", () => {
+    expect(cosineSimilarity([], [])).toBe(0);
+  });
+
+  it("returns 0 when one vector is all-zeros (zero magnitude)", () => {
+    expect(cosineSimilarity([0, 0, 0], [1, 2, 3])).toBe(0);
+    expect(cosineSimilarity([1, 2, 3], [0, 0, 0])).toBe(0);
+  });
+
+  it("handles vectors of different lengths — trailing elements of the longer vector are ignored", () => {
+    // cosineSimilarity uses Math.min(a.length, b.length) for the loop AND for magnitude.
+    // [1, 0] vs [1, 0, 99]: only the first 2 elements are considered →
+    // dot=1, magA=1, magB=1 → similarity = 1.0 (the trailing 99 is never seen).
+    expect(cosineSimilarity([1, 0], [1, 0, 99])).toBeCloseTo(1.0);
+    // Orthogonal in the shared prefix → 0 regardless of tail
+    expect(cosineSimilarity([0, 1], [1, 0, 99])).toBeCloseTo(0);
+  });
+
+  it("returns 1.0 for non-unit but parallel vectors", () => {
+    expect(cosineSimilarity([2, 4], [1, 2])).toBeCloseTo(1.0);
+  });
+});
+
+// ── retrieveEntriesWithEmbeddings ─────────────────────────────────────────────
+
+describe("retrieveEntriesWithEmbeddings", () => {
+  const queryEmbedding = [1, 0, 0];
+
+  function embeddedEntry(
+    content: string,
+    embedding: number[],
+    overrides: Partial<MemoryEntry> = {},
+  ): MemoryEntry {
+    return makeEntry({ content, _embedding: embedding, ...overrides });
+  }
+
+  it("returns entries ranked by cosine similarity (highest first)", () => {
+    const store = makeStore([
+      embeddedEntry("low similarity", [0, 1, 0]),    // sim=0 with [1,0,0]
+      embeddedEntry("perfect match",  [1, 0, 0]),    // sim=1
+      embeddedEntry("partial match",  [0.9, 0.44, 0]), // high but not perfect
+    ]);
+    const results = retrieveEntriesWithEmbeddings(store, queryEmbedding);
+    expect(results[0].content).toBe("perfect match");
+    expect(results[1].content).toBe("partial match");
+    expect(results[2].content).toBe("low similarity");
+  });
+
+  it("returns empty array when all entries score below minScore", () => {
+    const store = makeStore([
+      embeddedEntry("neg entry", [-1, 0, 0]),  // sim = -1
+      embeddedEntry("ortho entry", [0, 1, 0]), // sim = 0
+    ]);
+    // minScore=0.5 — neither entry reaches it
+    const results = retrieveEntriesWithEmbeddings(store, queryEmbedding, { minScore: 0.5 });
+    expect(results).toHaveLength(0);
+  });
+
+  it("returns empty array when store has no entries", () => {
+    const store = makeStore([]);
+    const results = retrieveEntriesWithEmbeddings(store, queryEmbedding);
+    expect(results).toHaveLength(0);
+  });
+
+  it("respects topK limit", () => {
+    const store = makeStore([
+      embeddedEntry("a", [1, 0, 0]),
+      embeddedEntry("b", [0.9, 0.1, 0]),
+      embeddedEntry("c", [0.8, 0.2, 0]),
+      embeddedEntry("d", [0.7, 0.3, 0]),
+    ]);
+    const results = retrieveEntriesWithEmbeddings(store, queryEmbedding, { topK: 2 });
+    expect(results).toHaveLength(2);
+    expect(results[0].content).toBe("a");
+  });
+
+  it("entries without _embedding fall back to importance+recency scoring (scoreEntry)", () => {
+    const withEmbed    = embeddedEntry("has embedding",    [1, 0, 0], { importance: 1 });
+    const withoutEmbed = makeEntry({ content: "no embedding", importance: 3 }); // high importance
+    const store = makeStore([withEmbed, withoutEmbed]);
+
+    // With enough topK both appear; the no-embedding entry's score is
+    // importance-based (scoreEntry with empty query) — just verify it is included
+    const results = retrieveEntriesWithEmbeddings(store, queryEmbedding, { topK: 10, minScore: 0 });
+    const contents = results.map((e) => e.content);
+    expect(contents).toContain("has embedding");
+    expect(contents).toContain("no embedding");
+  });
+
+  it("importance weight amplifies score: importance=3 > importance=1 at equal similarity", () => {
+    const low  = embeddedEntry("low importance",  [1, 0, 0], { importance: 1 });
+    const high = embeddedEntry("high importance", [1, 0, 0], { importance: 3 });
+    const store = makeStore([low, high]);
+    const results = retrieveEntriesWithEmbeddings(store, queryEmbedding, { topK: 2 });
+    // Both have sim=1.0 with queryEmbedding; high importance (weight 1.5) beats low (weight 0.6)
+    expect(results[0].content).toBe("high importance");
+  });
+
+  it("defaults topK to 12", () => {
+    const entries = Array.from({ length: 20 }, (_, i) =>
+      embeddedEntry(`entry ${i}`, [1, 0, 0]),
+    );
+    const results = retrieveEntriesWithEmbeddings(makeStore(entries), queryEmbedding);
+    expect(results).toHaveLength(12);
+  });
+
+  it("minScore=0 (default) includes entries with zero-similarity (orthogonal vectors)", () => {
+    const store = makeStore([
+      embeddedEntry("orthogonal", [0, 1, 0]), // sim=0 with queryEmbedding [1,0,0]
+    ]);
+    // default minScore is 0.0, so score ≥ 0 passes (0 * importanceWeight * recency = 0 ≥ 0)
+    const results = retrieveEntriesWithEmbeddings(store, queryEmbedding);
+    expect(results).toHaveLength(1);
   });
 });
