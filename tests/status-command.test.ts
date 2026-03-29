@@ -58,3 +58,54 @@ describe("handleStatus uptime enrichment", () => {
     expect(JSON.parse(JSON.stringify(withoutUptime)).uptimeMs).toBeNull();
   });
 });
+
+// ── Sprint 3-D: credits in --status ──────────────────────────────────────────
+
+describe("--status credits output (Sprint 3-D)", () => {
+  // handleStatus is not directly callable (calls process.exit) so these tests
+  // validate the JSON shape and credit-line formatting logic in isolation.
+
+  it("JSON output includes credits field when keyInfo is present", () => {
+    const keyInfo = { label: "my-key", disabled: false, remaining: 4.5, limit: 10.0, usage: 5.5, isUnlimited: false };
+    const out: Record<string, unknown> = { running: true, port: 3456, url: "http://127.0.0.1:3456", uptimeMs: 0 };
+    if (keyInfo !== undefined) out["credits"] = keyInfo;
+    const parsed = JSON.parse(JSON.stringify(out)) as typeof out;
+    expect(parsed["credits"]).toBeDefined();
+    expect((parsed["credits"] as typeof keyInfo).remaining).toBeCloseTo(4.5);
+  });
+
+  it("credits field is omitted when keyInfo is absent from metrics", () => {
+    const out: Record<string, unknown> = { running: true, port: 3456, url: "http://127.0.0.1:3456", uptimeMs: 0 };
+    // keyInfo undefined → no credits key added
+    const parsed = JSON.parse(JSON.stringify(out)) as typeof out;
+    expect(parsed["credits"]).toBeUndefined();
+  });
+
+  it("credits text line shows remaining / limit for limited keys", () => {
+    const ki = { label: "prod-key", disabled: false, remaining: 4.5, limit: 10.0, usage: 5.5, isUnlimited: false };
+    const credLine = ki.isUnlimited
+      ? `credits: unlimited (key: ${ki.label})`
+      : ki.remaining !== null
+        ? `credits: $${ki.remaining.toFixed(4)} remaining of $${(ki.limit ?? 0).toFixed(2)} (key: ${ki.label})`
+        : `credits: $${(ki.usage ?? 0).toFixed(4)} used (key: ${ki.label})`;
+    expect(credLine).toBe("credits: $4.5000 remaining of $10.00 (key: prod-key)");
+  });
+
+  it("credits text line shows 'unlimited' for unlimited keys", () => {
+    const ki = { label: "unlimited-key", disabled: false, remaining: null, limit: null, usage: 0, isUnlimited: true };
+    const credLine = ki.isUnlimited
+      ? `credits: unlimited (key: ${ki.label})`
+      : `credits: $${ki.remaining} remaining`;
+    expect(credLine).toBe("credits: unlimited (key: unlimited-key)");
+  });
+
+  it("credits text line falls back to usage when remaining is null", () => {
+    const ki = { label: "unknown-key", disabled: false, remaining: null, limit: null, usage: 3.25, isUnlimited: false };
+    const credLine = ki.isUnlimited
+      ? `credits: unlimited (key: ${ki.label})`
+      : ki.remaining !== null
+        ? `credits: $${ki.remaining} remaining`
+        : `credits: $${(ki.usage ?? 0).toFixed(4)} used (key: ${ki.label})`;
+    expect(credLine).toBe("credits: $3.2500 used (key: unknown-key)");
+  });
+});

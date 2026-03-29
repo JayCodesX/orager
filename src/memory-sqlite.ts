@@ -79,6 +79,23 @@ function _migrate(db: WasmDatabase): void {
       INSERT INTO memory_entries_fts(rowid, content) VALUES (new.rowid, new.content);
     END;
   `);
+
+  // One-time migration: convert legacy JSON-string embeddings to binary Float32 BLOB.
+  // Rows written by older versions stored embeddings as JSON text (e.g. "[1.0,2.0,...]").
+  // SQLite's typeof() returns 'text' for those and 'blob' for the new binary format.
+  const legacyRows = db.prepare(
+    "SELECT rowid, embedding FROM memory_entries WHERE embedding IS NOT NULL AND typeof(embedding) = 'text'",
+  ).all() as unknown as Array<{ rowid: number; embedding: string }>;
+
+  if (legacyRows.length > 0) {
+    const upd = db.prepare("UPDATE memory_entries SET embedding = ? WHERE rowid = ?");
+    for (const row of legacyRows) {
+      try {
+        const floats = JSON.parse(row.embedding) as number[];
+        upd.run(new Uint8Array(new Float32Array(floats).buffer), row.rowid);
+      } catch { /* skip malformed rows */ }
+    }
+  }
 }
 
 // ── Row mapping ───────────────────────────────────────────────────────────────
