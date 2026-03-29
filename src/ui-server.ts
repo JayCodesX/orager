@@ -28,8 +28,62 @@ const ORAGER_DIR = path.join(os.homedir(), ".orager");
 const CONFIG_PATH = path.join(ORAGER_DIR, "config.json");
 const SETTINGS_PATH = path.join(ORAGER_DIR, "settings.json");
 const UI_PORT_PATH = path.join(ORAGER_DIR, "ui.port");
+const UI_PID_PATH = path.join(ORAGER_DIR, "ui.pid");
 const DAEMON_PORT_PATH = path.join(ORAGER_DIR, "daemon.port");
 const DAEMON_PID_PATH = path.join(ORAGER_DIR, "daemon.pid");
+
+// ── Single-instance PID lock (mirrors daemon.ts pattern) ─────────────────────
+
+async function acquireUiPidLock(port: number): Promise<void> {
+  await fs.mkdir(ORAGER_DIR, { recursive: true });
+  const pidData = JSON.stringify({ pid: process.pid, port });
+
+  // Attempt exclusive atomic write first — succeeds if no lock file exists
+  try {
+    await fs.writeFile(UI_PID_PATH, pidData, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    return;
+  } catch (writeErr) {
+    if ((writeErr as NodeJS.ErrnoException).code !== "EEXIST") throw writeErr;
+  }
+
+  // File exists — check if the existing process is still alive
+  try {
+    const existing = await fs.readFile(UI_PID_PATH, "utf8");
+    const parsed = JSON.parse(existing) as { pid: number; port: number };
+    try {
+      process.kill(parsed.pid, 0); // signal 0 = existence check, no signal sent
+      throw new Error(
+        `orager ui is already running (pid ${parsed.pid}, port ${parsed.port}).\n` +
+        `  Stop it first, or remove ${UI_PID_PATH} if the process is stale.`,
+      );
+    } catch (killErr) {
+      // ESRCH = no such process → stale lock, fall through to reclaim
+      if ((killErr as NodeJS.ErrnoException).code !== "ESRCH") throw killErr;
+    }
+  } catch (readErr) {
+    if ((readErr as Error).message.startsWith("orager ui is already running")) throw readErr;
+    // Unreadable/invalid PID file — treat as stale
+  }
+
+  // Stale lock — remove and reclaim
+  await fs.unlink(UI_PID_PATH).catch(() => {});
+  try {
+    await fs.writeFile(UI_PID_PATH, pidData, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  } catch {
+    // Race condition — another process grabbed it
+    const existing2 = await fs.readFile(UI_PID_PATH, "utf8").catch(() => "{}");
+    const parsed2 = JSON.parse(existing2) as { pid?: number; port?: number };
+    if (parsed2.pid && parsed2.pid !== process.pid) {
+      throw new Error(
+        `orager ui is already running (pid ${parsed2.pid}, port ${parsed2.port ?? "?"}).`,
+      );
+    }
+  }
+}
+
+async function releaseUiPidLock(): Promise<void> {
+  await fs.unlink(UI_PID_PATH).catch(() => {});
+}
 
 // Static files live at dist/ui/ relative to this compiled file (dist/ui-server.js)
 const DIST_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -645,15 +699,20 @@ export interface UiServerOptions {
 export async function startUiServer(opts: UiServerOptions = {}): Promise<void> {
   const port = opts.port ?? 3457;
 
+  // Enforce single-instance before binding the port
+  await acquireUiPidLock(port);
+
   const server = http.createServer(handleRequest);
 
   await new Promise<void>((resolve, reject) => {
-    server.on("error", reject);
+    server.on("error", (err) => {
+      void releaseUiPidLock();
+      reject(err);
+    });
     server.listen(port, "127.0.0.1", () => resolve());
   });
 
-  // Write port file so tooling can discover the UI server
-  await fs.mkdir(ORAGER_DIR, { recursive: true });
+  // Write port file so tooling (and the setup wizard) can discover the server
   await atomicWrite(UI_PORT_PATH, String(port));
 
   const uiDir = UI_STATIC_DIR;
@@ -668,9 +727,10 @@ export async function startUiServer(opts: UiServerOptions = {}): Promise<void> {
     );
   }
 
-  // Clean up port file on exit
+  // Clean up port and PID files on exit
   async function cleanup(): Promise<void> {
     try { await fs.unlink(UI_PORT_PATH); } catch { /* ignore */ }
+    await releaseUiPidLock();
     process.exit(0);
   }
 
@@ -678,6 +738,7 @@ export async function startUiServer(opts: UiServerOptions = {}): Promise<void> {
   process.on("SIGTERM", cleanup);
   process.on("exit", () => {
     try { fsSync.unlinkSync(UI_PORT_PATH); } catch { /* ignore */ }
+    try { fsSync.unlinkSync(UI_PID_PATH); } catch { /* ignore */ }
   });
 
   // Keep process alive
