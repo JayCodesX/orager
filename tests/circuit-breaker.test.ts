@@ -1,5 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { CircuitBreaker, getAgentCircuitBreaker, clearAllAgentCircuitBreakers, getAllAgentCircuitBreakerStates } from "../src/circuit-breaker.js";
+import {
+  CircuitBreaker,
+  getAgentCircuitBreaker,
+  clearAllAgentCircuitBreakers,
+  getAllAgentCircuitBreakerStates,
+  _setAgentLastUsedForTesting,
+  _runEvictionNowForTesting,
+} from "../src/circuit-breaker.js";
 
 describe("CircuitBreaker", () => {
   let cb: CircuitBreaker;
@@ -205,6 +212,63 @@ describe("daemon run pattern — circuit breaker state transitions (T-gap2)", ()
 
     expect(getAgentCircuitBreaker(agentA).isOpen()).toBe(true);
     expect(getAgentCircuitBreaker(agentB).isOpen()).toBe(false);
+  });
+});
+
+// ── TTL-based eviction of idle circuit breakers (Fix 7) ───────────────────────
+
+describe("_agentCircuitBreakers TTL eviction (Fix 7)", () => {
+  afterEach(() => {
+    clearAllAgentCircuitBreakers();
+  });
+
+  it("evicts an agent whose lastUsed is older than CB_IDLE_EVICT_MS (1 hour)", () => {
+    // Create a CB entry, then backdate its lastUsed past the eviction threshold.
+    getAgentCircuitBreaker("agent-idle");
+    // Backdate to 2 hours ago — comfortably past the 1-hour cutoff.
+    _setAgentLastUsedForTesting("agent-idle", Date.now() - 2 * 60 * 60 * 1000);
+
+    _runEvictionNowForTesting();
+
+    const states = getAllAgentCircuitBreakerStates();
+    expect(states["agent-idle"]).toBeUndefined();
+  });
+
+  it("does not evict an agent that was used recently", () => {
+    getAgentCircuitBreaker("agent-active");
+    // lastUsed is already Date.now() — well within the 1-hour window.
+    _runEvictionNowForTesting();
+
+    const states = getAllAgentCircuitBreakerStates();
+    expect(states["agent-active"]).toBeDefined();
+  });
+
+  it("evicts only idle agents, leaving recently-used agents intact", () => {
+    getAgentCircuitBreaker("agent-old");
+    getAgentCircuitBreaker("agent-new");
+
+    // Backdate only "agent-old"
+    _setAgentLastUsedForTesting("agent-old", Date.now() - 2 * 60 * 60 * 1000);
+
+    _runEvictionNowForTesting();
+
+    const states = getAllAgentCircuitBreakerStates();
+    expect(states["agent-old"]).toBeUndefined();
+    expect(states["agent-new"]).toBeDefined();
+  });
+
+  it("preserves circuit state (open/closed) for non-evicted agents after eviction pass", () => {
+    const cb = getAgentCircuitBreaker("agent-tripped-eviction");
+    cb.recordFailure();
+    cb.recordFailure();
+    cb.recordFailure(); // open
+    expect(cb.isOpen()).toBe(true);
+
+    // Eviction runs but agent is recent — it should remain
+    _runEvictionNowForTesting();
+
+    const states = getAllAgentCircuitBreakerStates();
+    expect(states["agent-tripped-eviction"]?.state).toBe("open");
   });
 });
 
