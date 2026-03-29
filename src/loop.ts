@@ -379,6 +379,12 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           "stderr",
           `[orager] warning: session ${opts.sessionId} not found, starting fresh\n`,
         );
+        onEmit({
+          type: "warn",
+          subtype: "session_lost",
+          message: `session ${opts.sessionId} not found, starting fresh`,
+          session_id: opts.sessionId,
+        });
       }
       sessionId = newSessionId();
     }

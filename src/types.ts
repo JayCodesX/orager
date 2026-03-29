@@ -295,14 +295,21 @@ export interface EmitThinkingDeltaEvent {
 }
 
 /**
- * Daemon-only warning — emitted when the caller passes options that the daemon
- * is configured to reject (e.g. fields not on the allowed list). The run
- * continues with those options dropped.
+ * Warning event emitted for non-fatal conditions during a run.
+ *
+ * subtypes:
+ *   "dropped_opts"  — daemon-only: caller passed opts outside the allowlist
+ *   "session_lost"  — session ID not found; the run continues with a fresh session
  */
 export interface EmitWarnEvent {
   type: "warn";
+  /** Discriminator for the warning condition. */
+  subtype?: "dropped_opts" | "session_lost";
   message: string;
-  dropped_opts: string[];
+  /** Present when subtype is "dropped_opts". */
+  dropped_opts?: string[];
+  /** Present when subtype is "session_lost". */
+  session_id?: string;
 }
 
 export type EmitEvent =

@@ -200,7 +200,7 @@ export function handleRun(
     if (rejectedOpts.length > 0) {
       const msg = `[orager daemon] WARNING: ignoring disallowed opts fields from caller: ${rejectedOpts.join(", ")}`;
       process.stderr.write(msg + "\n");
-      res.write(JSON.stringify({ type: "warn", message: msg, dropped_opts: rejectedOpts }) + "\n");
+      res.write(JSON.stringify({ type: "warn", subtype: "dropped_opts", message: msg, dropped_opts: rejectedOpts }) + "\n");
     }
 
     const loopOpts: AgentLoopOptions = {
