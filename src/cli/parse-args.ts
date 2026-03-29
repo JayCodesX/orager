@@ -302,6 +302,11 @@ export function parseArgs(argv: string[]): CliOptions {
         opts.planMode = true;
         break;
       }
+      case "--max-spawn-depth": {
+        const n = parseInt(argv[++i], 10);
+        if (!isNaN(n) && n >= 0) opts.maxSpawnDepth = n;
+        break;
+      }
       case "--inject-context": {
         opts.injectContext = true;
         break;
