@@ -1114,7 +1114,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
           };
           onEmit(resultEvent);
-          if (opts.webhookUrl) await postWebhook(opts.webhookUrl, resultEvent);
+          if (opts.webhookUrl) await postWebhook(opts.webhookUrl, resultEvent, opts.webhookFormat);
         }
         return;
       }
@@ -1183,7 +1183,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
           };
           onEmit(resultEvent);
-          if (opts.webhookUrl) await postWebhook(opts.webhookUrl, resultEvent);
+          if (opts.webhookUrl) await postWebhook(opts.webhookUrl, resultEvent, opts.webhookFormat);
         }
         return;
       }
@@ -1526,7 +1526,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           cumulativeCostUsd: totalCostUsd,
         }).catch(() => {});
         onEmit(budgetResultEvent);
-        if (opts.webhookUrl) await postWebhook(opts.webhookUrl, budgetResultEvent);
+        if (opts.webhookUrl) await postWebhook(opts.webhookUrl, budgetResultEvent, opts.webhookFormat);
         return;
       }
 
@@ -1639,7 +1639,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
           };
           onEmit(resultEvent);
-          if (opts.webhookUrl) await postWebhook(opts.webhookUrl, resultEvent);
+          if (opts.webhookUrl) await postWebhook(opts.webhookUrl, resultEvent, opts.webhookFormat);
         }
         return; // Exit the agent loop
       }
@@ -1788,7 +1788,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
           };
           onEmit(resultEvent);
-          if (opts.webhookUrl) await postWebhook(opts.webhookUrl, resultEvent);
+          if (opts.webhookUrl) await postWebhook(opts.webhookUrl, resultEvent, opts.webhookFormat);
         }
         return;
       }
@@ -1856,7 +1856,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
       };
       onEmit(resultEvent);
-      if (opts.webhookUrl) await postWebhook(opts.webhookUrl, resultEvent);
+      if (opts.webhookUrl) await postWebhook(opts.webhookUrl, resultEvent, opts.webhookFormat);
     }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -1905,7 +1905,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
       };
       onEmit(resultEvent);
-      if (opts.webhookUrl) await postWebhook(opts.webhookUrl, resultEvent);
+      if (opts.webhookUrl) await postWebhook(opts.webhookUrl, resultEvent, opts.webhookFormat);
     }
   } finally {
     // ── Guaranteed session save on any exit path ──────────────────────────

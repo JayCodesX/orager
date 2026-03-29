@@ -103,6 +103,7 @@ export interface OragerUserConfig {
   // Misc
   profile?: string;
   webhookUrl?: string;
+  webhookFormat?: "discord";
   requiredEnvVars?: string[];
 }
 
@@ -526,6 +527,12 @@ async function customSetup(rl: readline.Interface): Promise<void> {
   const wu = await ask(rl, "  > ");
   if (wu.trim()) cfg.webhookUrl = wu.trim();
 
+  process.stdout.write(cyan("webhookFormat") + dim(` [${displayValue(cfg.webhookFormat ?? "raw")}]`) + " — payload format: leave blank for raw JSON, or type 'discord' for Discord embeds\n");
+  const wf = await ask(rl, "  > ");
+  if (wf.trim() === "discord") cfg.webhookFormat = "discord";
+  else if (wf.trim() === "" || wf.trim() === "raw") { /* keep existing */ }
+  else if (wf.trim()) process.stdout.write(dim("  (unrecognised format — leaving unchanged)\n"));
+
   process.stdout.write(cyan("requiredEnvVars") + dim(` [${displayValue(cfg.requiredEnvVars)}]`) + " — env vars that must be set, comma-separated\n");
   const rev = await ask(rl, "  > ");
   if (rev.trim()) cfg.requiredEnvVars = parseCsvList(rev);
@@ -617,6 +624,9 @@ async function checkConfig(): Promise<void> {
     } catch {
       issues.push(`webhookUrl "${cfg.webhookUrl}" is not a valid http/https URL`);
     }
+  }
+  if (cfg.webhookFormat !== undefined && cfg.webhookFormat !== "discord") {
+    issues.push(`webhookFormat "${cfg.webhookFormat}" is not valid — only "discord" is supported`);
   }
   if (cfg.daemonIdleTimeout !== undefined) {
     if (!/^\d+(?:\.\d+)?[mh]$/.test(cfg.daemonIdleTimeout)) {
