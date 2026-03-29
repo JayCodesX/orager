@@ -15,61 +15,45 @@
  * - Audit logs: timestamp + agentId + duration + status — never prompt/response content
  * - Signing key at ~/.orager/daemon.key (chmod 600), generated on first start
  *
- * Cache warmth (Phase 4):
- * - 4c: On startup, send a no-op 1-token request to pre-warm the LLM prompt cache
- * - 4e: Keep-alive ping every 4 minutes to maintain Anthropic cache warmth (TTL=5min)
+ * Internal implementation is split across src/daemon/:
+ * - context.ts      — DaemonContext interface + verifyJwtDualKey
+ * - lifecycle.ts    — warmCache, keepAlive, auditLog, scheduleIdleCheck
+ * - drain.ts        — drainAndExit
+ * - key-cache.ts    — getCachedKeyInfo (5-min TTL API key info cache)
+ * - sanitize.ts     — sanitizeDaemonRunOpts allowlist
+ * - routes/health.ts, metrics.ts, sessions.ts, rotate-key.ts, cancel.ts, run.ts
  */
 
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
-import fsSync from "node:fs";
-import { createRequire } from "node:module";
-import { runAgentLoop } from "./loop.js";
-import { mintJwt, verifyJwt, loadOrCreateSigningKey, KEY_PATH } from "./jwt.js";
-import { callOpenRouter } from "./openrouter.js";
-import type { EmitEvent, AgentLoopOptions } from "./types.js";
-import { ensureSessionsDirPermissions, pruneOldSessions, listSessions, searchSessions, getSessionsDir, loadSessionRaw } from "./session.js";
-import { getAllProviderStats, getDegradedProviders } from "./provider-health.js";
-import { getRateLimitState } from "./rate-limit-tracker.js";
+import { mintJwt, loadOrCreateSigningKey, KEY_PATH } from "./jwt.js";
+import { ensureSessionsDirPermissions, pruneOldSessions, getSessionsDir } from "./session.js";
 import { initTelemetry } from "./telemetry.js";
-import { checkAndLogApiKeyHealth, fetchApiKeyInfo } from "./openrouter-key.js";
-import type { ApiKeyInfo } from "./openrouter-key.js";
-import { getAgentCircuitBreaker, getAllAgentCircuitBreakerStates } from "./circuit-breaker.js";
+import { checkAndLogApiKeyHealth } from "./openrouter-key.js";
 import { fetchModelContextLengths } from "./loop-helpers.js";
-import { isSqliteMemoryEnabled, closeDb } from "./memory-sqlite.js";
 import { fetchLiveModelMeta } from "./openrouter-model-meta.js";
 
-// ── Port file ─────────────────────────────────────────────────────────────────
-// Written on startup so clients (adapter) can discover the port without config.
+// ── Submodule imports ──────────────────────────────────────────────────────────
+import type { DaemonContext } from "./daemon/context.js";
+import { warmCache, startKeepAlive, scheduleIdleCheck } from "./daemon/lifecycle.js";
+import { drainAndExit as _drainAndExitImpl } from "./daemon/drain.js";
+import { handleHealth } from "./daemon/routes/health.js";
+import { handleMetrics } from "./daemon/routes/metrics.js";
+import { handleRun } from "./daemon/routes/run.js";
+import { handleSessions } from "./daemon/routes/sessions.js";
+import { handleRotateKey } from "./daemon/routes/rotate-key.js";
+import { handleCancel } from "./daemon/routes/cancel.js";
+
+// Re-export for external callers (adapter, index.ts, tests)
+export { sanitizeDaemonRunOpts } from "./daemon/sanitize.js";
+export type { DaemonContext };
+
+// ── Port / PID files ──────────────────────────────────────────────────────────
 
 const PORT_FILE = path.join(os.homedir(), ".orager", "daemon.port");
-const PID_FILE = path.join(os.homedir(), ".orager", "daemon.pid");
-
-// ── drainAndExit export ───────────────────────────────────────────────────────
-// Set by startDaemon once the server is live; exported so tests can trigger
-// graceful shutdown without sending real OS signals.
-let _drainAndExit: ((timeoutMs: number) => Promise<void>) | null = null;
-/** Call the active daemon's drain-and-exit function. Throws if no daemon started. */
-export function drainAndExit(timeoutMs: number): Promise<void> {
-  if (!_drainAndExit) throw new Error("drainAndExit: no daemon running");
-  return _drainAndExit(timeoutMs);
-}
-
-// ── Cached API key info (for /metrics endpoint) ───────────────────────────────
-let _cachedKeyInfo: { info: ApiKeyInfo | null; fetchedAt: number } | null = null;
-const KEY_INFO_TTL_MS = 5 * 60 * 1000;
-
-async function getCachedKeyInfo(apiKey: string): Promise<ApiKeyInfo | null> {
-  const now = Date.now();
-  if (_cachedKeyInfo && now - _cachedKeyInfo.fetchedAt < KEY_INFO_TTL_MS) {
-    return _cachedKeyInfo.info;
-  }
-  const info = await fetchApiKeyInfo(apiKey).catch(() => null);
-  _cachedKeyInfo = { info, fetchedAt: now };
-  return info;
-}
+const PID_FILE  = path.join(os.homedir(), ".orager", "daemon.pid");
 
 async function writePortFile(port: number): Promise<void> {
   await fs.mkdir(path.dirname(PORT_FILE), { recursive: true });
@@ -90,65 +74,50 @@ export async function readDaemonPort(): Promise<number | null> {
   }
 }
 
-/**
- * Write a PID lock file. If a live daemon process is already running (PID is
- * alive), throw a clear error. If the PID file exists but the PID is dead
- * (stale from a crash), overwrite it silently — this also handles fix #6
- * (stale port file cleanup).
- */
 async function acquirePidLock(port: number): Promise<void> {
   const pidData = JSON.stringify({ pid: process.pid, port });
-
-  // Ensure the directory exists before any file operations
   await fs.mkdir(path.dirname(PID_FILE), { recursive: true });
 
-  // Try exclusive atomic write first — succeeds if no lock file exists
   try {
     await fs.writeFile(PID_FILE, pidData, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    return; // Successfully acquired
+    return;
   } catch (writeErr) {
     const code = (writeErr as NodeJS.ErrnoException).code;
-    if (code !== "EEXIST") throw writeErr; // Unexpected error
+    if (code !== "EEXIST") throw writeErr;
   }
 
-  // File exists — check if the existing process is alive
   try {
     const existing = await fs.readFile(PID_FILE, "utf8");
     const parsed = JSON.parse(existing) as { pid: number; port: number };
     try {
-      process.kill(parsed.pid, 0); // signal 0 = existence check
+      process.kill(parsed.pid, 0);
       throw new Error(
         `[orager daemon] already running (PID ${parsed.pid}, port ${parsed.port}). ` +
-        `Stop it first with: kill ${parsed.pid}`
+        `Stop it first with: kill ${parsed.pid}`,
       );
     } catch (killErr) {
       const code = (killErr as NodeJS.ErrnoException).code;
       if (code === "EPERM") {
         throw new Error(
-          `[orager daemon] appears to be running (PID ${parsed.pid}). Stop it first.`
+          `[orager daemon] appears to be running (PID ${parsed.pid}). Stop it first.`,
         );
       }
-      // ESRCH = process not found, or the error we threw above — if it's our own error, rethrow
       if ((killErr as Error).message?.includes("orager daemon")) throw killErr;
-      // Stale lock — process is dead, remove and re-acquire atomically
     }
   } catch (readErr) {
     if ((readErr as Error).message?.includes("orager daemon")) throw readErr;
-    // File is unreadable/malformed — treat as stale
   }
 
-  // Remove stale lock and write exclusively
   await fs.unlink(PID_FILE).catch(() => {});
   try {
     await fs.writeFile(PID_FILE, pidData, { encoding: "utf8", mode: 0o600, flag: "wx" });
   } catch {
-    // Another process raced us — check again
     const existing2 = await fs.readFile(PID_FILE, "utf8").catch(() => "{}");
     const parsed2 = JSON.parse(existing2) as { pid?: number; port?: number };
     if (parsed2.pid && parsed2.pid !== process.pid) {
       throw new Error(
         `[orager daemon] race: another daemon started (PID ${parsed2.pid}). ` +
-        `Only one daemon can run at a time.`
+        `Only one daemon can run at a time.`,
       );
     }
   }
@@ -158,18 +127,10 @@ async function releasePidLock(): Promise<void> {
   await fs.unlink(PID_FILE).catch(() => {});
 }
 
-// ── In-process token-bucket rate limiter ─────────────────────────────────────
-//
-// Tracks request counts per IP in a sliding 60-second window.
-// /run gets the stricter limit (default 60 RPM).
-// All other endpoints get the looser limit (default 300 RPM).
-//
-// State is module-level so it persists across requests in the same process.
-// Exported helpers allow tests to inspect and reset state without restarting.
+// ── In-process token-bucket rate limiter ──────────────────────────────────────
 
-const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
+const RATE_LIMIT_WINDOW_MS = 60_000;
 
-/** Per-IP state: request count in the current window + window start timestamp */
 interface RateLimitEntry {
   count: number;
   windowStart: number;
@@ -178,39 +139,20 @@ interface RateLimitEntry {
 const _rateLimitMap = new Map<string, RateLimitEntry>();
 let _rateLimitCleanupTimer: ReturnType<typeof setInterval> | null = null;
 
-/** Start a background cleanup timer (idempotent — called once per daemon start). */
 function _startRateLimitCleanup(): void {
   if (_rateLimitCleanupTimer) return;
   _rateLimitCleanupTimer = setInterval(() => {
     const now = Date.now();
     for (const [ip, entry] of _rateLimitMap) {
-      if (now - entry.windowStart >= RATE_LIMIT_WINDOW_MS) {
-        _rateLimitMap.delete(ip);
-      }
+      if (now - entry.windowStart >= RATE_LIMIT_WINDOW_MS) _rateLimitMap.delete(ip);
     }
-  }, 5 * 60_000); // every 5 minutes
+  }, 5 * 60_000);
   if (_rateLimitCleanupTimer.unref) _rateLimitCleanupTimer.unref();
 }
 
-/** Exported for testing only. */
-export function _getRateLimitState(): Map<string, RateLimitEntry> {
-  return _rateLimitMap;
-}
+export function _getRateLimitState(): Map<string, RateLimitEntry> { return _rateLimitMap; }
+export function _clearRateLimitState(): void { _rateLimitMap.clear(); }
 
-/** Exported for testing only. */
-export function _clearRateLimitState(): void {
-  _rateLimitMap.clear();
-}
-
-/**
- * Check whether an IP has exceeded its rate limit for the given endpoint type.
- *
- * Returns `{ allowed: true }` when under the limit (and increments the counter).
- * Returns `{ allowed: false, retryAfter: number }` when over the limit.
- *
- * @param ip        - The client IP address
- * @param isRunEndpoint - true for /run (strict limit), false for others (loose limit)
- */
 export function checkRateLimit(
   ip: string,
   isRunEndpoint: boolean,
@@ -219,307 +161,108 @@ export function checkRateLimit(
     const v = parseInt(process.env["ORAGER_RATE_LIMIT_RPM"] ?? "", 10);
     return Number.isFinite(v) && v > 0 ? v : 60;
   })();
-  const otherRpm = runRpm * 5; // default 300 RPM for non-run endpoints
-
-  const limit = isRunEndpoint ? runRpm : otherRpm;
+  const limit = isRunEndpoint ? runRpm : runRpm * 5;
   const now = Date.now();
   const entry = _rateLimitMap.get(ip);
 
   if (!entry || now - entry.windowStart >= RATE_LIMIT_WINDOW_MS) {
-    // New window
     _rateLimitMap.set(ip, { count: 1, windowStart: now });
     return { allowed: true };
   }
-
   if (entry.count < limit) {
     entry.count++;
     return { allowed: true };
   }
-
-  // Over limit
-  const windowRemainingMs = RATE_LIMIT_WINDOW_MS - (now - entry.windowStart);
-  const retryAfter = Math.ceil(windowRemainingMs / 1000);
+  const retryAfter = Math.ceil((RATE_LIMIT_WINDOW_MS - (now - entry.windowStart)) / 1000);
   return { allowed: false, retryAfter };
 }
 
-// ── Daemon run request schema ─────────────────────────────────────────────────
+// ── Public types ──────────────────────────────────────────────────────────────
 
 export interface DaemonRunRequest {
   prompt: string;
-  /** Structured multimodal content for the first user message (optional). */
   promptContent?: unknown[];
-  /** Full AgentLoopOptions minus apiKey (key comes from env on daemon side). */
-  opts: Omit<AgentLoopOptions, "apiKey" | "onEmit" | "onLog">;
+  opts: Record<string, unknown>;
 }
-
-/**
- * Allowlist of AgentLoopOptions fields that callers are permitted to set via daemon /run.
- *
- * Typed as Set<keyof AgentLoopOptions> so TypeScript emits a compile error when:
- *   - a key is misspelled (catches typos like "maxTrun")
- *   - a key is removed from AgentLoopOptions but forgotten here (stale entry)
- *
- * When adding a new field to AgentLoopOptions, decide here whether callers should
- * be allowed to set it. If yes, add it. If no (security-sensitive), leave it out
- * and add it to the delete list in sanitizeDaemonRunOpts instead.
- */
-const ALLOWED_DAEMON_OPTS = new Set<keyof AgentLoopOptions>([
-  // Identity / session
-  "model", "models", "sessionId", "cwd", "addDirs",
-  // Run control
-  "maxTurns", "maxRetries", "verbose", "forceResume", "timeoutSec",
-  // Prompt
-  "prompt", "appendSystemPrompt", "promptContent",
-  // Summarization
-  "summarizeAt", "summarizeModel", "summarizeKeepRecentTurns",
-  "summarizePrompt", "summarizeFallbackKeep",
-  // Sampling
-  "temperature", "top_p", "top_k", "seed", "stop",
-  "frequency_penalty", "presence_penalty", "repetition_penalty", "min_p",
-  // Model control
-  "reasoning", "provider", "transforms", "preset", "profile",
-  "parallel_tool_calls", "tool_choice", "response_format",
-  // Cost limits
-  "maxCostUsd", "maxCostUsdSoft", "costPerInputToken", "costPerOutputToken",
-  // Site identity (informational HTTP headers, not outbound connections)
-  "siteUrl", "siteName",
-  // Tool settings
-  "useFinishTool", "enableBrowserTools", "tagToolOutputs",
-  "trackFileChanges", "toolTimeouts", "maxSpawnDepth",
-  "toolErrorBudgetHardStop", "maxIdenticalToolCallTurns",
-  "requiredCapabilities", "requiredEnvVars",
-  // Approval
-  "approvalMode", "approvalAnswer", "approvalTimeoutMs",
-  // Turn routing
-  "turnModelRules",
-  // Hooks
-  "hooks", "hookTimeoutMs", "hookErrorMode",
-  // MCP
-  "mcpServers", "requireMcpServers",
-  // Plan mode
-  "planMode",
-  // Context injection
-  "injectContext", "readProjectInstructions",
-  // Webhook (outbound result delivery)
-  "webhookUrl",
-  // API keys (caller may supply extra rotation keys or per-agent key isolation)
-  "apiKeys", "agentApiKey",
-  // Memory
-  "memory", "memoryKey", "memoryMaxChars",
-  // Session lock
-  "sessionLockTimeoutMs",
-]);
-
-export function sanitizeDaemonRunOpts(raw: Record<string, unknown>): { safe: Record<string, unknown>; rejected: string[] } {
-  const safe: Record<string, unknown> = {};
-  const rejected: string[] = [];
-  for (const [k, v] of Object.entries(raw)) {
-    if (ALLOWED_DAEMON_OPTS.has(k as keyof AgentLoopOptions)) {
-      safe[k] = v;
-    } else {
-      rejected.push(k);
-    }
-  }
-  // Security-sensitive fields: ALWAYS stripped from per-request opts, regardless
-  // of ALLOWED_DAEMON_OPTS, because they control the security boundary of every run:
-  //   sandboxRoot         — per-agent sandboxing must be configured at daemon startup, not
-  //                         per-request, so that a misconfigured caller cannot widen the
-  //                         filesystem boundary for all agents sharing the process.
-  //   requireApproval     — same rationale; approval policy is operator-level, not user-level.
-  //   bashPolicy          — bash command blocklists must be set at daemon startup; per-request
-  //                         override would allow one caller to weaken another agent's policy.
-  //   dangerouslySkipPermissions — always locked down; callers cannot opt out of permissions.
-  // NOTE: these fields ARE supported on the spawn path (one orager process per run), so
-  // operators migrating from spawn to daemon mode should bake these into the daemon startup
-  // flags rather than passing them per-run.
-  delete safe["sandboxRoot"];
-  delete safe["requireApproval"];
-  delete safe["bashPolicy"];
-  delete safe["dangerouslySkipPermissions"];
-  return { safe, rejected };
-}
-
-// ── Daemon server ─────────────────────────────────────────────────────────────
 
 export interface DaemonStartOptions {
   port?: number;
   maxConcurrent?: number;
-  /** Idle timeout in ms; daemon auto-exits if no requests arrive in this window. Default 30 min. */
   idleTimeoutMs?: number;
-  /** Per-request timeout in ms. Default 5 min. */
   requestTimeoutMs?: number;
-  /** Max concurrent runs per agent ID. Default 2. Prevents one agent from starving all others. */
   perAgentMaxConcurrent?: number;
-  /** API key (from env). */
   apiKey: string;
-  /** Model for cache-warming and keep-alive pings. */
   model: string;
-  /** When set, restrict agent runs to cwds within these path prefixes. */
   allowedCwdPrefixes?: string[];
 }
 
-export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void> {
-  // Mark process as daemon mode so approval.ts skips TTY prompts
-  process.env.ORAGER_DAEMON_MODE = "1";
+// ── Module-level drainAndExit export ──────────────────────────────────────────
+// Set once the server is live so tests can trigger graceful shutdown.
+let _drainAndExit: ((timeoutMs: number) => Promise<void>) | null = null;
+export function drainAndExit(timeoutMs: number): Promise<void> {
+  if (!_drainAndExit) throw new Error("drainAndExit: no daemon running");
+  return _drainAndExit(timeoutMs);
+}
 
+// ── startDaemon ───────────────────────────────────────────────────────────────
+
+export async function startDaemon(
+  daemonOpts: DaemonStartOptions,
+): Promise<{ port: number; shutdown: (timeoutMs: number) => Promise<void> }> {
+  process.env.ORAGER_DAEMON_MODE = "1";
   await initTelemetry("orager-daemon");
 
   const {
-    port = 3456,
+    port: requestedPort = 3456,
     maxConcurrent = 3,
     idleTimeoutMs = 30 * 60 * 1000,
     requestTimeoutMs = 5 * 60 * 1000,
     perAgentMaxConcurrent = 2,
     apiKey,
     model,
+    allowedCwdPrefixes,
   } = daemonOpts;
 
-  let signingKey = await loadOrCreateSigningKey();
+  const signingKey = await loadOrCreateSigningKey();
   process.stderr.write(`[orager daemon] signing key loaded from ${KEY_PATH}\n`);
 
-  // ── Key rotation support ──────────────────────────────────────────────────
-  // After rotation, the old key is kept for PREVIOUS_KEY_TTL_MS so that
-  // JWTs issued before the rotation remain valid during the overlap window.
-  const PREVIOUS_KEY_TTL_MS = 20 * 60 * 1000; // 20 minutes
-  let _previousKey: string | null = null;
-  let _previousKeyExpiresAt: Date | null = null;
+  // ── Build shared context ───────────────────────────────────────────────────
+  const ctx: DaemonContext = {
+    port: requestedPort,
+    maxConcurrent,
+    perAgentMaxConcurrent,
+    apiKey,
+    model,
+    idleTimeoutMs,
+    requestTimeoutMs,
+    allowedCwdPrefixes,
+    previousKeyTtlMs: 20 * 60 * 1000, // 20 minutes
 
-  /** Verify a JWT against both current and (if still valid) previous key. */
-  function verifyJwtDualKey(token: string): ReturnType<typeof verifyJwt> {
-    // Try current key first
-    try {
-      return verifyJwt(token, signingKey);
-    } catch (currentKeyErr) {
-      // Try previous key if within overlap window
-      if (
-        _previousKey &&
-        _previousKeyExpiresAt &&
-        Date.now() < _previousKeyExpiresAt.getTime()
-      ) {
-        return verifyJwt(token, _previousKey);
-      }
-      throw currentKeyErr;
-    }
-  }
+    signingKey,
+    previousKey: null,
+    previousKeyExpiresAt: null,
 
-  let activeRuns = 0;
-  const activeRunsByAgent = new Map<string, number>();
-  // Track AbortControllers by runId for cancellation
-  const activeRunControllers = new Map<string, AbortController>();
-  let draining = false;
-  let completedRuns = 0;
-  let errorRuns = 0;
-  const daemonStartedAt = Date.now();
-  let lastActivityAt = Date.now();
-  let keepAliveTimer: ReturnType<typeof setInterval> | null = null;
-  const usedModels = new Set<string>([model]);
-  /** Maps model id → last-used timestamp (ms). Used to compute recentModels in /metrics. */
-  const modelLastUsedAt = new Map<string, number>([[model, Date.now()]]);
-  let lastRealRequestAt = Date.now();
+    activeRuns: 0,
+    activeRunsByAgent: new Map(),
+    activeRunControllers: new Map(),
+    draining: false,
+    completedRuns: 0,
+    errorRuns: 0,
 
-  // ── Audit log (metadata only — no prompt/response content) ─────────────────
-  function auditLog(entry: {
-    timestamp: string;
-    agentId: string;
-    durationMs: number;
-    status: "ok" | "error" | "timeout" | "rejected";
-    statusCode: number;
-  }): void {
-    process.stderr.write(`[orager daemon] ${JSON.stringify(entry)}\n`);
-  }
+    daemonStartedAt: Date.now(),
+    lastActivityAt: Date.now(),
+    lastRealRequestAt: Date.now(),
 
-  // ── Cache warming (4c) ──────────────────────────────────────────────────────
-  async function warmCache(): Promise<void> {
-    try {
-      await callOpenRouter({
-        apiKey,
-        model,
-        messages: [{ role: "user", content: "ping" }],
-        max_completion_tokens: 1,
-      });
-      process.stderr.write(`[orager daemon] cache warmed (model: ${model})\n`);
-    } catch {
-      // Non-fatal — cache warming failure doesn't stop the daemon
-    }
-  }
+    keepAliveTimer: null,
+    usedModels: new Set([model]),
+    modelLastUsedAt: new Map([[model, Date.now()]]),
+  };
 
-  // ── Keep-alive ping (4e) ────────────────────────────────────────────────────
-  // Anthropic cache TTL is 5 minutes. Send a 1-token ping every 4 min so the
-  // cache never goes cold between heartbeat runs.
-  function startKeepAlive(): void {
-    if (keepAliveTimer) return;
-    const PING_INTERVAL_MS = 4 * 60 * 1000; // 4 minutes
-    keepAliveTimer = setInterval(async () => {
-      // Skip if a real request completed recently — cache is already warm (#8)
-      if (Date.now() - lastRealRequestAt < PING_INTERVAL_MS) {
-        return;
-      }
-      // Ping all models that have been used (#5)
-      for (const m of usedModels) {
-        await callOpenRouter({
-          apiKey,
-          model: m,
-          messages: [{ role: "user", content: "ping" }],
-          max_completion_tokens: 1,
-        }).catch(() => {});
-      }
-      process.stderr.write(`[orager daemon] keep-alive ping sent (${usedModels.size} model(s))\n`);
-    }, PING_INTERVAL_MS);
-    // Don't let the interval block process exit
-    if (keepAliveTimer.unref) keepAliveTimer.unref();
-  }
-
-  function stopKeepAlive(): void {
-    if (keepAliveTimer) {
-      clearInterval(keepAliveTimer);
-      keepAliveTimer = null;
-    }
-  }
-
-  /**
-   * Check OpenRouter account balance. Logs a warning if remaining credits
-   * are below $1.00. Non-fatal — a check failure is silently ignored.
-   */
-  async function checkCredits(key: string): Promise<void> {
-    try {
-      const info = await fetchApiKeyInfo(key);
-      if (!info) return;
-      if (info.remaining !== null && info.remaining < 1.0) {
-        process.stderr.write(
-          `[orager daemon] WARNING: OpenRouter credit balance low ($${info.remaining.toFixed(2)} remaining)\n`,
-        );
-      } else if (info.remaining !== null) {
-        process.stderr.write(
-          `[orager daemon] OpenRouter credits OK ($${info.remaining.toFixed(2)} remaining)\n`,
-        );
-      }
-    } catch {
-      // Non-fatal — ignore check failures
-    }
-  }
-
-  // ── Idle shutdown ───────────────────────────────────────────────────────────
-  function scheduleIdleCheck(): ReturnType<typeof setInterval> {
-    const timer = setInterval(() => {
-      if (activeRuns === 0 && Date.now() - lastActivityAt > idleTimeoutMs) {
-        process.stderr.write("[orager daemon] idle timeout — shutting down\n");
-        // Use the same drain path as SIGTERM so session saves and SQLite WAL
-        // are flushed before exit. DRAIN_TIMEOUT_MS is always defined before
-        // the first timer fires (60 s later), so the closure reference is safe.
-        void drainAndExit(DRAIN_TIMEOUT_MS);
-      }
-    }, 60_000); // check every minute
-    if (timer.unref) timer.unref();
-    return timer;
-  }
-
-  // ── HTTP request handler ────────────────────────────────────────────────────
-
+  // ── HTTP server ────────────────────────────────────────────────────────────
   const server = http.createServer((req, res) => {
-    lastActivityAt = Date.now();
+    ctx.lastActivityAt = Date.now();
 
-    // ── Rate limiting (applies to all endpoints) ─────────────────────────────
-    // Extract the real client IP, falling back to remoteAddress.
+    // Rate limiting (all endpoints)
     const ip =
       (Array.isArray(req.headers["x-forwarded-for"])
         ? req.headers["x-forwarded-for"][0]
@@ -529,604 +272,83 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
     const isRunEndpoint = req.method === "POST" && req.url === "/run";
     const rl = checkRateLimit(ip, isRunEndpoint);
     if (!rl.allowed) {
-      res.writeHead(429, {
-        "Content-Type": "application/json",
-        "Retry-After": String(rl.retryAfter),
-      });
+      res.writeHead(429, { "Content-Type": "application/json", "Retry-After": String(rl.retryAfter) });
       res.end(JSON.stringify({ error: "rate limit exceeded", retryAfter: rl.retryAfter }));
       return;
     }
 
-    // Health check — deep checks for key file, sessions dir, and optional SQLite DB.
-    // Operational metrics (activeRuns, maxConcurrent, model, provider health) are
-    // available at the authenticated /metrics endpoint to prevent info leakage to
-    // unauthenticated local processes.
     if (req.method === "GET" && req.url === "/health") {
-      void (async () => {
-        const checks: Record<string, "ok" | "error"> = {};
-        const failures: string[] = [];
-
-        // Check 1: signing key readable
-        try {
-          fsSync.accessSync(KEY_PATH, fsSync.constants.R_OK);
-          checks["keyFile"] = "ok";
-        } catch {
-          checks["keyFile"] = "error";
-          failures.push("keyFile");
-        }
-
-        // Check 2: sessions dir writable — write + delete a temp file
-        try {
-          const sessDir = getSessionsDir();
-          const tmpPath = path.join(sessDir, `.health-check-${process.pid}`);
-          fsSync.writeFileSync(tmpPath, "1");
-          fsSync.unlinkSync(tmpPath);
-          checks["sessionsDir"] = "ok";
-        } catch {
-          checks["sessionsDir"] = "error";
-          failures.push("sessionsDir");
-        }
-
-        // Check 3: if ORAGER_DB_PATH set, run SELECT 1 via WASM SQLite
-        const dbPath = process.env["ORAGER_DB_PATH"];
-        if (dbPath) {
-          try {
-            const { openWasmDb } = await import("./wasm-sqlite.js");
-            const db = openWasmDb(dbPath, { readonly: true });
-            db.prepare("SELECT 1").get();
-            db.close();
-            checks["db"] = "ok";
-          } catch {
-            checks["db"] = "error";
-            failures.push("db");
-          }
-        } else {
-          (checks as Record<string, string>)["db"] = "n/a";
-        }
-
-        if (failures.length === 0) {
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ status: "ok", checks }));
-        } else {
-          res.writeHead(503, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ status: "degraded", reason: failures.join(","), checks }));
-        }
-      })();
-      return;
+      handleHealth(ctx, req, res); return;
     }
-
-    // Metrics endpoint — requires valid JWT (same as /run) to avoid exposing
-    // internal state (dbPath, provider health, activeRunsByAgent) to unauthenticated callers
     if (req.method === "GET" && req.url === "/metrics") {
-      const metricsAuthHeader = req.headers["authorization"] ?? "";
-      const metricsToken = metricsAuthHeader.startsWith("Bearer ") ? metricsAuthHeader.slice(7) : "";
-      if (!metricsToken) {
-        res.writeHead(401);
-        res.end();
-        return;
-      }
-      try {
-        verifyJwtDualKey(metricsToken);
-      } catch {
-        res.writeHead(403);
-        res.end();
-        return;
-      }
-      void (async () => {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({
-          activeRuns,
-          maxConcurrent,
-          completedRuns,
-          errorRuns,
-          draining,
-          uptimeMs: Date.now() - daemonStartedAt,
-          model,
-          usedModels: Array.from(usedModels),
-          recentModels: (() => {
-            const cutoff = Date.now() - 60 * 60 * 1000; // 1 hour
-            return Array.from(modelLastUsedAt.entries())
-              .filter(([, ts]) => ts >= cutoff)
-              .map(([m]) => m);
-          })(),
-          modelUsageTimestamps: Object.fromEntries(modelLastUsedAt),
-          activeRunsByAgent: Object.fromEntries(activeRunsByAgent),
-          providerHealth: getAllProviderStats(),
-          degradedProviders: getDegradedProviders(),
-          dbBackend: process.env["ORAGER_DB_PATH"] ? "sqlite" : "filesystem",
-          dbPath: process.env["ORAGER_DB_PATH"] ?? null,
-          rateLimit: getRateLimitState(),
-          keyInfo: await getCachedKeyInfo(apiKey),
-          circuitBreakersByAgent: getAllAgentCircuitBreakerStates(),
-        }));
-      })();
-      return;
+      handleMetrics(ctx, req, res); return;
     }
-
-    // Run endpoint
     if (req.method === "POST" && req.url === "/run") {
-      handleRun(req, res);
-      return;
+      handleRun(ctx, req, res); return;
     }
-
-    // GET /sessions — list sessions (paginated, sorted by updatedAt DESC)
-    // GET /sessions?limit=N&offset=N — pagination
-    // GET /sessions/search?q=... — full-text search
     if (req.method === "GET" && req.url?.startsWith("/sessions")) {
-      const sessAuthHeader = req.headers["authorization"] ?? "";
-      const sessToken = sessAuthHeader.startsWith("Bearer ") ? sessAuthHeader.slice(7) : "";
-      if (!sessToken) { res.writeHead(401); res.end(); return; }
-      try { verifyJwtDualKey(sessToken); } catch { res.writeHead(403); res.end(); return; }
-
-      void (async () => {
-        try {
-          const parsedUrl = new URL(req.url!, `http://127.0.0.1`);
-          const pathname = parsedUrl.pathname;
-
-          // GET /sessions/search?q=...
-          if (pathname === "/sessions/search") {
-            const q = parsedUrl.searchParams.get("q") ?? "";
-            const limit = Math.min(parseInt(parsedUrl.searchParams.get("limit") ?? "20", 10), 100);
-            if (!q.trim()) {
-              res.writeHead(400, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ error: "q parameter is required" }));
-              return;
-            }
-            const results = await searchSessions(q.trim(), limit);
-            res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ sessions: results, total: results.length, query: q }));
-            return;
-          }
-
-          // GET /sessions/:sessionId/cost — lifetime cost visibility
-          const sessionCostMatch = pathname.match(/^\/sessions\/([^/]+)\/cost$/);
-          if (sessionCostMatch) {
-            const sessionId = sessionCostMatch[1]!;
-            if (!/^[a-zA-Z0-9_-]{1,128}$/.test(sessionId)) {
-              res.writeHead(400, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ error: "invalid session id format" }));
-              return;
-            }
-            const sessionData = await loadSessionRaw(sessionId);
-            if (!sessionData) {
-              res.writeHead(404, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ error: "session not found" }));
-              return;
-            }
-            res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({
-              sessionId: sessionData.sessionId,
-              cumulativeCostUsd: sessionData.cumulativeCostUsd ?? 0,
-              lastRunAt: sessionData.updatedAt,
-              runCount: sessionData.turnCount,
-            }));
-            return;
-          }
-
-          // GET /sessions/:sessionId — single session summary
-          const sessionIdMatch = pathname.match(/^\/sessions\/([^/]+)$/);
-          if (sessionIdMatch) {
-            const sessionId = sessionIdMatch[1]!;
-            // Validate session ID to prevent path traversal (alphanumeric + hyphens only)
-            if (!/^[a-zA-Z0-9_-]{1,128}$/.test(sessionId)) {
-              res.writeHead(400, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ error: "invalid session id format" }));
-              return;
-            }
-            const all = await listSessions();
-            const session = all.find((s) => s.sessionId === sessionId);
-            if (!session) {
-              res.writeHead(404, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ error: "session not found" }));
-              return;
-            }
-            res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify(session));
-            return;
-          }
-
-          // GET /sessions — paginated list
-          if (pathname === "/sessions") {
-            const limit = Math.min(parseInt(parsedUrl.searchParams.get("limit") ?? "50", 10), 200);
-            const offset = Math.max(parseInt(parsedUrl.searchParams.get("offset") ?? "0", 10), 0);
-            const all = await listSessions();
-            const page = all.slice(offset, offset + limit);
-            res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ sessions: page, total: all.length, limit, offset }));
-            return;
-          }
-
-          res.writeHead(404); res.end();
-        } catch (err) {
-          res.writeHead(500, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
-        }
-      })();
-      return;
+      handleSessions(ctx, req, res); return;
     }
-
-    // POST /rotate-key — JWT-authenticated with current key; generates a new signing key
     if (req.method === "POST" && req.url === "/rotate-key") {
-      const rkAuthHeader = req.headers["authorization"] ?? "";
-      const rkToken = rkAuthHeader.startsWith("Bearer ") ? rkAuthHeader.slice(7) : "";
-      if (!rkToken) { res.writeHead(401); res.end(); return; }
-      try { verifyJwt(rkToken, signingKey); } catch { res.writeHead(401); res.end(); return; }
-
-      void (async () => {
-        try {
-          // Generate new key
-          const { randomBytes } = await import("node:crypto");
-          const newKey = randomBytes(32).toString("base64url");
-          const newKeyPath = KEY_PATH + ".new";
-
-          // Atomic write: write to .new then rename
-          await fs.writeFile(newKeyPath, newKey, { encoding: "utf8", mode: 0o600 });
-          await fs.rename(newKeyPath, KEY_PATH);
-
-          // Keep old key for overlap window
-          _previousKey = signingKey;
-          const expiresAt = new Date(Date.now() + PREVIOUS_KEY_TTL_MS);
-          _previousKeyExpiresAt = expiresAt;
-
-          // Update in-memory signing key
-          signingKey = newKey;
-
-          // Schedule previous key expiry
-          setTimeout(() => {
-            if (_previousKeyExpiresAt && Date.now() >= _previousKeyExpiresAt.getTime()) {
-              _previousKey = null;
-              _previousKeyExpiresAt = null;
-            }
-          }, PREVIOUS_KEY_TTL_MS).unref();
-
-          process.stderr.write(`[orager daemon] signing key rotated; old key expires at ${expiresAt.toISOString()}\n`);
-
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ rotated: true, previousKeyExpiresAt: expiresAt.toISOString() }));
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          process.stderr.write(`[orager daemon] key rotation failed: ${msg}\n`);
-          res.writeHead(500, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: msg }));
-        }
-      })();
-      return;
+      handleRotateKey(ctx, req, res); return;
     }
-
-    // POST /runs/:runId/cancel
     if (req.method === "POST" && req.url?.startsWith("/runs/") && req.url.endsWith("/cancel")) {
-      const runId = req.url.slice("/runs/".length, -"/cancel".length);
-      // Validate UUID format before using as a Map key to prevent path-injection attacks
-      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(runId)) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "invalid run id format" }));
-        return;
-      }
-      const controller = activeRunControllers.get(runId);
-      if (!controller) {
-        res.writeHead(404, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "run not found" }));
-        return;
-      }
-      controller.abort();
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true, runId }));
-      return;
+      handleCancel(ctx, req, res); return;
     }
 
-    res.writeHead(404);
-    res.end();
+    res.writeHead(404); res.end();
   });
 
-  async function handleRun(
-    req: http.IncomingMessage,
-    res: http.ServerResponse,
-  ): Promise<void> {
-    const startTime = Date.now();
-    let agentId = "unknown";
-
-    // ── Drain check ─────────────────────────────────────────────────────────
-    if (draining) {
-      res.writeHead(503, { "Retry-After": "5" });
-      res.end(JSON.stringify({ error: "daemon shutting down" }));
-      return;
-    }
-
-    // ── JWT verification ────────────────────────────────────────────────────
-    const authHeader = req.headers["authorization"] ?? "";
-    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-    if (!token) {
-      res.writeHead(401);
-      res.end();
-      return;
-    }
-    let claims: { agentId: string };
-    try {
-      claims = verifyJwtDualKey(token);
-      agentId = claims.agentId;
-    } catch {
-      res.writeHead(401);
-      res.end();
-      return;
-    }
-
-    // ── Per-agent concurrency gate ───────────────────────────────────────
-    // Prevents a single agent from monopolising all available slots.
-    const agentSlots = activeRunsByAgent.get(agentId) ?? 0;
-    if (agentSlots >= perAgentMaxConcurrent) {
-      res.writeHead(429, { "Retry-After": "10" });
-      res.end(JSON.stringify({ error: `per-agent concurrency limit (${perAgentMaxConcurrent}) exceeded` }));
-      auditLog({
-        timestamp: new Date().toISOString(),
-        agentId,
-        durationMs: 0,
-        status: "rejected",
-        statusCode: 429,
-      });
-      return;
-    }
-
-    // ── Concurrency gate ────────────────────────────────────────────────────
-    if (activeRuns >= maxConcurrent) {
-      res.writeHead(503, { "Retry-After": "5" });
-      res.end(JSON.stringify({ error: "max concurrent runs exceeded" }));
-      auditLog({ timestamp: new Date().toISOString(), agentId, durationMs: 0, status: "rejected", statusCode: 503 });
-      return;
-    }
-
-    // ── Parse body ──────────────────────────────────────────────────────────
-    const MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024; // 4 MB
-    let body = "";
-    let bodySize = 0;
-    let bodyTooLarge = false;
-
-    let runCounted = false;
-    let agentCountDecremented = false;
-    function decrementAgentCount() {
-      if (agentCountDecremented) return;
-      agentCountDecremented = true;
-      const cur = activeRunsByAgent.get(agentId) ?? 1;
-      if (cur <= 1) activeRunsByAgent.delete(agentId);
-      else activeRunsByAgent.set(agentId, cur - 1);
-    }
-    req.on("data", (chunk: Buffer) => {
-      bodySize += chunk.length;
-      if (bodySize > MAX_REQUEST_BODY_BYTES) {
-        bodyTooLarge = true;
-        req.destroy(); // stop reading
-        return;
-      }
-      body += chunk.toString();
-    });
-
-    req.on("end", () => { void (async () => {
-      if (bodyTooLarge) {
-        if (!res.destroyed) {
-          res.writeHead(413);
-          res.end(JSON.stringify({ error: "request body too large (max 4 MB)" }));
-        }
-        return;
-      }
-      let runReq: DaemonRunRequest;
-      try {
-        runReq = JSON.parse(body) as DaemonRunRequest;
-      } catch {
-        res.writeHead(400);
-        res.end(JSON.stringify({ error: "invalid JSON body" }));
-        return;
-      }
-
-      if (!runReq.prompt?.trim()) {
-        res.writeHead(400);
-        res.end(JSON.stringify({ error: "prompt is required" }));
-        return;
-      }
-
-      // ── Sandbox root enforcement ─────────────────────────────────────────
-      const { allowedCwdPrefixes } = daemonOpts;
-      if (allowedCwdPrefixes && allowedCwdPrefixes.length > 0) {
-        const reqCwd = runReq.opts?.cwd ?? "";
-        // Resolve symlinks before prefix-matching to prevent symlink bypass attacks
-        // (e.g. /tmp/mylink → /etc would otherwise pass a prefix check for /tmp).
-        let canonicalCwd = reqCwd;
-        try {
-          canonicalCwd = await fs.realpath(reqCwd);
-        } catch {
-          // Path doesn't exist yet — fall back to raw path; mkdir will fail later if needed
-          canonicalCwd = reqCwd;
-        }
-        const allowed = allowedCwdPrefixes.some(
-          (prefix) => canonicalCwd === prefix || canonicalCwd.startsWith(prefix + "/"),
-        );
-        if (!allowed) {
-          res.writeHead(403);
-          res.end(JSON.stringify({ error: `cwd '${reqCwd}' is not within an allowed prefix` }));
-          auditLog({ timestamp: new Date().toISOString(), agentId, durationMs: 0, status: "rejected", statusCode: 403 });
-          return;
-        }
-      }
-
-      // Track which models are being used for multi-model keep-alive (#5)
-      if (runReq.opts?.model) {
-        usedModels.add(runReq.opts.model);
-        modelLastUsedAt.set(runReq.opts.model, Date.now());
-      }
-      lastRealRequestAt = Date.now();
-
-      activeRuns++;
-      activeRunsByAgent.set(agentId, (activeRunsByAgent.get(agentId) ?? 0) + 1);
-      runCounted = true;
-      if (activeRuns >= maxConcurrent) {
-        process.stderr.write(`[orager daemon] warning: at max concurrent runs (${activeRuns}/${maxConcurrent})\n`);
-      }
-      res.writeHead(200, {
-        "Content-Type": "application/x-ndjson",
-        "Transfer-Encoding": "chunked",
-        "Cache-Control": "no-cache",
-      });
-
-      // ── Per-request timeout ─────────────────────────────────────────────
-      const runId = crypto.randomUUID();
-      const abortController = new AbortController();
-      activeRunControllers.set(runId, abortController);
-
-      // Abort the agent loop if the client disconnects mid-stream so we don't
-      // waste resources running to completion for a gone caller.
-      res.on("close", () => {
-        if (runCounted && !timedOut) abortController.abort();
-      });
-
-      let timedOut = false;
-      const timeoutHandle = setTimeout(() => {
-        timedOut = true;
-        abortController.abort();
-        res.write(
-          JSON.stringify({ type: "result", subtype: "error", result: "Request timed out", session_id: "", finish_reason: null, usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 }, total_cost_usd: 0 }) + "\n",
-        );
-        res.end();
-        activeRuns--;
-        decrementAgentCount();
-        auditLog({ timestamp: new Date().toISOString(), agentId, durationMs: Date.now() - startTime, status: "timeout", statusCode: 200 });
-      }, requestTimeoutMs);
-
-      // ── Execute run ─────────────────────────────────────────────────────
-
-      const { safe: safeOpts, rejected: rejectedOpts } = sanitizeDaemonRunOpts(runReq.opts as unknown as Record<string, unknown>);
-      // settingsFile is intentionally excluded from ALLOWED_DAEMON_OPTS — the daemon
-      // resolves its own settings file from the local environment to prevent callers
-      // from redirecting settings to arbitrary paths. Emit a specific warning so
-      // callers don't spend time debugging the generic "ignoring disallowed opts" message.
-      if ((rejectedOpts as string[]).includes("settingsFile")) {
-        const sfMsg = "[orager daemon] NOTE: settingsFile is not forwarded to the daemon — " +
-          "the daemon always uses its own local settings (ORAGER_SETTINGS_FILE or ~/.orager/settings.json). " +
-          "Remove settingsFile from daemonOpts to suppress this message.";
-        process.stderr.write(sfMsg + "\n");
-        res.write(JSON.stringify({ type: "info", message: sfMsg, field: "settingsFile" }) + "\n");
-      }
-      if (rejectedOpts.length > 0) {
-        const msg = `[orager daemon] WARNING: ignoring disallowed opts fields from caller: ${rejectedOpts.join(", ")}`;
-        process.stderr.write(msg + "\n");
-        res.write(JSON.stringify({ type: "warn", message: msg, dropped_opts: rejectedOpts }) + "\n");
-      }
-      const loopOpts: AgentLoopOptions = {
-        // Secure defaults — callers cannot override these via the request opts
-        dangerouslySkipPermissions: false,
-        verbose: false,
-        ...safeOpts,
-        prompt: runReq.prompt,
-        promptContent: (() => {
-          if (!Array.isArray(runReq.promptContent)) return undefined;
-          // Validate each element has a known type and no unexpected fields
-          const validated = (runReq.promptContent as unknown[]).filter((item): item is { type: string } => {
-            if (!item || typeof item !== "object") return false;
-            const t = (item as Record<string, unknown>).type;
-            // Only allow text and image_url content types
-            return t === "text" || t === "image_url";
-          });
-          return validated.length > 0 ? validated as AgentLoopOptions["promptContent"] : undefined;
-        })(),
-        apiKey,
-        abortSignal: abortController.signal,
-        onEmit: (event: EmitEvent) => {
-          if (!timedOut && !res.destroyed) {
-            res.write(JSON.stringify(event) + "\n");
-          }
-        },
-        onLog: (stream, chunk) => {
-          if (stream === "stderr") process.stderr.write(chunk);
-        },
-      } as AgentLoopOptions;
-
-      // Only check circuit breaker for OpenRouter calls (direct Anthropic path bypasses it)
-      const isDirectPath = typeof runReq.opts?.model === "string" && runReq.opts.model.startsWith("anthropic/") && !!process.env.ANTHROPIC_API_KEY?.trim();
-      const agentCb = getAgentCircuitBreaker(agentId);
-      if (!isDirectPath && agentCb.isOpen()) {
-        res.writeHead(503, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({
-          type: "result",
-          subtype: "error_circuit_open",
-          result: "OpenRouter API circuit breaker is open due to sustained failures. Retry in " + Math.ceil(agentCb.retryInMs / 1000) + "s.",
-          session_id: "",
-          turn_count: 0,
-          total_cost_usd: 0,
-          exit_code: 1,
-        }));
-        return;
-      }
-
-      let _runFailed = false;
-      runAgentLoop(loopOpts)
-        .catch((err: unknown) => {
-          _runFailed = true;
-          if (!isDirectPath) agentCb.recordFailure();
-          const msg = err instanceof Error ? err.message : String(err);
-          if (!timedOut && !res.destroyed) {
-            res.write(
-              JSON.stringify({ type: "result", subtype: "error", result: msg, session_id: "", finish_reason: null, usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 }, total_cost_usd: 0 }) + "\n",
-            );
-          }
-          errorRuns++;
-        })
-        .finally(() => {
-          if (!_runFailed && !isDirectPath) agentCb.recordSuccess();
-          activeRunControllers.delete(runId);
-          if (!timedOut) {
-            clearTimeout(timeoutHandle);
-            if (!res.destroyed) res.end();
-            auditLog({ timestamp: new Date().toISOString(), agentId, durationMs: Date.now() - startTime, status: "ok", statusCode: 200 });
-            activeRuns--;
-            decrementAgentCount();
-          }
-          completedRuns++;
-        });
-    })(); });
-
-    req.on("error", () => {
-      if (runCounted) {
-        activeRuns--;
-        decrementAgentCount();
-      }
-      res.destroy();
-    });
-  }
-
-  // ── Start server ────────────────────────────────────────────────────────────
-  await acquirePidLock(port);
+  // ── Start server ───────────────────────────────────────────────────────────
+  await acquirePidLock(requestedPort);
   await ensureSessionsDirPermissions();
   _startRateLimitCleanup();
 
-  // Non-blocking API key health check at startup
-  checkAndLogApiKeyHealth(
-    apiKey,
-    (msg) => process.stderr.write(msg),
-  ).catch(() => {}); // fire-and-forget
+  checkAndLogApiKeyHealth(apiKey, (msg) => process.stderr.write(msg)).catch(() => {});
 
   await new Promise<void>((resolve, reject) => {
-    server.listen(port, "127.0.0.1", () => resolve());
+    server.listen(requestedPort, "127.0.0.1", () => resolve());
     server.on("error", reject);
   });
 
-  await writePortFile(port);
-  scheduleIdleCheck();
+  const actualPort = (server.address() as import("node:net").AddressInfo).port;
+  await writePortFile(actualPort);
 
-  process.stderr.write(`[orager daemon] listening on 127.0.0.1:${port} (max ${maxConcurrent} concurrent runs)\n`);
-  process.stderr.write(`[orager daemon] idle shutdown after ${idleTimeoutMs >= 60_000 ? `${idleTimeoutMs / 60_000}min` : `${idleTimeoutMs / 1_000}s`}\n`);
+  const DRAIN_TIMEOUT_MS = 120_000;
 
-  // Warm cache on startup (Phase 4c)
-  await warmCache();
-  startKeepAlive();
+  async function drain(timeoutMs: number): Promise<void> {
+    return _drainAndExitImpl(ctx, server, timeoutMs, async () => {
+      await releasePidLock();
+      await removePortFile();
+    });
+  }
+  /** Test-safe shutdown: closes the server without calling process.exit. */
+  async function shutdown(timeoutMs: number): Promise<void> {
+    return _drainAndExitImpl(ctx, server, timeoutMs, async () => {
+      await releasePidLock();
+      await removePortFile();
+    }, () => { /* no process.exit — safe for test environments */ });
+  }
+  _drainAndExit = drain;
 
-  // Pre-warm model metadata caches at startup so the first runAgentLoop call
-  // does not incur the network fetch latency. Fire-and-forget — if it fails,
-  // runAgentLoop will retry on the first real request.
+  scheduleIdleCheck(ctx, drain, DRAIN_TIMEOUT_MS);
+
+  process.stderr.write(
+    `[orager daemon] listening on 127.0.0.1:${actualPort} (max ${maxConcurrent} concurrent runs)\n`,
+  );
+  process.stderr.write(
+    `[orager daemon] idle shutdown after ${idleTimeoutMs >= 60_000 ? `${idleTimeoutMs / 60_000}min` : `${idleTimeoutMs / 1_000}s`}\n`,
+  );
+
+  await warmCache(ctx);
+  startKeepAlive(ctx);
+
   Promise.all([
     fetchModelContextLengths(apiKey).catch(() => {}),
     fetchLiveModelMeta(apiKey).catch(() => {}),
   ]).catch(() => {});
 
-  // ── Embedding cache prewarm (P2-7) ─────────────────────────────────────────
-  // Find agents that recently ran with embedding memory retrieval and prewarm
-  // the embedding cache so their first run doesn't pay cold-start latency.
+  // Embedding cache prewarm
   if (apiKey) {
     void (async () => {
       try {
@@ -1137,11 +359,8 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
         try {
           const allFiles = await fs.readdir(sessionsDir);
           sessionFiles = allFiles.filter((f) => f.endsWith(".json") && !f.includes(".run.lock"));
-        } catch {
-          return; // sessions dir doesn't exist yet — skip
-        }
+        } catch { return; }
 
-        // Sort by mtime descending, take up to 5 most recent
         const withMtime: Array<{ file: string; mtimeMs: number }> = [];
         for (const f of sessionFiles) {
           try {
@@ -1152,13 +371,11 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
           }
         }
         withMtime.sort((a, b) => b.mtimeMs - a.mtimeMs);
-        const candidates = withMtime.slice(0, 5);
 
-        const prewarmTasks: Promise<void>[] = [];
-        for (const { file } of candidates) {
-          const sessionId = file.slice(0, -5);
-          prewarmTasks.push((async () => {
+        await Promise.all(
+          withMtime.slice(0, 5).map(async ({ file }) => {
             try {
+              const sessionId = file.slice(0, -5);
               const raw = await fs.readFile(path.join(sessionsDir, file), "utf8");
               const session = JSON.parse(raw) as {
                 opts?: { memoryEmbeddingModel?: string };
@@ -1166,98 +383,52 @@ export async function startDaemon(daemonOpts: DaemonStartOptions): Promise<void>
               };
               const embeddingModel = session.opts?.memoryEmbeddingModel;
               if (!embeddingModel) return;
-              // Find the last user message as the prompt to prewarm
               const msgs = session.messages ?? [];
               let lastPrompt = "";
               for (let i = msgs.length - 1; i >= 0; i--) {
                 const m = msgs[i];
                 if (m.role === "user" && typeof m.content === "string" && m.content.trim()) {
-                  lastPrompt = m.content.trim().slice(0, 1000); // cap at 1000 chars
+                  lastPrompt = m.content.trim().slice(0, 1000);
                   break;
                 }
               }
               if (!lastPrompt) return;
               const [vec] = await callEmbeddings(apiKey, embeddingModel, [lastPrompt]);
               setCachedQueryEmbedding(embeddingModel, lastPrompt, vec);
-              process.stderr.write(`[orager daemon] embedding prewarm: cached ${embeddingModel} for session ${sessionId}\n`);
-            } catch {
-              // silently ignore — prewarm is best-effort
-            }
-          })());
-        }
-        await Promise.all(prewarmTasks);
-      } catch {
-        // silently ignore — prewarm is best-effort
-      }
+              process.stderr.write(
+                `[orager daemon] embedding prewarm: cached ${embeddingModel} for session ${sessionId}\n`,
+              );
+            } catch { /* best-effort */ }
+          }),
+        );
+      } catch { /* best-effort */ }
     })();
   }
 
-  // ── Session auto-prune ─────────────────────────────────────────────────────
-  // Prune sessions older than SESSION_RETENTION_DAYS days once at startup and
-  // then every 24 hours. Override with ORAGER_SESSION_RETENTION_DAYS env var.
+  // Session auto-prune
   const SESSION_RETENTION_DAYS = parseInt(process.env["ORAGER_SESSION_RETENTION_DAYS"] ?? "30", 10);
   const SESSION_PRUNE_TTL_MS = SESSION_RETENTION_DAYS * 24 * 60 * 60 * 1000;
   process.stderr.write(`[orager daemon] session retention: ${SESSION_RETENTION_DAYS} days\n`);
   const runSessionPrune = (): void => {
     pruneOldSessions(SESSION_PRUNE_TTL_MS).then((result) => {
       if (result.deleted > 0) {
-        process.stderr.write(`[orager daemon] pruned ${result.deleted} old session(s) (kept ${result.kept})\n`);
+        process.stderr.write(
+          `[orager daemon] pruned ${result.deleted} old session(s) (kept ${result.kept})\n`,
+        );
       }
     }).catch(() => {});
   };
   runSessionPrune();
   setInterval(runSessionPrune, 24 * 60 * 60 * 1000).unref();
 
-  const DRAIN_TIMEOUT_MS = 120_000; // 2 minutes
+  process.on("SIGTERM", () => { void drain(DRAIN_TIMEOUT_MS); });
+  process.on("SIGINT",  () => { void drain(30_000); });
 
-  /**
-   * Abort all in-flight runs, wait up to timeoutMs for them to finish,
-   * then close the server and release PID/port files before exiting.
-   * Exported so tests can exercise shutdown behaviour directly.
-   */
-  async function drainAndExit(timeoutMs: number): Promise<void> {
-    draining = true;
-    process.stderr.write(`[orager daemon] draining in-flight runs (timeout ${timeoutMs / 1000}s)...\n`);
-    stopKeepAlive();
-
-    // Abort every active run so clients receive a clean error
-    for (const controller of activeRunControllers.values()) {
-      controller.abort();
-    }
-
-    await releasePidLock();
-    await removePortFile();
-
-    const drainStart = Date.now();
-    while (activeRuns > 0 && Date.now() - drainStart < timeoutMs) {
-      await new Promise<void>((r) => setTimeout(r, 500));
-    }
-    if (activeRuns > 0) {
-      process.stderr.write(
-        `[orager daemon] drain timeout — ${activeRuns} run(s) abandoned\n`
-      );
-    } else {
-      process.stderr.write("[orager daemon] all runs completed — exiting\n");
-    }
-    // Flush SQLite WAL before exiting so no memory data is lost
-    if (isSqliteMemoryEnabled()) closeDb();
-    server.close(() => process.exit(0));
-  }
-
-  // Wire up the module-level export so callers (tests) can invoke drain without signals
-  _drainAndExit = drainAndExit;
-
-  // Graceful shutdown
-  process.on("SIGTERM", () => { void drainAndExit(DRAIN_TIMEOUT_MS); });
-  process.on("SIGINT",  () => { void drainAndExit(30_000); });
+  return { port: actualPort, shutdown };
 }
 
-// ── Daemon client helpers (used by the adapter's execute-cli.ts) ──────────────
+// ── Daemon client helpers ─────────────────────────────────────────────────────
 
-/**
- * Check if the daemon is reachable at the given URL.
- * Returns true only if /health responds with { status: "ok" }.
- */
 export async function isDaemonAlive(baseUrl: string): Promise<boolean> {
   try {
     const res = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(2000) });
@@ -1269,15 +440,6 @@ export async function isDaemonAlive(baseUrl: string): Promise<boolean> {
   }
 }
 
-/**
- * Send a run request to the daemon and return a readable stream of
- * newline-delimited JSON events (same format as CLI stdout).
- *
- * @param baseUrl     e.g. "http://127.0.0.1:3456"
- * @param signingKey  Contents of ~/.orager/daemon.key
- * @param agentId     Identifier passed in JWT claims (for audit logs)
- * @param req         Run request payload
- */
 export async function runOnDaemon(
   baseUrl: string,
   signingKey: string,
@@ -1299,9 +461,6 @@ export async function runOnDaemon(
     throw new Error(`Daemon error ${response.status}: ${text.slice(0, 200)}`);
   }
 
-  if (!response.body) {
-    throw new Error("Daemon response has no body");
-  }
-
+  if (!response.body) throw new Error("Daemon response has no body");
   return response.body;
 }
