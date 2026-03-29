@@ -633,6 +633,18 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     });
   }
 
+  // ── Plan mode notice ─────────────────────────────────────────────────────
+  // Injected when opts.planMode is true so the model knows it is restricted
+  // to read-only tools until it explicitly calls exit_plan_mode.
+  if (opts.planMode) {
+    systemPrompt +=
+      "\n\n**PLAN MODE ACTIVE**: You are currently in plan mode. " +
+      "Only read-only exploration tools are available right now. " +
+      "Use them to analyse the codebase and form a complete plan. " +
+      "When your plan is fully worked out, call `exit_plan_mode` with a brief " +
+      "`plan_summary` to switch to full execution mode where all tools become available.";
+  }
+
   systemPrompt += "\n\nWorking directory: " + cwd;
 
   // ── MCP client tools ──────────────────────────────────────────────────────
@@ -769,6 +781,19 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
 
     if (!executor) {
       return { id: toolCall.id, content: `Unknown tool: ${toolName}`, isError: true };
+    }
+
+    // ── Plan mode enforcement ─────────────────────────────────────────────────
+    // Blocks non-readonly tools until exit_plan_mode is called.  The tool list
+    // sent to the LLM is already restricted, but this guard prevents misbehaving
+    // or adversarially injected tool calls from sneaking through.
+    if (inPlanMode && toolName !== PLAN_MODE_TOOL_NAME && !executor.definition.readonly) {
+      return {
+        id: toolCall.id,
+        content: `Tool '${toolName}' is not available in plan mode. ` +
+          "Call exit_plan_mode first to enable full tool execution.",
+        isError: true,
+      };
     }
 
     let parsedInput: Record<string, unknown>;
