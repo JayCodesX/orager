@@ -20,6 +20,7 @@ import { DEFAULT_CONFIG } from "./setup.js";
 import type { OragerSettings } from "./settings.js";
 import { mintJwt, KEY_PATH } from "./jwt.js";
 import { getSpanBuffer, type BufferedSpan } from "./telemetry.js";
+import { formatDiscordPayload } from "./loop-helpers.js";
 import split2 from "split2";
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
@@ -576,6 +577,58 @@ async function handleGetTraces(
   jsonResponse(res, 200, { traces, total: traces.length, configured: true });
 }
 
+// ── Webhook test ─────────────────────────────────────────────────────────────
+
+async function handleWebhookTest(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  let parsed: { url?: unknown; format?: unknown };
+  try {
+    parsed = await readJsonBody(req) as { url?: unknown; format?: unknown };
+  } catch {
+    jsonResponse(res, 400, { error: "Invalid JSON" });
+    return;
+  }
+  if (typeof parsed.url !== "string" || !parsed.url) {
+    jsonResponse(res, 400, { error: "url is required" });
+    return;
+  }
+  let url: URL;
+  try {
+    url = new URL(parsed.url);
+    if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("not http/https");
+  } catch {
+    jsonResponse(res, 400, { error: "url must be a valid http/https URL" });
+    return;
+  }
+  const format = parsed.format === "discord" ? "discord" : undefined;
+  const testPayload = {
+    type: "result" as const,
+    subtype: "success" as const,
+    result: "Test webhook from orager UI",
+    session_id: "test-session-00000000",
+    finish_reason: "stop",
+    usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 },
+    total_cost_usd: 0,
+    turnCount: 1,
+  };
+  try {
+    const body = format === "discord"
+      ? formatDiscordPayload(testPayload)
+      : testPayload;
+    const fetchRes = await fetch(url.toString(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(10_000),
+    });
+    jsonResponse(res, 200, { ok: fetchRes.ok, status: fetchRes.status });
+  } catch (err) {
+    jsonResponse(res, 200, { ok: false, error: String(err) });
+  }
+}
+
 // ── Static file serving ───────────────────────────────────────────────────────
 
 async function serveStatic(
@@ -677,6 +730,8 @@ async function handleRequest(
       await handleGetSpans(req, res);
     } else if (pathname === "/api/telemetry/traces" && req.method === "GET") {
       await handleGetTraces(req, res);
+    } else if (pathname === "/api/webhook/test" && req.method === "POST") {
+      await handleWebhookTest(req, res);
     } else if (pathname.startsWith("/api/")) {
       jsonResponse(res, 404, { error: "Not found" });
     } else {

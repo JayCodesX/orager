@@ -52,6 +52,7 @@ export interface OragerUserConfig {
   daemonIdleTimeout?: string;
   profile?: string;
   webhookUrl?: string;
+  webhookFormat?: "discord";
   requiredEnvVars?: string[];
 }
 
@@ -101,5 +102,11 @@ export const api = {
     apiFetch<OragerSettings>("/api/settings", {
       method: "POST",
       body: JSON.stringify(s),
+    }),
+
+  testWebhook: (url: string, format?: "discord") =>
+    apiFetch<{ ok: boolean; status?: number; error?: string }>("/api/webhook/test", {
+      method: "POST",
+      body: JSON.stringify({ url, format }),
     }),
 };
