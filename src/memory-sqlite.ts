@@ -153,7 +153,11 @@ export function loadMemoryStoreSqlite(memoryKey: string): MemoryStore {
 }
 
 /**
- * Upsert all entries from the store into the DB.
+ * Upsert all entries from the store into the DB and delete any rows for this
+ * memoryKey that are no longer present in store.entries.
+ *
+ * Without the delete pass, entries removed via removeMemoryEntry() + saveMemoryStoreAny()
+ * would silently persist in the DB and reappear on next loadMemoryStoreSqlite call.
  */
 export function saveMemoryStoreSqlite(memoryKey: string, store: MemoryStore): void {
   const db = getDb();
@@ -178,6 +182,19 @@ export function saveMemoryStoreSqlite(memoryKey: string, store: MemoryStore): vo
         embedding: e._embedding ? JSON.stringify(e._embedding) : null,
         embeddingModel: e._embeddingModel ?? null,
       });
+    }
+
+    // Delete any DB rows for this memoryKey that are no longer in store.entries.
+    // This ensures entries removed via removeMemoryEntry() are actually deleted
+    // from the DB rather than silently re-appearing on next load.
+    if (entries.length === 0) {
+      db.prepare("DELETE FROM memory_entries WHERE memory_key = ?").run(memoryKey);
+    } else {
+      const placeholders = entries.map(() => "?").join(",");
+      const ids = entries.map((e) => e.id);
+      db.prepare(
+        `DELETE FROM memory_entries WHERE memory_key = ? AND id NOT IN (${placeholders})`
+      ).run(memoryKey, ...ids);
     }
   });
 
@@ -275,10 +292,18 @@ export function listMemoryKeysSqlite(): string[] {
 
 /**
  * Deletes all entries for a given memoryKey. Returns the number of deleted rows.
+ *
+ * The AFTER DELETE trigger on memory_entries fires per row and keeps the FTS5
+ * index in sync. An explicit rebuild is issued afterwards to guarantee
+ * consistency even if trigger execution had any edge cases.
  */
 export function clearMemoryStoreSqlite(memoryKey: string): number {
   const db = getDb();
   const result = db.prepare("DELETE FROM memory_entries WHERE memory_key = ?").run(memoryKey);
+  if (result.changes > 0) {
+    // Force a full FTS rebuild to guarantee index consistency after bulk removal.
+    db.prepare("INSERT INTO memory_entries_fts(memory_entries_fts) VALUES ('rebuild')").run();
+  }
   return result.changes;
 }
 

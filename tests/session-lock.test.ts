@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { acquireSessionLock, SESSIONS_DIR } from "../src/session.js";
+import { acquireSessionLock, getSessionsDir } from "../src/session.js";
 
 // Helpers
 const sessionsDir = path.join(os.homedir(), ".orager", "sessions");
@@ -159,8 +159,8 @@ describe("acquireSessionLock", () => {
       const lp = lockFilePath(sessionId);
       expect(lp.endsWith(".run.lock")).toBe(true);
 
-      // Also verify via SESSIONS_DIR export that it's in the sessions directory
-      const expectedDir = SESSIONS_DIR;
+      // Verify the lock file is in the sessions directory
+      const expectedDir = getSessionsDir();
       expect(path.dirname(lp)).toBe(expectedDir);
     } finally {
       await release();

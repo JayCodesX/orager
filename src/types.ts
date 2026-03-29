@@ -499,6 +499,15 @@ export interface OpenRouterCallOptions {
    * before falling back to model rotation.
    */
   apiKeys?: string[];
+
+  /**
+   * Per-agent rate-limit tracker instance. When provided, callOpenRouter /
+   * callDirect update this tracker from response headers in addition to the
+   * process-global singleton. Callers (runAgentLoop) should create one per
+   * agent invocation so that a 429 on one agent does not suppress requests
+   * from other agents on the same daemon.
+   */
+  rateLimitTracker?: import("./rate-limit-tracker.js").RateLimitTracker;
 }
 
 // ── OpenRouter call result ───────────────────────────────────────────────────
