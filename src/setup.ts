@@ -14,7 +14,7 @@ import readline from "node:readline/promises";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -103,6 +103,7 @@ export interface OragerUserConfig {
   // Misc
   profile?: string;
   webhookUrl?: string;
+  webhookFormat?: "discord";
   requiredEnvVars?: string[];
 }
 
@@ -526,6 +527,12 @@ async function customSetup(rl: readline.Interface): Promise<void> {
   const wu = await ask(rl, "  > ");
   if (wu.trim()) cfg.webhookUrl = wu.trim();
 
+  process.stdout.write(cyan("webhookFormat") + dim(` [${displayValue(cfg.webhookFormat ?? "raw")}]`) + " — payload format: leave blank for raw JSON, or type 'discord' for Discord embeds\n");
+  const wf = await ask(rl, "  > ");
+  if (wf.trim() === "discord") cfg.webhookFormat = "discord";
+  else if (wf.trim() === "" || wf.trim() === "raw") { /* keep existing */ }
+  else if (wf.trim()) process.stdout.write(dim("  (unrecognised format — leaving unchanged)\n"));
+
   process.stdout.write(cyan("requiredEnvVars") + dim(` [${displayValue(cfg.requiredEnvVars)}]`) + " — env vars that must be set, comma-separated\n");
   const rev = await ask(rl, "  > ");
   if (rev.trim()) cfg.requiredEnvVars = parseCsvList(rev);
@@ -618,6 +625,9 @@ async function checkConfig(): Promise<void> {
       issues.push(`webhookUrl "${cfg.webhookUrl}" is not a valid http/https URL`);
     }
   }
+  if (cfg.webhookFormat !== undefined && cfg.webhookFormat !== "discord") {
+    issues.push(`webhookFormat "${cfg.webhookFormat}" is not valid — only "discord" is supported`);
+  }
   if (cfg.daemonIdleTimeout !== undefined) {
     if (!/^\d+(?:\.\d+)?[mh]$/.test(cfg.daemonIdleTimeout)) {
       issues.push(`daemonIdleTimeout "${cfg.daemonIdleTimeout}" is not valid (expected e.g. 30m or 1h)`);
@@ -692,6 +702,110 @@ async function editConfig(): Promise<void> {
   }
 }
 
+// ── Browser UI setup path ─────────────────────────────────────────────────────
+
+const UI_PORT_FILE = path.join(ORAGER_DIR, "ui.port");
+const UI_PID_FILE  = path.join(ORAGER_DIR, "ui.pid");
+const UI_DEFAULT_PORT = 3457;
+
+async function probeUiServer(port: number): Promise<boolean> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/config`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function findRunningUiPort(): Promise<number | null> {
+  try {
+    const raw = await fs.readFile(UI_PORT_FILE, "utf8");
+    const port = parseInt(raw.trim(), 10);
+    if (!isNaN(port) && await probeUiServer(port)) return port;
+  } catch { /* not running */ }
+  return null;
+}
+
+function tryOpenBrowser(url: string): void {
+  try {
+    const cmd  = process.platform === "darwin" ? "open"
+      : process.platform === "win32"  ? "cmd"
+      : "xdg-open";
+    const args = process.platform === "win32" ? ["/c", "start", url] : [url];
+    spawn(cmd, args, { detached: true, stdio: "ignore" }).unref();
+  } catch { /* ignore — browser open is best-effort */ }
+}
+
+async function setupViaUiServer(rl: readline.Interface): Promise<void> {
+  // 1. Check if already running
+  let port = await findRunningUiPort();
+  let spawned: ReturnType<typeof spawn> | null = null;
+
+  if (port !== null) {
+    process.stdout.write("\n" + green("✓ orager UI server is already running") + "\n");
+  } else {
+    port = UI_DEFAULT_PORT;
+
+    // Check if another process owns the PID file but isn't responding — warn rather than fail
+    try {
+      const pidRaw = await fs.readFile(UI_PID_FILE, "utf8");
+      const pidData = JSON.parse(pidRaw) as { pid?: number; port?: number };
+      if (pidData.pid) {
+        try { process.kill(pidData.pid, 0); } catch { /* stale */ }
+        // Process alive but not responding on expected port — use its port
+        if (pidData.port) port = pidData.port;
+      }
+    } catch { /* no PID file */ }
+
+    process.stdout.write("\n" + dim("Starting orager UI server on port " + port + "...") + "\n");
+
+    // Spawn a detached UI server as a child of the current process.
+    // stdio is piped to /dev/null so it does not pollute the terminal.
+    spawned = spawn(
+      process.execPath,
+      [process.argv[1]!, "ui", "--port", String(port)],
+      { detached: false, stdio: "ignore" },
+    );
+
+    spawned.on("error", (err) => {
+      process.stdout.write(yellow(`  Warning: could not start UI server: ${err.message}\n`));
+    });
+
+    // Give the server a moment to bind
+    await new Promise<void>((resolve) => setTimeout(resolve, 900));
+
+    // Verify it came up
+    if (!await probeUiServer(port)) {
+      process.stdout.write(yellow("  Warning: UI server did not respond in time.\n"));
+      process.stdout.write(dim("  Try running `orager ui` manually in a separate terminal.\n\n"));
+      if (spawned) spawned.kill();
+      return;
+    }
+  }
+
+  const url = `http://127.0.0.1:${port}`;
+  process.stdout.write(
+    "\n" +
+    bold("  orager configuration UI: ") + cyan(url) + "\n\n" +
+    dim("  Opening in your browser…\n") +
+    dim("  Configure your settings there, then press Enter here when finished.\n\n"),
+  );
+
+  tryOpenBrowser(url);
+
+  await ask(rl, "  Press Enter when done > ");
+
+  // Shut down the server if we started it
+  if (spawned) {
+    spawned.kill("SIGTERM");
+    process.stdout.write(dim("\n  UI server stopped.\n"));
+  }
+
+  process.stdout.write(green("✓ Done.\n\n"));
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 export async function runSetupWizard(args: string[]): Promise<void> {
@@ -731,9 +845,25 @@ export async function runSetupWizard(args: string[]): Promise<void> {
       return;
     }
 
-    // Interactive mode — ask Quick or Custom
+    // Interactive mode — choose configuration method
     process.stdout.write("\n" + bold("orager setup") + "\n");
     process.stdout.write(dim("Configure ~/.orager/config.json — your personal defaults for every run.\n\n"));
+    process.stdout.write("How would you like to configure orager?\n\n");
+    process.stdout.write("  " + cyan("1") + " — " + bold("Browser UI") +
+      dim("  (recommended — starts http://127.0.0.1:" + UI_DEFAULT_PORT + ")") + "\n");
+    process.stdout.write("  " + cyan("2") + " — " + "Command line" +
+      dim("  (quick / custom / show / reset / edit)") + "\n\n");
+
+    const methodChoice = await ask(rl, "Choice [1]: ");
+    const method = methodChoice.trim() || "1";
+
+    if (method === "1" || method.toLowerCase() === "browser" || method.toLowerCase() === "ui") {
+      await setupViaUiServer(rl);
+      return;
+    }
+
+    // Command-line menu
+    process.stdout.write("\n" + dim("Command-line options:\n\n"));
     process.stdout.write("  " + cyan("q") + " — Quick Setup  (API key + 3 model slots)\n");
     process.stdout.write("  " + cyan("c") + " — Custom Setup (all fields)\n");
     process.stdout.write("  " + cyan("s") + " — Show current config\n");
@@ -743,12 +873,12 @@ export async function runSetupWizard(args: string[]): Promise<void> {
 
     const choice = await ask(rl, "Choice [q/c/s/d/r/e]: ");
     switch (choice.trim().toLowerCase()) {
-      case "q": case "quick":   await quickSetup(rl);   break;
-      case "c": case "custom":  await customSetup(rl);  break;
-      case "s": case "show":    await showConfig();      break;
+      case "q": case "quick":    await quickSetup(rl);  break;
+      case "c": case "custom":   await customSetup(rl); break;
+      case "s": case "show":     await showConfig();     break;
       case "d": case "defaults": await showDefaults();   break;
-      case "r": case "reset":   await resetConfig(rl);  break;
-      case "e": case "edit":    await editConfig();      break;
+      case "r": case "reset":    await resetConfig(rl); break;
+      case "e": case "edit":     await editConfig();     break;
       default:
         process.stdout.write(dim("No action taken.\n\n"));
     }

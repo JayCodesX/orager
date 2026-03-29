@@ -82,6 +82,7 @@ export interface ConfigFileSchema {
   summarizePrompt?: string;
   summarizeFallbackKeep?: number;
   webhookUrl?: string;
+  webhookFormat?: "discord";
   /** Bash policy — complex object, passed via globalThis not argv */
   bashPolicy?: Record<string, unknown>;
   trackFileChanges?: boolean;
@@ -137,6 +138,7 @@ export type LoadConfigFileResult = {
   summarizePrompt?: string;
   summarizeFallbackKeep?: number;
   webhookUrl?: string;
+  webhookFormat?: "discord";
   bashPolicy?: Record<string, unknown>;
   trackFileChanges?: boolean;
   enableBrowserTools?: boolean;
@@ -286,6 +288,7 @@ export async function loadConfigFile(filePath: string): Promise<LoadConfigFileRe
   if (cfg.summarizePrompt) result.summarizePrompt = cfg.summarizePrompt;
   if (cfg.summarizeFallbackKeep !== undefined) result.summarizeFallbackKeep = cfg.summarizeFallbackKeep;
   if (cfg.webhookUrl) result.webhookUrl = cfg.webhookUrl;
+  if (cfg.webhookFormat === "discord") result.webhookFormat = "discord";
   if (cfg.bashPolicy && typeof cfg.bashPolicy === "object") result.bashPolicy = cfg.bashPolicy as Record<string, unknown>;
   if (cfg.trackFileChanges !== undefined) result.trackFileChanges = cfg.trackFileChanges;
   if (cfg.enableBrowserTools !== undefined) result.enableBrowserTools = cfg.enableBrowserTools;

@@ -7,10 +7,51 @@
  *
  * When OTEL is not configured, all helpers are no-ops so there is zero
  * overhead and no mandatory dependency on the SDK at runtime.
+ *
+ * A SpanBuffer ring buffer (max 2000 spans) is always populated by withSpan()
+ * regardless of OTEL configuration. The orager UI server reads from it to
+ * render the Telemetry tab without requiring an external collector.
  */
+import crypto from "node:crypto";
 import { trace, SpanStatusCode, type Span, type Tracer } from "@opentelemetry/api";
 
 export const TRACER_NAME = "orager";
+
+// ── In-process span buffer (for UI telemetry tab) ─────────────────────────────
+
+export interface BufferedSpan {
+  traceId: string;
+  spanId: string;
+  parentSpanId?: string;
+  name: string;
+  startTimeMs: number;
+  endTimeMs: number;
+  durationMs: number;
+  attributes: Record<string, string | number | boolean>;
+  status: "ok" | "error" | "unset";
+  errorMessage?: string;
+}
+
+const BUFFER_MAX = 2000;
+
+class SpanBuffer {
+  private readonly spans: BufferedSpan[] = [];
+
+  push(span: BufferedSpan): void {
+    if (this.spans.length >= BUFFER_MAX) this.spans.shift();
+    this.spans.push(span);
+  }
+
+  getAll(): BufferedSpan[] { return [...this.spans]; }
+  get size(): number { return this.spans.length; }
+  get max(): number { return BUFFER_MAX; }
+}
+
+const _spanBuffer = new SpanBuffer();
+
+export function getSpanBuffer(): SpanBuffer { return _spanBuffer; }
+
+// ── Tracer ────────────────────────────────────────────────────────────────────
 
 let _tracer: Tracer | null = null;
 
@@ -57,17 +98,39 @@ export async function withSpan<T>(
   fn: (span: Span) => Promise<T>,
 ): Promise<T> {
   const tracer = getTracer();
+  const startTimeMs = Date.now();
+
   return tracer.startActiveSpan(name, { attributes }, async (span) => {
+    let status: BufferedSpan["status"] = "unset";
+    let errorMessage: string | undefined;
     try {
       const result = await fn(span);
       span.setStatus({ code: SpanStatusCode.OK });
+      status = "ok";
       return result;
     } catch (err) {
       span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) });
       span.recordException(err instanceof Error ? err : new Error(String(err)));
+      status = "error";
+      errorMessage = String(err);
       throw err;
     } finally {
       span.end();
+      const endTimeMs = Date.now();
+      const ctx = span.spanContext();
+      // Use real OTel IDs when available; fall back to random for no-op spans.
+      const isRealId = (id: string) => /^[1-9a-f][0-9a-f]*$/.test(id);
+      _spanBuffer.push({
+        traceId:      isRealId(ctx.traceId) ? ctx.traceId : crypto.randomUUID().replace(/-/g, ""),
+        spanId:       isRealId(ctx.spanId)  ? ctx.spanId  : crypto.randomBytes(8).toString("hex"),
+        name,
+        startTimeMs,
+        endTimeMs,
+        durationMs:   endTimeMs - startTimeMs,
+        attributes,
+        status,
+        errorMessage,
+      });
     }
   });
 }

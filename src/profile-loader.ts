@@ -36,6 +36,7 @@ export interface CustomProfileDefaults {
   summarizeModel?: string;
   summarizePrompt?: string;
   webhookUrl?: string;
+  webhookFormat?: "discord";
 }
 
 export type CustomProfiles = Record<string, CustomProfileDefaults>;
@@ -218,6 +219,7 @@ export async function loadCustomProfiles(): Promise<CustomProfiles> {
       if (typeof parsed["summarizeModel"] === "string") profile.summarizeModel = parsed["summarizeModel"] as string;
       if (typeof parsed["summarizePrompt"] === "string") profile.summarizePrompt = parsed["summarizePrompt"] as string;
       if (typeof parsed["webhookUrl"] === "string") profile.webhookUrl = parsed["webhookUrl"] as string;
+      if (parsed["webhookFormat"] === "discord") profile.webhookFormat = "discord";
       if (typeof parsed["extends"] === "string" && parsed["extends"]) profile.extends = parsed["extends"] as string;
 
       profiles[name] = profile;
