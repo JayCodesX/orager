@@ -18,6 +18,7 @@ import { connectAllMcpServers } from "./mcp-client.js";
 import type { McpClientHandle } from "./mcp-client.js";
 import { makeTodoTools } from "./tools/todo.js";
 import { makeRememberTool } from "./tools/remember.js";
+import { makeWriteMemoryTool, makeReadMemoryTool, loadAutoMemory } from "./tools/auto-memory.js";
 import { loadMemoryStoreAny, pruneExpired, renderMemoryBlock, renderRetrievedBlock, retrieveEntries, retrieveEntriesWithEmbeddings, memoryKeyFromCwd, shouldUseFtsRetrieval } from "./memory.js";
 import { isSqliteMemoryEnabled, searchMemoryFts } from "./memory-sqlite.js";
 import { fireHooks } from "./hooks.js";
@@ -547,6 +548,27 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         ? { apiKey, model: opts.memoryEmbeddingModel }
         : null,
     ));
+  }
+
+  // ── Auto-memory (CLAUDE.md / MEMORY.md writer) ────────────────────────────
+  if (opts.autoMemory) {
+    try {
+      const autoMem = await loadAutoMemory(cwd);
+      // Inject existing memory into the system prompt so the agent can
+      // reference past notes without an explicit read_memory call.
+      const autoMemParts: string[] = [];
+      if (autoMem.project.trim()) {
+        autoMemParts.push("## Project memory (CLAUDE.md)\n\n" + autoMem.project.trim());
+      }
+      if (autoMem.global.trim()) {
+        autoMemParts.push("## Global memory (~/.orager/MEMORY.md)\n\n" + autoMem.global.trim());
+      }
+      if (autoMemParts.length > 0) {
+        systemPrompt += "\n\n# Persistent memory\n\n" + autoMemParts.join("\n\n");
+      }
+    } catch { /* non-fatal — memory read failure must never abort a run */ }
+    allTools.push(makeWriteMemoryTool(cwd));
+    allTools.push(makeReadMemoryTool(cwd));
   }
 
   // Warn about duplicate tool names (first definition wins via find())

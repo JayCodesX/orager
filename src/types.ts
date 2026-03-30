@@ -1042,8 +1042,13 @@ export interface AgentLoopOptions {
    */
   readProjectInstructions?: boolean;
 
-  /** MCP servers to connect to. Key is the server name (used as tool prefix mcp__<name>__<tool>). */
-  mcpServers?: Record<string, { command: string; args?: string[]; env?: Record<string, string> }>;
+  /**
+   * MCP servers to connect to. Key is the server name (used as tool prefix mcp__<name>__<tool>).
+   *
+   * Each value is either a stdio config `{ command, args?, env? }` (spawns a subprocess)
+   * or an HTTP config `{ url, headers? }` (connects to a running Streamable HTTP+SSE server).
+   */
+  mcpServers?: Record<string, import("./mcp-client.js").McpServerConfig>;
 
   /**
    * MCP server names that must successfully connect before the run starts.
@@ -1181,6 +1186,23 @@ export interface AgentLoopOptions {
    * already ends with a suffix like `:online`, `:nitro`, or `:thinking`.
    */
   onlineSearch?: boolean;
+
+  /**
+   * When true, enables auto-memory: the agent gains `write_memory` and
+   * `read_memory` tools that persist notes to CLAUDE.md (project-scoped) or
+   * ~/.orager/MEMORY.md (global-scoped) across sessions.
+   *
+   * At session start, the project CLAUDE.md and global MEMORY.md are injected
+   * into the system prompt so the agent can reference past notes without an
+   * explicit read_memory call.
+   *
+   * This is distinct from the structured `memory` (MemoryStore/remember-tool)
+   * system — auto-memory stores plain markdown, making notes human-readable and
+   * version-control-friendly.
+   *
+   * Default: false.
+   */
+  autoMemory?: boolean;
 }
 
 // ── Permission types ─────────────────────────────────────────────────────────
