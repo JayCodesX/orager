@@ -33,6 +33,49 @@ const MAX_MCP_RESULT_CHARS = 50_000;
 // user-supplied MCP server env configs to prevent sandbox escapes.
 const UNSAFE_ENV_PREFIXES = ["LD_", "DYLD_", "NODE_", "PYTHON", "RUBYOPT", "PERL5"];
 
+// ── HTTP header validation ────────────────────────────────────────────────────
+//
+// Guard against HTTP header injection attacks in HttpMcpServerConfig.headers.
+// RFC 7230 §3.2: header names must be tokens (printable ASCII, no separators).
+// Header values must not contain CR or LF characters (header splitting attack).
+
+const HTTP_HEADER_NAME_RE = /^[!#$%&'*+\-.0-9A-Z^_`a-z|~]+$/;
+// Sensitive headers the caller should not be able to override via user config
+const BLOCKED_HEADER_NAMES = new Set(["host", "content-length", "transfer-encoding", "connection", "upgrade"]);
+
+/**
+ * Returns a sanitized copy of an HTTP headers object with invalid entries removed.
+ * Rejects: invalid RFC 7230 header names, restricted headers, values with CR/LF.
+ */
+function sanitizeMcpHttpHeaders(
+  headers: Record<string, string>,
+  serverName: string,
+): Record<string, string> {
+  const safe: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (!HTTP_HEADER_NAME_RE.test(name)) {
+      process.stderr.write(
+        `[orager] WARNING: MCP server '${serverName}' HTTP header name '${name}' contains invalid characters — rejected\n`,
+      );
+      continue;
+    }
+    if (BLOCKED_HEADER_NAMES.has(name.toLowerCase())) {
+      process.stderr.write(
+        `[orager] WARNING: MCP server '${serverName}' HTTP header '${name}' is a restricted header — rejected\n`,
+      );
+      continue;
+    }
+    if (typeof value !== "string" || /[\r\n]/.test(value)) {
+      process.stderr.write(
+        `[orager] WARNING: MCP server '${serverName}' HTTP header '${name}' value contains CR/LF — rejected (header injection guard)\n`,
+      );
+      continue;
+    }
+    safe[name] = value;
+  }
+  return safe;
+}
+
 function sanitizeMcpEnv(
   env: Record<string, string> | undefined,
   serverName: string,
@@ -91,15 +134,17 @@ export async function connectMcpServer(
     ? (() => {
         const url = new URL(config.url);
         const t = new StreamableHTTPClientTransport(url);
-        // Inject custom headers (e.g. Authorization) into every outbound request.
+        // Inject sanitized custom headers (e.g. Authorization) into every outbound request.
         if (config.headers && Object.keys(config.headers).length > 0) {
-          const hdrs = config.headers;
-          // StreamableHTTPClientTransport exposes a `requestInit` options object
-          // that is merged into every fetch call. We patch it here post-construction
-          // so we don't depend on constructor signature changes across SDK versions.
-          (t as unknown as { requestInit?: RequestInit }).requestInit = {
-            headers: hdrs,
-          };
+          const safeHdrs = sanitizeMcpHttpHeaders(config.headers, name);
+          if (Object.keys(safeHdrs).length > 0) {
+            // StreamableHTTPClientTransport exposes a `requestInit` options object
+            // that is merged into every fetch call. We patch it here post-construction
+            // so we don't depend on constructor signature changes across SDK versions.
+            (t as unknown as { requestInit?: RequestInit }).requestInit = {
+              headers: safeHdrs,
+            };
+          }
         }
         return t;
       })()
@@ -110,20 +155,50 @@ export async function connectMcpServer(
       });
 
   const client = new Client({ name: "orager", version: "1.0.0" });
-  await (() => {
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    return Promise.race([
-      client.connect(transport),
-      new Promise<never>((_, reject) => {
-        timeoutHandle = setTimeout(
-          () => reject(new Error(`MCP server '${name}' connection timed out after 10s`)),
-          10_000,
-        );
-      }),
-    ]).finally(() => {
-      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
-    });
-  })();
+
+  // ── Connection with retry + rate-limit backoff ────────────────────────────
+  // HTTP transports may receive a 429 (Too Many Requests) on the initial
+  // connect/initialize handshake. Retry up to 3 times with exponential backoff.
+  // Stdio transports don't do HTTP so we skip retries for them (the connect
+  // call spawns a process and never produces a 429-style error).
+  const isHttpTransport = "url" in config;
+  const connectAttempts = isHttpTransport ? 3 : 1;
+  const connectDelays = [0, 2000, 5000]; // ms before each retry
+
+  for (let attempt = 0; attempt < connectAttempts; attempt++) {
+    if (attempt > 0 && connectDelays[attempt]) {
+      process.stderr.write(
+        `[orager] MCP server '${name}' connect retry ${attempt}/${connectAttempts - 1} after ${connectDelays[attempt]}ms\n`,
+      );
+      await new Promise<void>((r) => setTimeout(r, connectDelays[attempt]));
+    }
+    try {
+      await (() => {
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        return Promise.race([
+          client.connect(transport),
+          new Promise<never>((_, reject) => {
+            timeoutHandle = setTimeout(
+              () => reject(new Error(`MCP server '${name}' connection timed out after 10s`)),
+              10_000,
+            );
+          }),
+        ]).finally(() => {
+          if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+        });
+      })();
+      break; // success — exit retry loop
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Only retry on rate-limit signals (429 in message) or transient network errors
+      const isRateLimit = /429|rate.?limit|too.?many/i.test(msg);
+      const isTransient = /timeout|ECONNREFUSED|ENOTFOUND|network/i.test(msg);
+      if (attempt < connectAttempts - 1 && (isRateLimit || isTransient)) {
+        continue; // will retry
+      }
+      throw err; // permanent failure or last attempt
+    }
+  }
 
   const { tools: rawTools } = await client.listTools();
 

@@ -5,3 +5,4 @@ bin/
 .DS_Store
 *.js.map
 *.bun-build
+AUDIT_REPORT*.md

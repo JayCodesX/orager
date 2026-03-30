@@ -16,6 +16,7 @@ import {
   listSessions,
   rollbackSession,
   searchSessions,
+  compactSession,
 } from "./session.js";
 import type { CliOptions, EmitResultEvent, TurnModelRule, UserMessageContentBlock, AgentLoopOptions } from "./types.js";
 import { startDaemon, readDaemonPort } from "./daemon.js";
@@ -126,6 +127,7 @@ SESSIONS
   --delete-session <id>     Permanently delete a session
   --delete-trashed          Delete all trashed sessions
   --rollback-session <id>   Roll back a session to previous turn
+  --compact-session <id>    Summarize a session in-place (like /compact in Claude Code)
   --prune-sessions          Delete sessions older than 30 days
 
 TOOLS & SAFETY
@@ -441,6 +443,34 @@ async function handleSearchSessions(argv: string[]): Promise<void> {
     for (const s of results) {
       process.stdout.write(`${s.sessionId}  ${s.model}  ${s.updatedAt.slice(0, 10)}  ${s.cwd}\n`);
     }
+  }
+  process.exit(0);
+}
+
+async function handleCompactSession(argv: string[]): Promise<void> {
+  const idx = argv.indexOf("--compact-session");
+  const sessionId = argv[idx + 1] ?? "";
+  if (!sessionId) {
+    process.stderr.write("orager: --compact-session requires a session ID.\n");
+    process.exit(1);
+  }
+  const apiKey = (process.env["OPENROUTER_API_KEY"] ?? process.env["ORAGER_API_KEY"] ?? "").trim();
+  if (!apiKey) {
+    process.stderr.write("orager: --compact-session requires OPENROUTER_API_KEY or ORAGER_API_KEY to be set.\n");
+    process.exit(1);
+  }
+  // Optional: --model <id> for the summarization call
+  const modelIdx = argv.indexOf("--model");
+  const model = (modelIdx !== -1 && argv[modelIdx + 1]) ? argv[modelIdx + 1]! : "deepseek/deepseek-chat-v3-2";
+
+  process.stderr.write(`[orager] compacting session ${sessionId} using ${model}…\n`);
+  try {
+    const result = await compactSession(sessionId, apiKey, model);
+    process.stdout.write(`Session ${result.sessionId} compacted (${result.turnCount} turn(s) summarized).\n`);
+    process.stdout.write(`Summary: ${result.summary}\n`);
+  } catch (err) {
+    process.stderr.write(`orager: compact failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
   }
   process.exit(0);
 }
@@ -786,6 +816,7 @@ async function main(): Promise<void> {
   if (argv.includes("--delete-session"))   { await handleDeleteSession(argv);   return; }
   if (argv.includes("--delete-trashed"))   { await handleDeleteTrashed();       return; }
   if (argv.includes("--rollback-session")) { await handleRollbackSession(argv); return; }
+  if (argv.includes("--compact-session"))  { await handleCompactSession(argv);  return; }
   if (argv.includes("--prune-sessions"))   { await handlePrune(argv);           return; }
   if (argv.includes("--clear-model-cache")) { await handleClearModelCache(); return; }
 
