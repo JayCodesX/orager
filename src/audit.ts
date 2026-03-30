@@ -1,9 +1,13 @@
 /**
- * Append-only NDJSON audit log for tool approval decisions.
+ * Append-only NDJSON audit log for tool approval decisions and tool execution.
  *
  * Written to ORAGER_AUDIT_LOG env var path, or ~/.orager/audit.log by default.
- * Each line is a JSON object describing one approval decision.
+ * Each line is a JSON object describing one audit event (approval or tool call).
  * Write failures are silently discarded — audit logging must never crash the agent.
+ *
+ * Two event types:
+ *   - Approval entries (AuditEntry):     "event" field absent (legacy compat)
+ *   - Tool-call entries (ToolCallEntry): event: "tool_call"
  */
 import fs from "node:fs";
 import { mkdir, stat as statAsync, rename as renameAsync } from "node:fs/promises";
@@ -92,6 +96,39 @@ function sanitizeInput(input: Record<string, unknown>): Record<string, unknown> 
  * Record a tool approval decision to the audit log. Never throws.
  */
 export function auditApproval(entry: AuditEntry): void {
+  try {
+    const line = JSON.stringify({
+      ...entry,
+      inputSummary: sanitizeInput(entry.inputSummary),
+    }) + "\n";
+    getStream().write(line);
+  } catch {
+    // Silently discard
+  }
+}
+
+/**
+ * Structured log entry for every tool execution (success or failure).
+ * Written after the tool returns so durationMs and isError are known.
+ */
+export interface ToolCallEntry {
+  event: "tool_call";
+  ts: string;
+  sessionId: string;
+  toolName: string;
+  /** Sanitized subset of tool input (large values truncated to 500 chars) */
+  inputSummary: Record<string, unknown>;
+  isError: boolean;
+  /** Wall-clock execution time in milliseconds */
+  durationMs: number;
+  /** First 200 characters of the tool result (omitted on timeout/throw) */
+  resultSummary?: string;
+}
+
+/**
+ * Record a single tool execution to the audit log. Never throws.
+ */
+export function logToolCall(entry: ToolCallEntry): void {
   try {
     const line = JSON.stringify({
       ...entry,

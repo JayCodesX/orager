@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mocked } from "./mock-helpers.js";
 import { callWithRetry } from "../src/retry.js";
 import type { OpenRouterCallResult } from "../src/types.js";
 
@@ -55,20 +56,20 @@ describe("callWithRetry", () => {
   // ── Success on first attempt ───────────────────────────────────────────────
 
   it("returns immediately on first-attempt success without retrying", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValue(successResult());
+    mocked(callOpenRouter).mockResolvedValue(successResult());
 
     const promise = callWithRetry(CALL_OPTS, 3);
     await vi.runAllTimersAsync();
     const result = await promise;
 
     expect(result.isError).toBe(false);
-    expect(vi.mocked(callOpenRouter)).toHaveBeenCalledTimes(1);
+    expect(mocked(callOpenRouter)).toHaveBeenCalledTimes(1);
   });
 
   // ── Retry on stream error result ───────────────────────────────────────────
 
   it("retries a transient stream error and succeeds on second attempt", async () => {
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       .mockResolvedValueOnce(errorResult("503 service unavailable"))
       .mockResolvedValueOnce(successResult("recovered"));
 
@@ -78,11 +79,11 @@ describe("callWithRetry", () => {
 
     expect(result.isError).toBe(false);
     expect(result.content).toBe("recovered");
-    expect(vi.mocked(callOpenRouter)).toHaveBeenCalledTimes(2);
+    expect(mocked(callOpenRouter)).toHaveBeenCalledTimes(2);
   });
 
   it("retries up to maxRetries times then returns the error result", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValue(errorResult("rate limit 429"));
+    mocked(callOpenRouter).mockResolvedValue(errorResult("rate limit 429"));
 
     const promise = callWithRetry(CALL_OPTS, 2);
     await vi.runAllTimersAsync();
@@ -90,13 +91,13 @@ describe("callWithRetry", () => {
 
     expect(result.isError).toBe(true);
     // 1 initial + 2 retries = 3 total calls
-    expect(vi.mocked(callOpenRouter)).toHaveBeenCalledTimes(3);
+    expect(mocked(callOpenRouter)).toHaveBeenCalledTimes(3);
   });
 
   // ── Retry on thrown exception ──────────────────────────────────────────────
 
   it("retries a thrown network error and succeeds", async () => {
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       .mockRejectedValueOnce(new Error("ECONNRESET"))
       .mockResolvedValueOnce(successResult());
 
@@ -105,73 +106,78 @@ describe("callWithRetry", () => {
     const result = await promise;
 
     expect(result.isError).toBe(false);
-    expect(vi.mocked(callOpenRouter)).toHaveBeenCalledTimes(2);
+    expect(mocked(callOpenRouter)).toHaveBeenCalledTimes(2);
   });
 
   it("rethrows after exhausting retries on thrown errors", async () => {
-    vi.mocked(callOpenRouter).mockRejectedValue(new Error("timeout"));
+    mocked(callOpenRouter).mockRejectedValue(new Error("timeout"));
 
     const promise = callWithRetry(CALL_OPTS, 1);
-    // Attach rejection handler BEFORE running timers to avoid unhandled rejection warning
-    const assertion = expect(promise).rejects.toThrow("timeout");
+    // Attach a no-op catch handler early so the rejection is never "unhandled"
+    // while timers are running (avoids Node/vitest unhandled-rejection warnings).
+    // bun test hangs if expect(promise).rejects is created while promise is still
+    // pending under fake timers, so we run timers first then assert.
+    promise.catch(() => {});
     await vi.runAllTimersAsync();
-    await assertion;
+    await expect(promise).rejects.toThrow("timeout");
 
     // 1 initial + 1 retry = 2 total calls
-    expect(vi.mocked(callOpenRouter)).toHaveBeenCalledTimes(2);
+    expect(mocked(callOpenRouter)).toHaveBeenCalledTimes(2);
   });
 
   // ── Fatal errors — no retry ────────────────────────────────────────────────
 
   it("does not retry a 401 unauthorized error result", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValue(errorResult("401 Unauthorized"));
+    mocked(callOpenRouter).mockResolvedValue(errorResult("401 Unauthorized"));
 
     const promise = callWithRetry(CALL_OPTS, 3);
     await vi.runAllTimersAsync();
     const result = await promise;
 
     expect(result.isError).toBe(true);
-    expect(vi.mocked(callOpenRouter)).toHaveBeenCalledTimes(1);
+    expect(mocked(callOpenRouter)).toHaveBeenCalledTimes(1);
   });
 
   it("does not retry an invalid api key error result", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValue(errorResult("Invalid API key provided"));
+    mocked(callOpenRouter).mockResolvedValue(errorResult("Invalid API key provided"));
 
     const promise = callWithRetry(CALL_OPTS, 3);
     await vi.runAllTimersAsync();
 
     await promise;
-    expect(vi.mocked(callOpenRouter)).toHaveBeenCalledTimes(1);
+    expect(mocked(callOpenRouter)).toHaveBeenCalledTimes(1);
   });
 
   it("does not retry a thrown 401 error", async () => {
-    vi.mocked(callOpenRouter).mockRejectedValue(new Error("OpenRouter error 401 Unauthorized"));
+    mocked(callOpenRouter).mockRejectedValue(new Error("OpenRouter error 401 Unauthorized"));
 
     const promise = callWithRetry(CALL_OPTS, 3);
-    const assertion = expect(promise).rejects.toThrow("401");
+    // Attach a no-op catch handler early so the rejection is never "unhandled"
+    // while timers are running (avoids Node/vitest unhandled-rejection warnings).
+    promise.catch(() => {});
     await vi.runAllTimersAsync();
-    await assertion;
+    await expect(promise).rejects.toThrow("401");
 
-    expect(vi.mocked(callOpenRouter)).toHaveBeenCalledTimes(1);
+    expect(mocked(callOpenRouter)).toHaveBeenCalledTimes(1);
   });
 
   // ── maxRetries = 0 ────────────────────────────────────────────────────────
 
   it("with maxRetries=0 does not retry at all", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValue(errorResult("503 unavailable"));
+    mocked(callOpenRouter).mockResolvedValue(errorResult("503 unavailable"));
 
     const promise = callWithRetry(CALL_OPTS, 0);
     await vi.runAllTimersAsync();
     const result = await promise;
 
     expect(result.isError).toBe(true);
-    expect(vi.mocked(callOpenRouter)).toHaveBeenCalledTimes(1);
+    expect(mocked(callOpenRouter)).toHaveBeenCalledTimes(1);
   });
 
   // ── Logging ───────────────────────────────────────────────────────────────
 
   it("calls onLog with retry details on each retry", async () => {
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       .mockResolvedValueOnce(errorResult("503 unavailable"))
       .mockResolvedValueOnce(successResult());
 

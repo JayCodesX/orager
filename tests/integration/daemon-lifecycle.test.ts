@@ -37,7 +37,12 @@ const { TEST_SIGNING_KEY } = vi.hoisted(() => ({
 // ── Mocks (must be declared before dynamic imports) ───────────────────────────
 
 vi.mock("../../src/jwt.js", async (importOriginal) => {
-  const orig = await importOriginal<typeof import("../../src/jwt.js")>();
+  // importOriginal is vitest-specific; bun passes undefined so we fall back to
+  // a direct import() which gives the real module under bun's mock system.
+  const orig: typeof import("../../src/jwt.js") =
+    typeof importOriginal === "function"
+      ? await importOriginal()
+      : await import("../../src/jwt.js");
   return {
     ...orig,
     // Return a fixed key so the test can mint/verify JWTs deterministically
@@ -97,7 +102,12 @@ vi.mock("../../src/embedding-cache.js", () => ({
 }));
 
 vi.mock("../../src/session.js", async (importOriginal) => {
-  const orig = await importOriginal<typeof import("../../src/session.js")>();
+  // importOriginal is vitest-specific; bun passes undefined so we fall back to
+  // a direct import() which gives the real module under bun's mock system.
+  const orig: typeof import("../../src/session.js") =
+    typeof importOriginal === "function"
+      ? await importOriginal()
+      : await import("../../src/session.js");
   return {
     ...orig,
     ensureSessionsDirPermissions: vi.fn().mockResolvedValue(undefined),

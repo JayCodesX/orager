@@ -323,6 +323,10 @@ export function parseArgs(argv: string[]): CliOptions {
         opts.enableBrowserTools = true;
         break;
       }
+      case "--auto-memory": {
+        opts.autoMemory = true;
+        break;
+      }
       case "--track-file-changes": {
         opts.trackFileChanges = true;
         break;

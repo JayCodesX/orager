@@ -37,7 +37,7 @@ import { FINISH_TOOL_NAME } from "./tools/finish.js";
 import { promptApproval } from "./approval.js";
 import { getAgentCircuitBreaker } from "./circuit-breaker.js";
 import { log } from "./logger.js";
-import { auditApproval } from "./audit.js";
+import { auditApproval, logToolCall } from "./audit.js";
 import { truncateContent } from "./truncate.js";
 import { checkDeprecatedModel } from "./deprecated-models.js";
 import { getModelCapabilities } from "./model-capabilities.js";
@@ -655,6 +655,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           model: subModel,
           maxTurns: subMaxTurns,
           sessionId: null, // fresh session for each sub-agent
+          trackFileChanges: true,
           _spawnDepth: currentSpawnDepth + 1,
           _parentSessionIds: [...parentSessionIds, ...(sessionId ? [sessionId] : [])],
           onEmit: (event) => {
@@ -675,6 +676,11 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
 
         if (subError) {
           return { toolCallId: "", content: subError, isError: true };
+        }
+
+        // Merge sub-agent filesChanged into the parent's tracking Set
+        if (subFilesChanged && opts.trackFileChanges) {
+          for (const f of subFilesChanged) filesChanged.add(f);
         }
 
         // Build a structured summary so the parent model can reason about cost/files
@@ -1030,6 +1036,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       async () => {
         const metricStart = Date.now();
         let metricIsError = false;
+        let metricResultSummary: string | undefined;
         try {
           const toolTimeoutMs = _effectiveToolTimeout(toolName);
           const result = toolTimeoutMs != null
@@ -1049,10 +1056,12 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             toolResultCache.clear();
           }
           metricIsError = result.isError;
+          metricResultSummary = result.content.slice(0, 200);
           return { id: toolCall.id, content: result.content, isError: result.isError, imageUrl: result.imageUrl };
         } catch (err) {
           metricIsError = true;
           const msg = err instanceof Error ? err.message : String(err);
+          metricResultSummary = `error: ${msg}`.slice(0, 200);
           // ── ToolTimeout hook ──────────────────────────────────────────────
           if (msg.includes("timed out") && effectiveOpts.hooks?.ToolTimeout) {
             await fireHooks("ToolTimeout", effectiveOpts.hooks.ToolTimeout, { event: "ToolTimeout", sessionId, toolName, toolInput: parsedInput, isError: true, ts: new Date().toISOString() }, _hookOpts, (m) => onLog?.("stderr", m));
@@ -1067,6 +1076,17 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           toolMetrics.set(toolName, m);
           // ── OTel metrics: tool call counts ──────────────────────────────
           recordToolCall(toolName, metricIsError);
+          // ── Structured tool-call audit log ──────────────────────────────
+          logToolCall({
+            event: "tool_call",
+            ts: new Date().toISOString(),
+            sessionId,
+            toolName,
+            inputSummary: parsedInput,
+            isError: metricIsError,
+            durationMs: elapsed,
+            resultSummary: metricResultSummary,
+          });
         }
       },
     );
@@ -1096,6 +1116,48 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   })();
   await withSpan("agent_loop", { "orager.session_id": sessionId, "orager.model": model, "orager.prompt_id": _promptId }, async (rootSpan) => {
   void rootSpan; // rootSpan available for attribute setting
+
+  const firedOnce = new Set<number>();
+
+  // ── emitResult helper ─────────────────────────────────────────────────────
+  // DRY wrapper: fires onEmit, records OTel session metrics, fires the webhook,
+  // MaxTurnsReached hook (when applicable), and the Stop hook for every terminal
+  // result event.
+  const emitResult = async (resultEvent: EmitResultEvent): Promise<void> => {
+    onEmit(resultEvent);
+    // ── OTel metrics: session duration + turn count ──────────────────────
+    recordSession(Date.now() - _sessionStartMs, resultEvent.turnCount ?? turn, resultEvent.subtype);
+    if (isWebhookUrlSafe(opts.webhookUrl)) {
+      await postWebhook(opts.webhookUrl!, resultEvent, opts.webhookFormat);
+    }
+    // MaxTurnsReached fires before Stop so listeners can distinguish the reason.
+    if (resultEvent.subtype === "error_max_turns" && effectiveOpts.hooks?.MaxTurnsReached) {
+      await fireHooks("MaxTurnsReached", effectiveOpts.hooks.MaxTurnsReached, {
+        event: "MaxTurnsReached",
+        sessionId,
+        model: lastResponseModel,
+        turn,
+        subtype: resultEvent.subtype,
+        totalCostUsd: resultEvent.total_cost_usd,
+        turnCount: resultEvent.turnCount,
+        ts: new Date().toISOString(),
+      } satisfies HookPayload, _hookOpts, (msg) => onLog?.("stderr", msg));
+    }
+    if (effectiveOpts.hooks?.Stop) {
+      await fireHooks("Stop", effectiveOpts.hooks.Stop, {
+        event: "Stop",
+        sessionId,
+        model: lastResponseModel,
+        turn,
+        subtype: resultEvent.subtype,
+        result: resultEvent.result,
+        totalCostUsd: resultEvent.total_cost_usd,
+        turnCount: resultEvent.turnCount,
+        ts: new Date().toISOString(),
+      } satisfies HookPayload, _hookOpts, (msg) => onLog?.("stderr", msg));
+    }
+  };
+
   try {
     // ── Pending approval resume ────────────────────────────────────────────────
     // If this session has a pending approval (run ended with a question event),
@@ -1146,47 +1208,6 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         : "";
       onLog?.("stderr", `[orager] approval resolved (${approved ? "approved" : "denied"})${elapsedStr} — resuming run\n`);
     }
-
-    const firedOnce = new Set<number>();
-
-    // ── emitResult helper ─────────────────────────────────────────────────────
-    // DRY wrapper: fires onEmit, records OTel session metrics, fires the webhook,
-    // MaxTurnsReached hook (when applicable), and the Stop hook for every terminal
-    // result event.
-    const emitResult = async (resultEvent: EmitResultEvent): Promise<void> => {
-      onEmit(resultEvent);
-      // ── OTel metrics: session duration + turn count ──────────────────────
-      recordSession(Date.now() - _sessionStartMs, resultEvent.turnCount ?? turn, resultEvent.subtype);
-      if (isWebhookUrlSafe(opts.webhookUrl)) {
-        await postWebhook(opts.webhookUrl!, resultEvent, opts.webhookFormat);
-      }
-      // MaxTurnsReached fires before Stop so listeners can distinguish the reason.
-      if (resultEvent.subtype === "error_max_turns" && effectiveOpts.hooks?.MaxTurnsReached) {
-        await fireHooks("MaxTurnsReached", effectiveOpts.hooks.MaxTurnsReached, {
-          event: "MaxTurnsReached",
-          sessionId,
-          model: lastResponseModel,
-          turn,
-          subtype: resultEvent.subtype,
-          totalCostUsd: resultEvent.total_cost_usd,
-          turnCount: resultEvent.turnCount,
-          ts: new Date().toISOString(),
-        } satisfies HookPayload, _hookOpts, (msg) => onLog?.("stderr", msg));
-      }
-      if (effectiveOpts.hooks?.Stop) {
-        await fireHooks("Stop", effectiveOpts.hooks.Stop, {
-          event: "Stop",
-          sessionId,
-          model: lastResponseModel,
-          turn,
-          subtype: resultEvent.subtype,
-          result: resultEvent.result,
-          totalCostUsd: resultEvent.total_cost_usd,
-          turnCount: resultEvent.turnCount,
-          ts: new Date().toISOString(),
-        } satisfies HookPayload, _hookOpts, (msg) => onLog?.("stderr", msg));
-      }
-    };
 
     // Rolling average for cost anomaly detection (P3-5)
     // Track per-turn actual costs to compute a running average.

@@ -1,0 +1,5 @@
+[test]
+# Preload polyfills for vi methods that bun's test shim omits
+# (vi.resetModules, vi.stubGlobal, vi.unstubAllGlobals, vi.runAllTimersAsync, vi.hoisted).
+# vitest uses tests/setup.ts via setupFiles in vitest.config.ts instead.
+preload = ["./tests/bun-setup.ts"]

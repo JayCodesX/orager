@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mocked } from "./mock-helpers.js";
 import { runAgentLoop } from "../src/loop.js";
 import type { EmitEvent, EmitResultEvent, OpenRouterCallResult, SessionData } from "../src/types.js";
 
@@ -16,9 +17,7 @@ vi.mock("../src/session.js", () => ({
   acquireSessionLock: vi.fn().mockResolvedValue(async () => {}),
 }));
 
-vi.mock("../src/audit.js", () => ({
-  auditApproval: vi.fn(),
-}));
+vi.mock("../src/audit.js", () => ({ auditApproval: vi.fn(), logToolCall: vi.fn(), logSandboxViolation: vi.fn() }));
 
 const { callOpenRouter } = await import("../src/openrouter.js");
 const { saveSession, loadSession, newSessionId } = await import("../src/session.js");
@@ -68,13 +67,13 @@ function resultEvent(emitted: EmitEvent[]): EmitResultEvent {
 describe("session cumulative cost", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(newSessionId).mockReturnValue("test-session-id");
-    vi.mocked(saveSession).mockResolvedValue(undefined);
-    vi.mocked(loadSession).mockResolvedValue(null);
+    mocked(newSessionId).mockReturnValue("test-session-id");
+    mocked(saveSession).mockResolvedValue(undefined);
+    mocked(loadSession).mockResolvedValue(null);
   });
 
   it("first run accumulates cost and saves cumulativeCostUsd to session", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValueOnce({
+    mocked(callOpenRouter).mockResolvedValueOnce({
       ...noToolResponse("done"),
       usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
     });
@@ -87,8 +86,8 @@ describe("session cumulative cost", () => {
     await runAgentLoop(opts);
 
     // Verify saveSession was called with cumulativeCostUsd set
-    expect(vi.mocked(saveSession)).toHaveBeenCalled();
-    const saved = vi.mocked(saveSession).mock.calls[0][0];
+    expect(mocked(saveSession)).toHaveBeenCalled();
+    const saved = mocked(saveSession).mock.calls[0][0];
     // 100 * 0.001 + 50 * 0.002 = 0.1 + 0.1 = 0.2
     expect(saved.cumulativeCostUsd).toBeCloseTo(0.2, 6);
   });
@@ -108,9 +107,9 @@ describe("session cumulative cost", () => {
       cwd: "/tmp",
       cumulativeCostUsd: 0.5,
     };
-    vi.mocked(loadSession).mockResolvedValueOnce(existingSession);
+    mocked(loadSession).mockResolvedValueOnce(existingSession);
 
-    vi.mocked(callOpenRouter).mockResolvedValueOnce({
+    mocked(callOpenRouter).mockResolvedValueOnce({
       ...noToolResponse("resumed"),
       usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
     });
@@ -129,7 +128,7 @@ describe("session cumulative cost", () => {
     expect(result.total_cost_usd).toBeCloseTo(0.7, 6);
 
     // And the saved cumulativeCostUsd should be updated
-    const saved = vi.mocked(saveSession).mock.calls[0][0];
+    const saved = mocked(saveSession).mock.calls[0][0];
     expect(saved.cumulativeCostUsd).toBeCloseTo(0.7, 6);
   });
 
@@ -148,12 +147,12 @@ describe("session cumulative cost", () => {
       cwd: "/tmp",
       cumulativeCostUsd: 0.9,
     };
-    vi.mocked(loadSession).mockResolvedValueOnce(existingSession);
+    mocked(loadSession).mockResolvedValueOnce(existingSession);
 
     // The turn costs 0.2, pushing total to 1.1 > 1.0 limit.
     // Use a tool response so the loop continues past the "break on no tools" point
     // and reaches the cost check (which fires after tool execution).
-    vi.mocked(callOpenRouter).mockResolvedValueOnce({
+    mocked(callOpenRouter).mockResolvedValueOnce({
       content: "",
       reasoning: "",
       toolCalls: [{ id: "tc-1", type: "function" as const, function: { name: "bash", arguments: JSON.stringify({ command: "echo hi" }) } }],
@@ -194,9 +193,9 @@ describe("session cumulative cost", () => {
       cwd: "/tmp",
       // no cumulativeCostUsd
     };
-    vi.mocked(loadSession).mockResolvedValueOnce(oldSession);
+    mocked(loadSession).mockResolvedValueOnce(oldSession);
 
-    vi.mocked(callOpenRouter).mockResolvedValueOnce({
+    mocked(callOpenRouter).mockResolvedValueOnce({
       ...noToolResponse("legacy"),
       usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
     });

@@ -26,8 +26,29 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { ToolExecutor, ToolParameterSchema } from "./types.js";
 
+/**
+ * SSRF guard for MCP HTTP transport URLs.
+ * Blocks cloud metadata endpoints (169.254.x.x, metadata.google.internal)
+ * but allows localhost/127.x so developers can run MCP servers locally.
+ */
+function isMcpHttpUrlSafe(raw: string): boolean {
+  let u: URL;
+  try { u = new URL(raw); } catch { return false; }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return false;
+  const h = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  // Block link-local (cloud metadata services live here)
+  if (/^169\.254\./.test(h)) return false;
+  // Block GCP metadata by hostname
+  if (h === "metadata.google.internal" || h === "metadata.google") return false;
+  // Block Azure/AWS IMDS hostname variants
+  if (h === "metadata.azure.com" || h === "169.254.169.254") return false;
+  return true;
+}
+
 const MCP_TOOL_TIMEOUT_MS = 30_000;
 const MAX_MCP_RESULT_CHARS = 50_000;
+const MCP_TOOL_CALL_RETRIES = 2;          // max retries on rate-limit or transient errors
+const MCP_TOOL_CALL_RETRY_DELAYS = [1000, 3000]; // ms before each retry
 
 // Env var prefixes that can hijack subprocess behaviour — strip them from
 // user-supplied MCP server env configs to prevent sandbox escapes.
@@ -125,6 +146,114 @@ export interface McpClientHandle {
   close(): Promise<void>;
 }
 
+// ── Reconnectable HTTP client ─────────────────────────────────────────────────
+//
+// HTTP MCP servers can drop long-lived connections (idle timeout, server restart,
+// load-balancer reset). This class wraps an MCP Client, detects transport-level
+// disconnection errors on tool calls, and automatically reconnects + retries once.
+
+function buildHttpTransport(config: HttpMcpServerConfig, name: string): StreamableHTTPClientTransport {
+  const url = new URL(config.url);
+  const t = new StreamableHTTPClientTransport(url);
+  if (config.headers && Object.keys(config.headers).length > 0) {
+    const safeHdrs = sanitizeMcpHttpHeaders(config.headers, name);
+    if (Object.keys(safeHdrs).length > 0) {
+      (t as unknown as { requestInit?: RequestInit }).requestInit = { headers: safeHdrs };
+    }
+  }
+  return t;
+}
+
+function isTransportDisconnect(msg: string): boolean {
+  return /ECONNRESET|EPIPE|connection.*closed|disconnected|socket.*hang|network.*error|transport.*closed/i.test(msg);
+}
+
+function isRateLimitError(msg: string): boolean {
+  return /429|rate.?limit|too.?many/i.test(msg);
+}
+
+/**
+ * Wraps an MCP Client for HTTP transports.
+ * On disconnect, automatically creates a fresh transport+client and retries once.
+ * On 429 rate-limit responses, retries up to MCP_TOOL_CALL_RETRIES times with backoff.
+ */
+class ReconnectableMcpClient {
+  private _closed = false;
+
+  constructor(
+    private readonly serverName: string,
+    private readonly config: HttpMcpServerConfig,
+    private client: Client,
+  ) {}
+
+  async callTool(toolName: string, input: Record<string, unknown>) {
+    let lastErr: unknown;
+
+    for (let attempt = 0; attempt <= MCP_TOOL_CALL_RETRIES; attempt++) {
+      try {
+        // Single callTool promise raced against a timeout.
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        return await Promise.race([
+          this.client.callTool({ name: toolName, arguments: input }),
+          new Promise<never>((_, reject) => {
+            timeoutHandle = setTimeout(
+              () => reject(new Error(`MCP tool '${toolName}' timed out after ${MCP_TOOL_TIMEOUT_MS / 1000}s`)),
+              MCP_TOOL_TIMEOUT_MS,
+            );
+          }),
+        ]).finally(() => {
+          if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+        });
+      } catch (err) {
+        lastErr = err;
+        if (this._closed) throw err;
+
+        const msg = err instanceof Error ? err.message : String(err);
+
+        if (isTransportDisconnect(msg) && attempt === 0) {
+          // First attempt, transport dropped — reconnect and retry immediately
+          process.stderr.write(
+            `[orager] MCP server '${this.serverName}' connection lost (${msg.slice(0, 80)}), reconnecting…\n`,
+          );
+          await this._reconnect();
+          continue; // retry without delay
+        }
+
+        if (isRateLimitError(msg) && attempt < MCP_TOOL_CALL_RETRIES) {
+          const delay = MCP_TOOL_CALL_RETRY_DELAYS[attempt] ?? 3000;
+          process.stderr.write(
+            `[orager] MCP server '${this.serverName}' rate-limited — retry ${attempt + 1}/${MCP_TOOL_CALL_RETRIES} after ${delay}ms\n`,
+          );
+          await new Promise<void>((r) => setTimeout(r, delay));
+          continue;
+        }
+
+        throw err; // non-retriable or exhausted retries
+      }
+    }
+
+    throw lastErr;
+  }
+
+  private async _reconnect(): Promise<void> {
+    await this.client.close().catch(() => {});
+    const transport = buildHttpTransport(this.config, this.serverName);
+    this.client = new Client({ name: "orager", version: "1.0.0" });
+    try {
+      await this.client.connect(transport);
+      process.stderr.write(`[orager] MCP server '${this.serverName}' reconnected successfully\n`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`MCP server '${this.serverName}' failed to reconnect: ${msg}`);
+    }
+  }
+
+  async close(): Promise<void> {
+    this._closed = true;
+    await this.client.close().catch(() => {});
+  }
+}
+
 export async function connectMcpServer(
   name: string,
   config: McpServerConfig,
@@ -132,21 +261,12 @@ export async function connectMcpServer(
   // ── Transport selection ───────────────────────────────────────────────────
   const transport = "url" in config
     ? (() => {
-        const url = new URL(config.url);
-        const t = new StreamableHTTPClientTransport(url);
-        // Inject sanitized custom headers (e.g. Authorization) into every outbound request.
-        if (config.headers && Object.keys(config.headers).length > 0) {
-          const safeHdrs = sanitizeMcpHttpHeaders(config.headers, name);
-          if (Object.keys(safeHdrs).length > 0) {
-            // StreamableHTTPClientTransport exposes a `requestInit` options object
-            // that is merged into every fetch call. We patch it here post-construction
-            // so we don't depend on constructor signature changes across SDK versions.
-            (t as unknown as { requestInit?: RequestInit }).requestInit = {
-              headers: safeHdrs,
-            };
-          }
+        if (!isMcpHttpUrlSafe(config.url)) {
+          throw new Error(
+            `MCP server '${name}': URL '${config.url}' is blocked — cloud metadata endpoints (link-local 169.254.x.x) are not allowed for HTTP transport`,
+          );
         }
-        return t;
+        return buildHttpTransport(config, name);
       })()
     : new StdioClientTransport({
         command: config.command,
@@ -155,6 +275,11 @@ export async function connectMcpServer(
       });
 
   const client = new Client({ name: "orager", version: "1.0.0" });
+
+  // For HTTP transports, wrap in a ReconnectableMcpClient after successful connect.
+  const reconnectable = "url" in config
+    ? new ReconnectableMcpClient(name, config, client)
+    : null;
 
   // ── Connection with retry + rate-limit backoff ────────────────────────────
   // HTTP transports may receive a 429 (Too Many Requests) on the initial
@@ -191,7 +316,7 @@ export async function connectMcpServer(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // Only retry on rate-limit signals (429 in message) or transient network errors
-      const isRateLimit = /429|rate.?limit|too.?many/i.test(msg);
+      const isRateLimit = isRateLimitError(msg);
       const isTransient = /timeout|ECONNREFUSED|ENOTFOUND|network/i.test(msg);
       if (attempt < connectAttempts - 1 && (isRateLimit || isTransient)) {
         continue; // will retry
@@ -213,19 +338,27 @@ export async function connectMcpServer(
     },
     async execute(input: Record<string, unknown>) {
       try {
-        // Enforce per-call timeout — a hanging MCP server must not block the agent indefinitely.
-        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-        const result = await Promise.race([
-          client.callTool({ name: t.name, arguments: input }),
-          new Promise<never>((_, reject) => {
-            timeoutHandle = setTimeout(
-              () => reject(new Error(`MCP tool '${t.name}' timed out after ${MCP_TOOL_TIMEOUT_MS / 1000}s`)),
-              MCP_TOOL_TIMEOUT_MS,
-            );
-          }),
-        ]).finally(() => {
-          if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
-        });
+        // For HTTP transports, use the reconnectable client which handles disconnect
+        // recovery and rate-limit retries automatically.
+        // For stdio, call the underlying client directly (no reconnect needed).
+        let result: Awaited<ReturnType<typeof client.callTool>>;
+        if (reconnectable) {
+          result = await reconnectable.callTool(t.name, input);
+        } else {
+          // Stdio: enforce per-call timeout only (no reconnect logic).
+          let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+          result = await Promise.race([
+            client.callTool({ name: t.name, arguments: input }),
+            new Promise<never>((_, reject) => {
+              timeoutHandle = setTimeout(
+                () => reject(new Error(`MCP tool '${t.name}' timed out after ${MCP_TOOL_TIMEOUT_MS / 1000}s`)),
+                MCP_TOOL_TIMEOUT_MS,
+              );
+            }),
+          ]).finally(() => {
+            if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+          });
+        }
 
         let content = Array.isArray(result.content)
           ? result.content.map((c: { type: string; text?: string }) => c.type === "text" ? c.text ?? "" : JSON.stringify(c)).join("\n")
@@ -251,7 +384,13 @@ export async function connectMcpServer(
   return {
     tools,
     async close() {
-      await client.close().catch(() => {});
+      // For HTTP transports, close via the reconnectable wrapper (sets _closed flag).
+      // For stdio, close the underlying client directly.
+      if (reconnectable) {
+        await reconnectable.close();
+      } else {
+        await client.close().catch(() => {});
+      }
     },
   };
 }

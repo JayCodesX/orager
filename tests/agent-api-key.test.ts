@@ -7,6 +7,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mocked } from "./mock-helpers.js";
 import { sanitizeDaemonRunOpts } from "../src/daemon.js";
 import type { AgentLoopOptions, OpenRouterCallResult } from "../src/types.js";
 
@@ -28,7 +29,12 @@ vi.mock("../src/openrouter-model-meta.js", () => ({
 }));
 
 vi.mock("../src/loop-helpers.js", async (importOriginal) => {
-  const original = await importOriginal<typeof import("../src/loop-helpers.js")>();
+  // importOriginal is vitest-specific; bun passes undefined so we fall back to
+  // a direct import() which gives the real module under bun's mock system.
+  const original: typeof import("../src/loop-helpers.js") =
+    typeof importOriginal === "function"
+      ? await importOriginal()
+      : await import("../src/loop-helpers.js");
   return {
     ...original,
     fetchModelContextLengths: vi.fn().mockResolvedValue(undefined),
@@ -58,7 +64,7 @@ function makeSuccessResult(): OpenRouterCallResult {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(callWithRetry).mockResolvedValue(makeSuccessResult());
+  mocked(callWithRetry).mockResolvedValue(makeSuccessResult());
 });
 
 afterEach(() => {
@@ -89,8 +95,8 @@ describe("P1-1 agentApiKey — API key resolution", () => {
     await runAgentLoop(loopOpts);
 
     // callWithRetry should have been called with the per-agent key
-    expect(vi.mocked(callWithRetry)).toHaveBeenCalled();
-    const callArgs = vi.mocked(callWithRetry).mock.calls[0]![0];
+    expect(mocked(callWithRetry)).toHaveBeenCalled();
+    const callArgs = mocked(callWithRetry).mock.calls[0]![0];
     expect(callArgs.apiKey).toBe("per-agent-key");
   });
 
@@ -113,8 +119,8 @@ describe("P1-1 agentApiKey — API key resolution", () => {
 
     await runAgentLoop(loopOpts);
 
-    expect(vi.mocked(callWithRetry)).toHaveBeenCalled();
-    const callArgs = vi.mocked(callWithRetry).mock.calls[0]![0];
+    expect(mocked(callWithRetry)).toHaveBeenCalled();
+    const callArgs = mocked(callWithRetry).mock.calls[0]![0];
     expect(callArgs.apiKey).toBe("global-key");
   });
 
@@ -138,8 +144,8 @@ describe("P1-1 agentApiKey — API key resolution", () => {
 
     await runAgentLoop(loopOpts);
 
-    expect(vi.mocked(callWithRetry)).toHaveBeenCalled();
-    const callArgs = vi.mocked(callWithRetry).mock.calls[0]![0];
+    expect(mocked(callWithRetry)).toHaveBeenCalled();
+    const callArgs = mocked(callWithRetry).mock.calls[0]![0];
     expect(callArgs.apiKey).toBe("global-key");
   });
 });
@@ -194,10 +200,10 @@ describe("P1-1 rate-limit isolation", () => {
       onEmit: (e) => { eventsA.push(e); },
     });
 
-    const callAKey = vi.mocked(callWithRetry).mock.calls[0]![0].apiKey;
+    const callAKey = mocked(callWithRetry).mock.calls[0]![0].apiKey;
     expect(callAKey).toBe("key-A");
 
-    vi.mocked(callWithRetry).mockClear();
+    mocked(callWithRetry).mockClear();
 
     // Agent B with key-B: succeeds independently
     const eventsB: { type: string }[] = [];
@@ -215,7 +221,7 @@ describe("P1-1 rate-limit isolation", () => {
       onEmit: (e) => { eventsB.push(e); },
     });
 
-    const callBKey = vi.mocked(callWithRetry).mock.calls[0]![0].apiKey;
+    const callBKey = mocked(callWithRetry).mock.calls[0]![0].apiKey;
     expect(callBKey).toBe("key-B");
 
     // Both runs completed successfully

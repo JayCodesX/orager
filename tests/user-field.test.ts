@@ -5,6 +5,7 @@
  * to opts.agentId when provided, or to the sessionId when agentId is absent.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mocked } from "./mock-helpers.js";
 import { runAgentLoop } from "../src/loop.js";
 import type { EmitEvent, OpenRouterCallResult } from "../src/types.js";
 
@@ -17,7 +18,7 @@ vi.mock("../src/session.js", () => ({
   saveSession: vi.fn().mockResolvedValue(undefined),
   newSessionId: vi.fn().mockReturnValue("user-field-session-id"),
 }));
-vi.mock("../src/audit.js", () => ({ auditApproval: vi.fn() }));
+vi.mock("../src/audit.js", () => ({ auditApproval: vi.fn(), logToolCall: vi.fn(), logSandboxViolation: vi.fn() }));
 
 const { callOpenRouter } = await import("../src/openrouter.js");
 
@@ -56,24 +57,24 @@ describe("user field forwarded to OpenRouter (Sprint 3-C)", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("user is set to agentId when agentId is provided", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValueOnce(stopResponse());
+    mocked(callOpenRouter).mockResolvedValueOnce(stopResponse());
     await runAgentLoop(loopOpts({ agentId: "my-agent-42" }));
-    const user = vi.mocked(callOpenRouter).mock.calls[0][0].user;
+    const user = mocked(callOpenRouter).mock.calls[0][0].user;
     expect(user).toBe("my-agent-42");
   });
 
   it("user is set to sessionId when no agentId is provided", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValueOnce(stopResponse());
+    mocked(callOpenRouter).mockResolvedValueOnce(stopResponse());
     // newSessionId mock returns "user-field-session-id"
     await runAgentLoop(loopOpts());
-    const user = vi.mocked(callOpenRouter).mock.calls[0][0].user;
+    const user = mocked(callOpenRouter).mock.calls[0][0].user;
     expect(user).toBe("user-field-session-id");
   });
 
   it("user is set to agentId over sessionId when both are available", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValueOnce(stopResponse());
+    mocked(callOpenRouter).mockResolvedValueOnce(stopResponse());
     await runAgentLoop(loopOpts({ agentId: "agent-override", sessionId: "existing-session" }));
-    const user = vi.mocked(callOpenRouter).mock.calls[0][0].user;
+    const user = mocked(callOpenRouter).mock.calls[0][0].user;
     expect(user).toBe("agent-override");
   });
 });
