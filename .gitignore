@@ -6,3 +6,4 @@ bin/
 *.js.map
 *.bun-build
 AUDIT_REPORT*.md
+CLAUDE.md
