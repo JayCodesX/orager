@@ -2,7 +2,7 @@
  * Minimal HS256 JWT implementation using Node.js built-in crypto.
  * No external dependencies — keeps orager's footprint small.
  *
- * Tokens are short-lived (5 min) and carry agentId + scope so the daemon can
+ * Tokens are short-lived (15 min) and carry agentId + scope so the daemon can
  * log per-request metadata without needing a persistent session store.
  */
 

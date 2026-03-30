@@ -107,7 +107,13 @@ export function formatDiscordPayload(event: EmitResultEvent): unknown {
   };
 }
 
-export async function postWebhook(url: string, payload: unknown, format?: "discord"): Promise<void> {
+/**
+ * Post a webhook payload, retrying on 5xx/429. Returns null on success, or an
+ * error message string if delivery permanently failed (all retries exhausted or
+ * a non-retriable 4xx). Callers should emit a warn event on non-null returns so
+ * the failure is visible in the event stream, not only on stderr.
+ */
+export async function postWebhook(url: string, payload: unknown, format?: "discord"): Promise<string | null> {
   const body = format === "discord" && payload !== null && typeof payload === "object" && "type" in (payload as object) && (payload as { type: string }).type === "result"
     ? formatDiscordPayload(payload as EmitResultEvent)
     : payload;
@@ -128,21 +134,21 @@ export async function postWebhook(url: string, payload: unknown, format?: "disco
         signal: AbortSignal.timeout(10_000),
       });
       // Do not retry on 4xx (except 429) — these are permanent failures
-      if (res.ok) return;
+      if (res.ok) return null;
       if (res.status === 429 || res.status >= 500) {
         lastErr = new Error(`HTTP ${res.status}`);
         continue; // retry
       }
       // 4xx other than 429 — permanent failure, no retry
-      return;
+      return `webhook returned HTTP ${res.status}`;
     } catch (err) {
       lastErr = err; // network error — retry
     }
   }
-  // All retries exhausted — log permanently failed webhook delivery
-  process.stderr.write(
-    `[orager] WARNING: webhook delivery failed after ${delays.length} attempts to ${url}: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}\n`,
-  );
+  // All retries exhausted
+  const msg = `webhook delivery failed after ${delays.length} attempts: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`;
+  process.stderr.write(`[orager] WARNING: ${msg} (url: ${url})\n`);
+  return msg;
 }
 
 /**
@@ -318,6 +324,16 @@ export async function fetchModelContextLengths(apiKey: string): Promise<void> {
  */
 export function isModelContextCacheWarm(): boolean {
   return modelCacheFetchedAt > 0 && Date.now() - modelCacheFetchedAt < MODEL_CACHE_TTL_MS;
+}
+
+/**
+ * Reset the model context cache to its initial unfetched state.
+ * Only intended for use in tests — do not call from production code.
+ */
+export function _resetModelCacheForTesting(): void {
+  modelCacheFetchedAt = 0;
+  modelContextCache.clear();
+  modelCacheFetchInFlight = null;
 }
 
 export function getContextWindowFromFallback(model: string): number {

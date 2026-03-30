@@ -51,9 +51,14 @@ export async function drainAndExit(
     process.stderr.write(
       `[orager daemon] drain timeout — ${ctx.activeRuns} run(s) abandoned\n`,
     );
-    // Kill orphaned bash subprocesses that kept runs alive past drain timeout
+    // Kill orphaned bash subprocesses (and their process groups) that kept
+    // runs alive past drain timeout. Use -pid (negative) to kill the entire
+    // process group spawned by bash — matches what bash.ts does on timeout.
     for (const pid of activeBashPids) {
-      try { process.kill(pid, "SIGTERM"); } catch { /* already exited */ }
+      try { process.kill(-pid, "SIGTERM"); } catch {
+        // Process group may already be gone; try the PID directly as fallback
+        try { process.kill(pid, "SIGTERM"); } catch { /* already exited */ }
+      }
     }
   } else {
     process.stderr.write("[orager daemon] all runs completed — exiting\n");
