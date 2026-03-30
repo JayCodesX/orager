@@ -292,8 +292,13 @@ async function _fileList(opts?: { offset?: number; limit?: number }): Promise<Se
   );
 }
 
+// Compacted sessions are kept 3× longer than regular sessions to preserve
+// the compact summary as a long-lived reference.
+const COMPACTED_PRUNE_MULTIPLIER = 3;
+
 async function _filePrune(olderThanMs: number): Promise<PruneResult> {
-  const cutoff = Date.now() - olderThanMs;
+  const normalCutoff = Date.now() - olderThanMs;
+  const compactedCutoff = Date.now() - olderThanMs * COMPACTED_PRUNE_MULTIPLIER;
   let deleted = 0;
   let kept = 0;
   let errors = 0;
@@ -311,6 +316,17 @@ async function _filePrune(olderThanMs: number): Promise<PruneResult> {
     const filePath = path.join(getSessionsDir(), entry);
     try {
       const stat = await fs.stat(filePath);
+      // Read the session JSON to check if it was compacted (summarized).
+      // Compacted sessions use a longer retention period.
+      let isCompacted = false;
+      try {
+        const raw = await fs.readFile(filePath, "utf8");
+        const parsed = JSON.parse(raw) as { summarized?: boolean };
+        isCompacted = parsed.summarized === true;
+      } catch {
+        // Unreadable / corrupt session — use normal cutoff
+      }
+      const cutoff = isCompacted ? compactedCutoff : normalCutoff;
       if (stat.mtimeMs < cutoff) {
         await fs.unlink(filePath);
         deleted++;

@@ -29,7 +29,7 @@ vi.mock("../../src/session.js", () => ({
   newSessionId: vi.fn().mockReturnValue("test-session-id"),
 }));
 
-vi.mock("../../src/audit.js", () => ({ auditApproval: vi.fn(), logSandboxViolation: vi.fn() }));
+vi.mock("../../src/audit.js", () => ({ auditApproval: vi.fn(), logToolCall: vi.fn(), logSandboxViolation: vi.fn() }));
 
 // Playwright mock — used only by the browser_navigate test (test 6).
 // Other tests never trigger browser tool creation, so this mock is harmless

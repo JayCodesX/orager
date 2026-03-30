@@ -20,7 +20,7 @@ vi.mock("../src/session.js", () => ({
   newSessionId: vi.fn().mockReturnValue("cost-session-id"),
 }));
 
-vi.mock("../src/audit.js", () => ({ auditApproval: vi.fn() }));
+vi.mock("../src/audit.js", () => ({ auditApproval: vi.fn(), logToolCall: vi.fn(), logSandboxViolation: vi.fn() }));
 
 const { callOpenRouter } = await import("../src/openrouter.js");
 

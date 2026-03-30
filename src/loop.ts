@@ -37,7 +37,7 @@ import { FINISH_TOOL_NAME } from "./tools/finish.js";
 import { promptApproval } from "./approval.js";
 import { getAgentCircuitBreaker } from "./circuit-breaker.js";
 import { log } from "./logger.js";
-import { auditApproval } from "./audit.js";
+import { auditApproval, logToolCall } from "./audit.js";
 import { truncateContent } from "./truncate.js";
 import { checkDeprecatedModel } from "./deprecated-models.js";
 import { getModelCapabilities } from "./model-capabilities.js";
@@ -1036,6 +1036,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       async () => {
         const metricStart = Date.now();
         let metricIsError = false;
+        let metricResultSummary: string | undefined;
         try {
           const toolTimeoutMs = _effectiveToolTimeout(toolName);
           const result = toolTimeoutMs != null
@@ -1055,10 +1056,12 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             toolResultCache.clear();
           }
           metricIsError = result.isError;
+          metricResultSummary = result.content.slice(0, 200);
           return { id: toolCall.id, content: result.content, isError: result.isError, imageUrl: result.imageUrl };
         } catch (err) {
           metricIsError = true;
           const msg = err instanceof Error ? err.message : String(err);
+          metricResultSummary = `error: ${msg}`.slice(0, 200);
           // ── ToolTimeout hook ──────────────────────────────────────────────
           if (msg.includes("timed out") && effectiveOpts.hooks?.ToolTimeout) {
             await fireHooks("ToolTimeout", effectiveOpts.hooks.ToolTimeout, { event: "ToolTimeout", sessionId, toolName, toolInput: parsedInput, isError: true, ts: new Date().toISOString() }, _hookOpts, (m) => onLog?.("stderr", m));
@@ -1073,6 +1076,17 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           toolMetrics.set(toolName, m);
           // ── OTel metrics: tool call counts ──────────────────────────────
           recordToolCall(toolName, metricIsError);
+          // ── Structured tool-call audit log ──────────────────────────────
+          logToolCall({
+            event: "tool_call",
+            ts: new Date().toISOString(),
+            sessionId,
+            toolName,
+            inputSummary: parsedInput,
+            isError: metricIsError,
+            durationMs: elapsed,
+            resultSummary: metricResultSummary,
+          });
         }
       },
     );

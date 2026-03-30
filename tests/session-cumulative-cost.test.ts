@@ -16,9 +16,7 @@ vi.mock("../src/session.js", () => ({
   acquireSessionLock: vi.fn().mockResolvedValue(async () => {}),
 }));
 
-vi.mock("../src/audit.js", () => ({
-  auditApproval: vi.fn(),
-}));
+vi.mock("../src/audit.js", () => ({ auditApproval: vi.fn(), logToolCall: vi.fn(), logSandboxViolation: vi.fn() }));
 
 const { callOpenRouter } = await import("../src/openrouter.js");
 const { saveSession, loadSession, newSessionId } = await import("../src/session.js");

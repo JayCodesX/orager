@@ -15,9 +15,7 @@ vi.mock("../src/session.js", () => ({
   newSessionId: vi.fn().mockReturnValue("test-session-id"),
 }));
 
-vi.mock("../src/audit.js", () => ({
-  auditApproval: vi.fn(),
-}));
+vi.mock("../src/audit.js", () => ({ auditApproval: vi.fn(), logToolCall: vi.fn(), logSandboxViolation: vi.fn() }));
 
 // Import mocked functions after vi.mock declarations (vitest hoists vi.mock)
 const { callOpenRouter } = await import("../src/openrouter.js");
