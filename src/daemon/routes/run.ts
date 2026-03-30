@@ -139,8 +139,25 @@ export function handleRun(
       }
     }
 
-    // Track which models are being used for multi-model keep-alive
+    // Track which models are being used for multi-model keep-alive.
+    // Cap at 500 entries to prevent unbounded growth on long-running daemons:
+    // evict the least-recently-used model when the cap is reached.
     if (runReq.opts?.model && typeof runReq.opts.model === "string") {
+      const MODEL_TRACKING_CAP = 500;
+      if (!ctx.modelLastUsedAt.has(runReq.opts.model) && ctx.modelLastUsedAt.size >= MODEL_TRACKING_CAP) {
+        // Find and remove the oldest entry (Map preserves insertion order;
+        // the first key is the one that was set least recently relative to
+        // insertion, but we want actual LRU so scan for the lowest timestamp).
+        let oldestModel: string | undefined;
+        let oldestTime = Infinity;
+        for (const [m, t] of ctx.modelLastUsedAt) {
+          if (t < oldestTime) { oldestTime = t; oldestModel = m; }
+        }
+        if (oldestModel !== undefined) {
+          ctx.modelLastUsedAt.delete(oldestModel);
+          ctx.usedModels.delete(oldestModel);
+        }
+      }
       ctx.usedModels.add(runReq.opts.model);
       ctx.modelLastUsedAt.set(runReq.opts.model, Date.now());
     }

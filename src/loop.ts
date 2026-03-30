@@ -129,7 +129,14 @@ function isWebhookUrlSafe(raw: string | undefined): boolean {
     /^127\./.test(h) || /^10\./.test(h) ||
     /^172\.(1[6-9]|2\d|3[01])\./.test(h) ||
     /^192\.168\./.test(h) ||
-    /^::ffff:127\./i.test(h) || h === "::ffff:7f00:1"
+    /^::ffff:127\./i.test(h) || h === "::ffff:7f00:1" ||
+    // Link-local: 169.254.0.0/16 (APIPA, cloud metadata e.g. 169.254.169.254)
+    /^169\.254\./.test(h) ||
+    // IPv6 link-local: fe80::/10
+    /^fe[89ab][0-9a-f]:/i.test(h) ||
+    // Multicast: 224.0.0.0/4 (IPv4), ff00::/8 (IPv6)
+    /^2(2[4-9]|3\d)\./.test(h) ||
+    /^ff[0-9a-f]{2}:/i.test(h)
   ) return false;
   return true;
 }
@@ -1149,7 +1156,10 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     // ── OTel metrics: session duration + turn count ──────────────────────
     recordSession(Date.now() - _sessionStartMs, resultEvent.turnCount ?? turn, resultEvent.subtype);
     if (isWebhookUrlSafe(opts.webhookUrl)) {
-      await postWebhook(opts.webhookUrl!, resultEvent, opts.webhookFormat);
+      const webhookErr = await postWebhook(opts.webhookUrl!, resultEvent, opts.webhookFormat);
+      if (webhookErr) {
+        onEmit({ type: "warn", message: `webhook_delivery_failed: ${webhookErr}` });
+      }
     }
     // MaxTurnsReached fires before Stop so listeners can distinguish the reason.
     if (resultEvent.subtype === "error_max_turns" && effectiveOpts.hooks?.MaxTurnsReached) {
