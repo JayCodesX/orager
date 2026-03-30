@@ -711,12 +711,14 @@ export async function compactSession(
   newMessages.push({ role: "user", content: `Previous session summary:\n${summary}` });
 
   const now = new Date().toISOString();
+  const historyEntry = { compactedAt: now, previousTurnCount: session.turnCount };
   await saveSession({
     ...session,
     messages: newMessages,
     updatedAt: now,
     summarized: true,
     compactedAt: now,
+    compactionHistory: [...(session.compactionHistory ?? []), historyEntry],
     // compactedFrom is intentionally NOT set for in-place compaction (same sessionId).
     // It is reserved for future fork-and-compact workflows where a new sessionId is created.
   });
@@ -817,11 +819,12 @@ export function newSessionId(): string {
  * Returns matching session summaries sorted by relevance (SQLite) or
  * updatedAt desc (file backend).
  */
-export async function searchSessions(query: string, limit = 20): Promise<SessionSummary[]> {
+export async function searchSessions(query: string, limit = 20, offset = 0): Promise<SessionSummary[]> {
   const store = await getStore();
   // If the store has a search method (SQLite), use it
   if ("search" in store && typeof (store as { search?: unknown }).search === "function") {
-    return (store as { search: (q: string, limit: number) => SessionSummary[] }).search(query, limit);
+    const all = (store as { search: (q: string, limit: number) => SessionSummary[] }).search(query, limit + offset);
+    return all.slice(offset, offset + limit);
   }
   // File backend: scan all sessions
   const all = await store.list();
@@ -831,7 +834,7 @@ export async function searchSessions(query: string, limit = 20): Promise<Session
     s.cwd.toLowerCase().includes(q) ||
     s.sessionId.toLowerCase().includes(q),
   );
-  return matches.slice(0, limit);
+  return matches.slice(offset, offset + limit);
 }
 
 /**

@@ -179,6 +179,9 @@ function isRateLimitError(msg: string): boolean {
  */
 class ReconnectableMcpClient {
   private _closed = false;
+  /** Tracks how many reconnect attempts have been made across all callTool calls. */
+  private _reconnectAttempts = 0;
+  private static readonly MAX_RECONNECT_ATTEMPTS = 3;
 
   constructor(
     private readonly serverName: string,
@@ -210,12 +213,19 @@ class ReconnectableMcpClient {
 
         const msg = err instanceof Error ? err.message : String(err);
 
-        if (isTransportDisconnect(msg) && attempt === 0) {
-          // First attempt, transport dropped — reconnect and retry immediately
+        if (isTransportDisconnect(msg) &&
+            this._reconnectAttempts < ReconnectableMcpClient.MAX_RECONNECT_ATTEMPTS) {
+          // Transport dropped — reconnect and retry (tracked across all calls)
+          this._reconnectAttempts++;
           process.stderr.write(
-            `[orager] MCP server '${this.serverName}' connection lost (${msg.slice(0, 80)}), reconnecting…\n`,
+            `[orager] MCP server '${this.serverName}' connection lost (${msg.slice(0, 80)}), reconnecting… (attempt ${this._reconnectAttempts}/${ReconnectableMcpClient.MAX_RECONNECT_ATTEMPTS})\n`,
           );
-          await this._reconnect();
+          try {
+            await this._reconnect();
+            this._reconnectAttempts = 0; // reset on successful reconnect
+          } catch (reconnectErr) {
+            throw reconnectErr; // surface reconnect failure directly
+          }
           continue; // retry without delay
         }
 
