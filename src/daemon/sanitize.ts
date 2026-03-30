@@ -55,6 +55,7 @@ const ALLOWED_DAEMON_OPTS = new Set<keyof AgentLoopOptions>([
   "apiKeys", "agentApiKey",
   // Memory
   "memory", "memoryKey", "memoryMaxChars",
+  "memoryRetrieval", "memoryEmbeddingModel", "memoryRetrievalThreshold",
   // Session lock
   "sessionLockTimeoutMs",
 ]);
