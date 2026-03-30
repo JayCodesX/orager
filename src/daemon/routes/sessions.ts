@@ -8,6 +8,7 @@ import {
   listSessions,
   searchSessions,
   loadSessionRaw,
+  forkSession,
 } from "../../session.js";
 import type { DaemonContext } from "../context.js";
 
@@ -25,6 +26,47 @@ export function handleSessions(
     try {
       const parsedUrl = new URL(req.url!, `http://127.0.0.1`);
       const pathname = parsedUrl.pathname;
+
+      // POST /sessions/:sessionId/fork
+      const forkMatch = pathname.match(/^\/sessions\/([^/]+)\/fork$/);
+      if (forkMatch && req.method === "POST") {
+        const sessionId = forkMatch[1]!;
+        if (!/^[a-zA-Z0-9_-]{1,128}$/.test(sessionId)) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid session id format" }));
+          return;
+        }
+        // Parse optional body: { atTurn?: number }
+        let atTurn: number | undefined;
+        const rawBody = await new Promise<string>((resolve) => {
+          const chunks: Buffer[] = [];
+          req.on("data", (c: Buffer) => chunks.push(c));
+          req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+        });
+        if (rawBody.trim()) {
+          try {
+            const body = JSON.parse(rawBody) as { atTurn?: unknown };
+            if (typeof body.atTurn === "number" && Number.isFinite(body.atTurn) && body.atTurn >= 0) {
+              atTurn = Math.floor(body.atTurn);
+            }
+          } catch {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "invalid JSON body" }));
+            return;
+          }
+        }
+        try {
+          const result = await forkSession(sessionId, atTurn !== undefined ? { atTurn } : undefined);
+          res.writeHead(201, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(result));
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          const notFound = msg.includes("not found");
+          res.writeHead(notFound ? 404 : 500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: msg }));
+        }
+        return;
+      }
 
       // GET /sessions/search?q=...
       if (pathname === "/sessions/search") {

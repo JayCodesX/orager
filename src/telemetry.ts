@@ -63,17 +63,36 @@ export async function initTelemetry(serviceName = "orager"): Promise<void> {
   if (!process.env["OTEL_EXPORTER_OTLP_ENDPOINT"]) return;
 
   try {
-    // Dynamic import so the SDK is only loaded when OTEL is configured
+    // Dynamic import so the SDK is only loaded when OTEL is configured.
     const { NodeSDK } = await import("@opentelemetry/sdk-node");
     const { OTLPTraceExporter } = await import("@opentelemetry/exporter-trace-otlp-http");
 
-    const sdk = new NodeSDK({
+    // Build the NodeSDK config. Metrics export is wired up when the packages
+    // are available (they are bundled with @opentelemetry/sdk-node).
+    type SdkConfig = Parameters<typeof NodeSDK.prototype.constructor>[0];
+    const sdkConfig: SdkConfig = {
       traceExporter: new OTLPTraceExporter(),
       serviceName,
-    });
+    };
+
+    // Attempt to add a periodic OTLP metrics reader. The exporter and metric SDK
+    // are bundled with sdk-node, so dynamic import should always succeed.
+    try {
+      const { OTLPMetricExporter } = await import("@opentelemetry/exporter-metrics-otlp-http");
+      const { PeriodicExportingMetricReader } = await import("@opentelemetry/sdk-metrics");
+      (sdkConfig as Record<string, unknown>)["metricReader"] = new PeriodicExportingMetricReader({
+        exporter: new OTLPMetricExporter(),
+        // Export every 30 seconds — balances freshness vs. request overhead.
+        exportIntervalMillis: 30_000,
+      });
+    } catch {
+      // Metrics exporter not available — traces still work.
+    }
+
+    const sdk = new NodeSDK(sdkConfig);
     sdk.start();
     _tracer = trace.getTracer(TRACER_NAME);
-    // Flush traces on clean exit
+    // Flush both traces and metrics on clean exit.
     process.on("beforeExit", async () => { try { await sdk.shutdown(); } catch { /* */ } });
   } catch (err) {
     // OTEL init failure must never crash the agent
