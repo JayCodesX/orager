@@ -299,6 +299,27 @@ export async function startDaemon(
     res.writeHead(404); res.end();
   });
 
+  // ── Check for recovery manifest from previous crash ───────────────────────
+  const RECOVERY_FILE = path.join(os.homedir(), ".orager", "recovery.json");
+  try {
+    const recoveryRaw = await fs.readFile(RECOVERY_FILE, "utf8");
+    const recovery = JSON.parse(recoveryRaw) as { abandonedAt?: string; runs?: Array<{ runId?: string; abandonedAt?: string }> };
+    if (recovery.runs && Array.isArray(recovery.runs)) {
+      for (const run of recovery.runs) {
+        process.stderr.write(
+          `[orager] warn: run ${run.runId ?? "unknown"} was abandoned during last shutdown at ${run.abandonedAt ?? recovery.abandonedAt ?? "unknown"}\n`,
+        );
+      }
+    } else {
+      process.stderr.write(
+        `[orager] warn: previous shutdown had abandoned runs at ${recovery.abandonedAt ?? "unknown"}\n`,
+      );
+    }
+    await fs.unlink(RECOVERY_FILE).catch(() => {});
+  } catch {
+    // Recovery file doesn't exist or can't be read — normal startup
+  }
+
   // ── Start server ───────────────────────────────────────────────────────────
   await acquirePidLock(requestedPort);
   await ensureSessionsDirPermissions();
@@ -332,6 +353,14 @@ export async function startDaemon(
   _drainAndExit = drain;
 
   scheduleIdleCheck(ctx, drain, DRAIN_TIMEOUT_MS);
+
+  // Prune stale model tracking entries (prevent unbounded growth)
+  setInterval(() => {
+    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    for (const [model, lastUsed] of ctx.modelLastUsedAt) {
+      if (lastUsed < cutoff) ctx.modelLastUsedAt.delete(model);
+    }
+  }, 60 * 60 * 1000).unref(); // hourly, non-blocking
 
   process.stderr.write(
     `[orager daemon] listening on 127.0.0.1:${actualPort} (max ${maxConcurrent} concurrent runs)\n`,
