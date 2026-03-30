@@ -6,9 +6,24 @@
  * using the same schema as Claude Desktop / claude_desktop_config.json.
  *
  * Each server's tools are exposed as mcp__<serverName>__<toolName>.
+ *
+ * Transport support:
+ *   - stdio  (default): spawns a subprocess and talks over stdin/stdout.
+ *   - http   (Streamable HTTP+SSE, MCP spec §6.4): connects to a running
+ *            HTTP server. Use this when the MCP server is a long-lived
+ *            process or a remote service.
+ *
+ * HTTP config example (in mcpServers):
+ *   {
+ *     "myServer": {
+ *       "url": "http://localhost:3100/mcp",
+ *       "headers": { "Authorization": "Bearer <token>" }
+ *     }
+ *   }
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { ToolExecutor, ToolParameterSchema } from "./types.js";
 
 const MCP_TOOL_TIMEOUT_MS = 30_000;
@@ -36,11 +51,31 @@ function sanitizeMcpEnv(
   return Object.keys(safe).length > 0 ? safe : undefined;
 }
 
-export interface McpServerConfig {
+// ── Transport config types ────────────────────────────────────────────────────
+
+/** Stdio transport: spawns a subprocess and talks over stdin/stdout. */
+export interface StdioMcpServerConfig {
   command: string;
   args?: string[];
   env?: Record<string, string>;
 }
+
+/**
+ * Streamable HTTP+SSE transport (MCP spec §6.4).
+ * Connects to a running HTTP MCP server — useful for remote or long-lived
+ * processes that shouldn't be spawned per-run.
+ */
+export interface HttpMcpServerConfig {
+  url: string;
+  /**
+   * Extra HTTP headers sent on every request.
+   * Use for authentication: `{ "Authorization": "Bearer <token>" }`.
+   */
+  headers?: Record<string, string>;
+}
+
+/** Union of all supported MCP server transport configs. */
+export type McpServerConfig = StdioMcpServerConfig | HttpMcpServerConfig;
 
 export interface McpClientHandle {
   tools: ToolExecutor[];
@@ -51,11 +86,28 @@ export async function connectMcpServer(
   name: string,
   config: McpServerConfig,
 ): Promise<McpClientHandle> {
-  const transport = new StdioClientTransport({
-    command: config.command,
-    args: config.args ?? [],
-    env: sanitizeMcpEnv(config.env, name),
-  });
+  // ── Transport selection ───────────────────────────────────────────────────
+  const transport = "url" in config
+    ? (() => {
+        const url = new URL(config.url);
+        const t = new StreamableHTTPClientTransport(url);
+        // Inject custom headers (e.g. Authorization) into every outbound request.
+        if (config.headers && Object.keys(config.headers).length > 0) {
+          const hdrs = config.headers;
+          // StreamableHTTPClientTransport exposes a `requestInit` options object
+          // that is merged into every fetch call. We patch it here post-construction
+          // so we don't depend on constructor signature changes across SDK versions.
+          (t as unknown as { requestInit?: RequestInit }).requestInit = {
+            headers: hdrs,
+          };
+        }
+        return t;
+      })()
+    : new StdioClientTransport({
+        command: config.command,
+        args: config.args ?? [],
+        env: sanitizeMcpEnv(config.env, name),
+      });
 
   const client = new Client({ name: "orager", version: "1.0.0" });
   await (() => {
