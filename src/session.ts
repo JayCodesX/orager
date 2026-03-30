@@ -700,7 +700,9 @@ export async function compactSession(
     messages: newMessages,
     updatedAt: now,
     summarized: true,
-    compactedFrom: sessionId,
+    compactedAt: now,
+    // compactedFrom is intentionally NOT set for in-place compaction (same sessionId).
+    // It is reserved for future fork-and-compact workflows where a new sessionId is created.
   });
 
   log.info("session_compacted", { sessionId, originalTurnCount: session.turnCount });

@@ -139,8 +139,14 @@ export interface SessionData {
   /** When true the session messages have been compacted by summarization. */
   summarized?: boolean;
   /**
-   * Set when this session was created by compacting another session.
-   * Stores the original session ID for audit lineage.
+   * ISO timestamp of when this session was last compacted (in-place).
+   * Only present when summarized === true.
+   */
+  compactedAt?: string;
+  /**
+   * Set when this session was created by forking and compacting another session.
+   * Stores the source session ID for audit lineage.
+   * Not set for in-place compaction (where the session ID doesn't change).
    */
   compactedFrom?: string;
   /** Origin of this session. Informational only — used to diagnose concurrent access. */
