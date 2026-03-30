@@ -117,18 +117,19 @@ export function handleSessions(
         return;
       }
 
-      // GET /sessions/search?q=...
+      // GET /sessions/search?q=...&limit=20&offset=0
       if (pathname === "/sessions/search") {
         const q = parsedUrl.searchParams.get("q") ?? "";
         const limit = Math.min(parseInt(parsedUrl.searchParams.get("limit") ?? "20", 10), 100);
+        const offset = Math.max(0, parseInt(parsedUrl.searchParams.get("offset") ?? "0", 10));
         if (!q.trim()) {
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "q parameter is required" }));
           return;
         }
-        const results = await searchSessions(q.trim(), limit);
+        const results = await searchSessions(q.trim(), limit, offset);
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ sessions: results, total: results.length, query: q }));
+        res.end(JSON.stringify({ sessions: results, total: results.length, query: q, limit, offset }));
         return;
       }
 
