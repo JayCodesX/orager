@@ -286,7 +286,7 @@ export async function startDaemon(
     if (req.method === "POST" && req.url === "/run") {
       handleRun(ctx, req, res); return;
     }
-    if (req.method === "GET" && req.url?.startsWith("/sessions")) {
+    if (req.url?.startsWith("/sessions")) {
       handleSessions(ctx, req, res); return;
     }
     if (req.method === "POST" && req.url === "/rotate-key") {

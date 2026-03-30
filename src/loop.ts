@@ -59,6 +59,7 @@ import {
   MAX_PARALLEL_TOOLS,
   evaluateTurnModelRules,
 } from "./loop-helpers.js";
+import { recordTokens, recordToolCall, recordSession } from "./metrics.js";
 
 // ── Cost anomaly detection ────────────────────────────────────────────────────
 //
@@ -1033,6 +1034,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           if (metricIsError) m.errors++;
           m.totalMs += elapsed;
           toolMetrics.set(toolName, m);
+          // ── OTel metrics: tool call counts ──────────────────────────────
+          recordToolCall(toolName, metricIsError);
         }
       },
     );
@@ -1048,7 +1051,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     return toolResult;
   }
 
-  await withSpan("agent_loop", { "orager.session_id": sessionId, "orager.model": model }, async (rootSpan) => {
+  const _sessionStartMs = Date.now();
+  await withSpan("agent_loop", { "orager.session_id": sessionId, "orager.model": model, "orager.prompt_id": sessionId }, async (rootSpan) => {
   void rootSpan; // rootSpan available for attribute setting
   try {
     // ── Pending approval resume ────────────────────────────────────────────────
@@ -1104,10 +1108,13 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     const firedOnce = new Set<number>();
 
     // ── emitResult helper ─────────────────────────────────────────────────────
-    // DRY wrapper: fires onEmit, the webhook, MaxTurnsReached hook (when applicable),
-    // and the Stop hook for every terminal result event.
+    // DRY wrapper: fires onEmit, records OTel session metrics, fires the webhook,
+    // MaxTurnsReached hook (when applicable), and the Stop hook for every terminal
+    // result event.
     const emitResult = async (resultEvent: EmitResultEvent): Promise<void> => {
       onEmit(resultEvent);
+      // ── OTel metrics: session duration + turn count ──────────────────────
+      recordSession(Date.now() - _sessionStartMs, resultEvent.turnCount ?? turn, resultEvent.subtype);
       if (isWebhookUrlSafe(opts.webhookUrl)) {
         await postWebhook(opts.webhookUrl!, resultEvent, opts.webhookFormat);
       }
@@ -1384,6 +1391,9 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           ts: new Date().toISOString(),
         }, _hookOpts, (msg) => onLog?.("stderr", msg));
       }
+
+      // ── OTel metrics: token counts ────────────────────────────────────────
+      recordTokens(response.usage.prompt_tokens, response.usage.completion_tokens, lastResponseModel);
 
       // ── Generation metadata (fire-and-forget) ────────────────────────────
       if (response.generationId) {
