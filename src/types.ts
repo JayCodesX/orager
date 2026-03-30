@@ -1136,7 +1136,7 @@ export interface AgentLoopOptions {
    * "local" = Phase 1 term overlap (default)
    * "embedding" = Phase 2 cosine similarity with cached embeddings
    */
-  memoryRetrieval?: "local" | "embedding";
+  memoryRetrieval?: "local" | "fts" | "embedding";
 
   /**
    * OpenRouter embedding model to use. Example: "openai/text-embedding-3-small"

@@ -57,6 +57,14 @@ const WASM_PATH = path.join(
 const BUNDLE_DIR  = path.join(root, "dist-binary");
 const BIN_DIR     = path.join(root, "bin");
 
+// ── Pre-flight: ensure bun is available ──────────────────────────────────────
+
+const bunCheck = spawnSync("bun", ["--version"], { shell: true, stdio: "pipe" });
+if (bunCheck.status !== 0) {
+  console.error("Error: 'bun' not found in PATH. Install Bun from https://bun.sh and try again.");
+  process.exit(1);
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function run(cmd, opts = {}) {
