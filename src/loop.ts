@@ -655,6 +655,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           model: subModel,
           maxTurns: subMaxTurns,
           sessionId: null, // fresh session for each sub-agent
+          trackFileChanges: true,
           _spawnDepth: currentSpawnDepth + 1,
           _parentSessionIds: [...parentSessionIds, ...(sessionId ? [sessionId] : [])],
           onEmit: (event) => {
@@ -1096,6 +1097,48 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   })();
   await withSpan("agent_loop", { "orager.session_id": sessionId, "orager.model": model, "orager.prompt_id": _promptId }, async (rootSpan) => {
   void rootSpan; // rootSpan available for attribute setting
+
+  const firedOnce = new Set<number>();
+
+  // ── emitResult helper ─────────────────────────────────────────────────────
+  // DRY wrapper: fires onEmit, records OTel session metrics, fires the webhook,
+  // MaxTurnsReached hook (when applicable), and the Stop hook for every terminal
+  // result event.
+  const emitResult = async (resultEvent: EmitResultEvent): Promise<void> => {
+    onEmit(resultEvent);
+    // ── OTel metrics: session duration + turn count ──────────────────────
+    recordSession(Date.now() - _sessionStartMs, resultEvent.turnCount ?? turn, resultEvent.subtype);
+    if (isWebhookUrlSafe(opts.webhookUrl)) {
+      await postWebhook(opts.webhookUrl!, resultEvent, opts.webhookFormat);
+    }
+    // MaxTurnsReached fires before Stop so listeners can distinguish the reason.
+    if (resultEvent.subtype === "error_max_turns" && effectiveOpts.hooks?.MaxTurnsReached) {
+      await fireHooks("MaxTurnsReached", effectiveOpts.hooks.MaxTurnsReached, {
+        event: "MaxTurnsReached",
+        sessionId,
+        model: lastResponseModel,
+        turn,
+        subtype: resultEvent.subtype,
+        totalCostUsd: resultEvent.total_cost_usd,
+        turnCount: resultEvent.turnCount,
+        ts: new Date().toISOString(),
+      } satisfies HookPayload, _hookOpts, (msg) => onLog?.("stderr", msg));
+    }
+    if (effectiveOpts.hooks?.Stop) {
+      await fireHooks("Stop", effectiveOpts.hooks.Stop, {
+        event: "Stop",
+        sessionId,
+        model: lastResponseModel,
+        turn,
+        subtype: resultEvent.subtype,
+        result: resultEvent.result,
+        totalCostUsd: resultEvent.total_cost_usd,
+        turnCount: resultEvent.turnCount,
+        ts: new Date().toISOString(),
+      } satisfies HookPayload, _hookOpts, (msg) => onLog?.("stderr", msg));
+    }
+  };
+
   try {
     // ── Pending approval resume ────────────────────────────────────────────────
     // If this session has a pending approval (run ended with a question event),
@@ -1146,47 +1189,6 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         : "";
       onLog?.("stderr", `[orager] approval resolved (${approved ? "approved" : "denied"})${elapsedStr} — resuming run\n`);
     }
-
-    const firedOnce = new Set<number>();
-
-    // ── emitResult helper ─────────────────────────────────────────────────────
-    // DRY wrapper: fires onEmit, records OTel session metrics, fires the webhook,
-    // MaxTurnsReached hook (when applicable), and the Stop hook for every terminal
-    // result event.
-    const emitResult = async (resultEvent: EmitResultEvent): Promise<void> => {
-      onEmit(resultEvent);
-      // ── OTel metrics: session duration + turn count ──────────────────────
-      recordSession(Date.now() - _sessionStartMs, resultEvent.turnCount ?? turn, resultEvent.subtype);
-      if (isWebhookUrlSafe(opts.webhookUrl)) {
-        await postWebhook(opts.webhookUrl!, resultEvent, opts.webhookFormat);
-      }
-      // MaxTurnsReached fires before Stop so listeners can distinguish the reason.
-      if (resultEvent.subtype === "error_max_turns" && effectiveOpts.hooks?.MaxTurnsReached) {
-        await fireHooks("MaxTurnsReached", effectiveOpts.hooks.MaxTurnsReached, {
-          event: "MaxTurnsReached",
-          sessionId,
-          model: lastResponseModel,
-          turn,
-          subtype: resultEvent.subtype,
-          totalCostUsd: resultEvent.total_cost_usd,
-          turnCount: resultEvent.turnCount,
-          ts: new Date().toISOString(),
-        } satisfies HookPayload, _hookOpts, (msg) => onLog?.("stderr", msg));
-      }
-      if (effectiveOpts.hooks?.Stop) {
-        await fireHooks("Stop", effectiveOpts.hooks.Stop, {
-          event: "Stop",
-          sessionId,
-          model: lastResponseModel,
-          turn,
-          subtype: resultEvent.subtype,
-          result: resultEvent.result,
-          totalCostUsd: resultEvent.total_cost_usd,
-          turnCount: resultEvent.turnCount,
-          ts: new Date().toISOString(),
-        } satisfies HookPayload, _hookOpts, (msg) => onLog?.("stderr", msg));
-      }
-    };
 
     // Rolling average for cost anomaly detection (P3-5)
     // Track per-turn actual costs to compute a running average.

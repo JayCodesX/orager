@@ -121,7 +121,7 @@ PROFILES
 
 SESSIONS
   --list-sessions           List all sessions
-  --search-sessions <q>     Search sessions by content
+  --search-sessions <q>     Search sessions by content (use --limit <n> to cap results, default 20)
   --trash-session <id>      Move a session to trash
   --restore-session <id>    Restore a trashed session
   --delete-session <id>     Permanently delete a session
@@ -436,12 +436,18 @@ async function handleSearchSessions(argv: string[]): Promise<void> {
     process.stderr.write("orager: --search-sessions requires a query string.\n");
     process.exit(1);
   }
-  const results = await searchSessions(query);
+  const limitIdx = argv.indexOf("--limit");
+  const limit = Math.min(
+    Math.max(1, parseInt((limitIdx !== -1 && argv[limitIdx + 1]) ? argv[limitIdx + 1]! : "20", 10) || 20),
+    100,
+  );
+  const results = await searchSessions(query, limit);
   if (results.length === 0) {
     process.stdout.write(`No sessions found matching: ${query}\n`);
   } else {
+    process.stdout.write(`Found ${results.length} session(s) matching "${query}" (limit: ${limit}):\n`);
     for (const s of results) {
-      process.stdout.write(`${s.sessionId}  ${s.model}  ${s.updatedAt.slice(0, 10)}  ${s.cwd}\n`);
+      process.stdout.write(`  ${s.sessionId}  ${s.model.padEnd(40)}  turns:${String(s.turnCount).padStart(3)}  ${s.updatedAt.slice(0, 16).replace("T", " ")}  ${s.cwd}\n`);
     }
   }
   process.exit(0);

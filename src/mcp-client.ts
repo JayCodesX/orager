@@ -26,6 +26,25 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { ToolExecutor, ToolParameterSchema } from "./types.js";
 
+/**
+ * SSRF guard for MCP HTTP transport URLs.
+ * Blocks cloud metadata endpoints (169.254.x.x, metadata.google.internal)
+ * but allows localhost/127.x so developers can run MCP servers locally.
+ */
+function isMcpHttpUrlSafe(raw: string): boolean {
+  let u: URL;
+  try { u = new URL(raw); } catch { return false; }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return false;
+  const h = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  // Block link-local (cloud metadata services live here)
+  if (/^169\.254\./.test(h)) return false;
+  // Block GCP metadata by hostname
+  if (h === "metadata.google.internal" || h === "metadata.google") return false;
+  // Block Azure/AWS IMDS hostname variants
+  if (h === "metadata.azure.com" || h === "169.254.169.254") return false;
+  return true;
+}
+
 const MCP_TOOL_TIMEOUT_MS = 30_000;
 const MAX_MCP_RESULT_CHARS = 50_000;
 
@@ -132,6 +151,11 @@ export async function connectMcpServer(
   // ── Transport selection ───────────────────────────────────────────────────
   const transport = "url" in config
     ? (() => {
+        if (!isMcpHttpUrlSafe(config.url)) {
+          throw new Error(
+            `MCP server '${name}': URL '${config.url}' is blocked — cloud metadata endpoints (link-local 169.254.x.x) are not allowed for HTTP transport`,
+          );
+        }
         const url = new URL(config.url);
         const t = new StreamableHTTPClientTransport(url);
         // Inject sanitized custom headers (e.g. Authorization) into every outbound request.

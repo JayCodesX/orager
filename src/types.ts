@@ -138,6 +138,11 @@ export interface SessionData {
   trashed?: boolean;
   /** When true the session messages have been compacted by summarization. */
   summarized?: boolean;
+  /**
+   * Set when this session was created by compacting another session.
+   * Stores the original session ID for audit lineage.
+   */
+  compactedFrom?: string;
   /** Origin of this session. Informational only — used to diagnose concurrent access. */
   source?: "cli" | "daemon" | "mcp";
   /** Schema version for forward-compatible migrations. Always written as CURRENT_SESSION_SCHEMA_VERSION. */

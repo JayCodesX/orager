@@ -69,8 +69,10 @@ export async function initTelemetry(serviceName = "orager"): Promise<void> {
 
     // Build the NodeSDK config. Metrics export is wired up when the packages
     // are available (they are bundled with @opentelemetry/sdk-node).
-    type SdkConfig = Parameters<typeof NodeSDK.prototype.constructor>[0];
-    const sdkConfig: SdkConfig = {
+    // Use a plain object cast rather than inferring from the constructor signature
+    // (Parameters<typeof NodeSDK.prototype.constructor> resolves to `Function`
+    // in some TS / SDK version combinations and causes a type error).
+    const sdkConfig: Record<string, unknown> = {
       traceExporter: new OTLPTraceExporter(),
       serviceName,
     };
@@ -83,17 +85,20 @@ export async function initTelemetry(serviceName = "orager"): Promise<void> {
       (sdkConfig as Record<string, unknown>)["metricReader"] = new PeriodicExportingMetricReader({
         exporter: new OTLPMetricExporter(),
         // Export every 30 seconds — balances freshness vs. request overhead.
-        exportIntervalMillis: 30_000,
+        exportIntervalMillis: 10_000,
       });
     } catch {
       // Metrics exporter not available — traces still work.
     }
 
-    const sdk = new NodeSDK(sdkConfig);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sdk = new NodeSDK(sdkConfig as any);
     sdk.start();
     _tracer = trace.getTracer(TRACER_NAME);
     // Flush both traces and metrics on clean exit.
-    process.on("beforeExit", async () => { try { await sdk.shutdown(); } catch { /* */ } });
+    const shutdownSdk = async () => { try { await sdk.shutdown(); } catch { /* */ } };
+    process.on("beforeExit", shutdownSdk);
+    process.once("SIGTERM", async () => { await shutdownSdk(); process.exit(0); });
   } catch (err) {
     // OTEL init failure must never crash the agent
     console.error("[orager] OpenTelemetry init failed:", err);

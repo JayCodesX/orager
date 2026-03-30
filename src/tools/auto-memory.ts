@@ -219,9 +219,26 @@ export function makeReadMemoryTool(cwd: string): ToolExecutor {
  * be included).
  */
 export async function loadAutoMemory(cwd: string): Promise<{ project: string; global: string }> {
-  const [project, global_] = await Promise.all([
+  const [projectMd, globalMd] = await Promise.all([
     fs.readFile(projectMemoryFile(cwd), "utf8").catch(() => ""),
     fs.readFile(GLOBAL_MEMORY_FILE, "utf8").catch(() => ""),
   ]);
-  return { project, global: global_ };
+
+  // When SQLite memory is enabled, also render the structured memory store
+  // and append it to the project block so the agent sees all persistent notes.
+  let sqliteBlock = "";
+  try {
+    const { isSqliteMemoryEnabled, loadMemoryStoreSqlite } = await import("../memory-sqlite.js");
+    if (isSqliteMemoryEnabled()) {
+      const { renderMemoryBlock, memoryKeyFromCwd } = await import("../memory.js");
+      const key = memoryKeyFromCwd(cwd);
+      const store = await loadMemoryStoreSqlite(key);
+      sqliteBlock = renderMemoryBlock(store);
+    }
+  } catch {
+    // SQLite not available or memory load failed — non-fatal
+  }
+
+  const project = [projectMd, sqliteBlock].filter(Boolean).join("\n\n---\n\n");
+  return { project, global: globalMd };
 }
