@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mocked } from "./mock-helpers.js";
 import { runAgentLoop } from "../src/loop.js";
 import type { EmitEvent, EmitResultEvent, OpenRouterCallResult, ToolCall } from "../src/types.js";
 
@@ -96,12 +97,12 @@ describe("plan mode", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("planMode=true restricts LLM to readonly tools + exit_plan_mode", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValueOnce(noToolResponse("plan done"));
+    mocked(callOpenRouter).mockResolvedValueOnce(noToolResponse("plan done"));
 
     const { opts } = loopOpts({ planMode: true });
     await runAgentLoop(opts);
 
-    const callArgs = vi.mocked(callOpenRouter).mock.calls[0]?.[0];
+    const callArgs = mocked(callOpenRouter).mock.calls[0]?.[0];
     const offeredNames = (callArgs?.tools ?? []).map((t) => t.function.name);
 
     // Read-only tools should be offered
@@ -117,12 +118,12 @@ describe("plan mode", () => {
   });
 
   it("planMode=false (default) offers full tool set including bash", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValueOnce(noToolResponse("done"));
+    mocked(callOpenRouter).mockResolvedValueOnce(noToolResponse("done"));
 
     const { opts } = loopOpts({ planMode: false });
     await runAgentLoop(opts);
 
-    const callArgs = vi.mocked(callOpenRouter).mock.calls[0]?.[0];
+    const callArgs = mocked(callOpenRouter).mock.calls[0]?.[0];
     const offeredNames = (callArgs?.tools ?? []).map((t) => t.function.name);
 
     expect(offeredNames).toContain("bash");
@@ -132,7 +133,7 @@ describe("plan mode", () => {
   });
 
   it("calling exit_plan_mode switches to full tool set for subsequent turns", async () => {
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       // Turn 1 (plan mode): call exit_plan_mode
       .mockResolvedValueOnce(toolResponse([exitPlanCall("tc1", "I have a plan")]))
       // Turn 2 (execution mode): full tools now available
@@ -142,14 +143,14 @@ describe("plan mode", () => {
     await runAgentLoop(opts);
 
     // Turn 2 call should have bash in its tool list
-    const turn2Args = vi.mocked(callOpenRouter).mock.calls[1]?.[0];
+    const turn2Args = mocked(callOpenRouter).mock.calls[1]?.[0];
     const turn2Tools = (turn2Args?.tools ?? []).map((t) => t.function.name);
     expect(turn2Tools).toContain("bash");
     expect(turn2Tools).toContain("write_file");
   });
 
   it("plan mode enforces non-readonly tool calls — returns error result without executing", async () => {
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       // Turn 1 (plan mode): model tries to call bash despite being in plan mode
       .mockResolvedValueOnce(toolResponse([bashCall("tc1", "rm -rf /")]))
       // Turn 2: model receives the error, then exits plan mode properly
@@ -171,7 +172,7 @@ describe("plan mode", () => {
   });
 
   it("exit_plan_mode tool result includes plan summary", async () => {
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       .mockResolvedValueOnce(toolResponse([exitPlanCall("tc1", "step 1 then step 2")]))
       .mockResolvedValueOnce(noToolResponse("done"));
 
@@ -185,24 +186,24 @@ describe("plan mode", () => {
   });
 
   it("system prompt includes PLAN MODE ACTIVE notice when planMode=true", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValueOnce(noToolResponse("done"));
+    mocked(callOpenRouter).mockResolvedValueOnce(noToolResponse("done"));
 
     const { opts } = loopOpts({ planMode: true });
     await runAgentLoop(opts);
 
-    const callArgs = vi.mocked(callOpenRouter).mock.calls[0]?.[0];
+    const callArgs = mocked(callOpenRouter).mock.calls[0]?.[0];
     const systemMsg = callArgs?.messages?.find((m) => m.role === "system");
     expect((systemMsg?.content as string)).toContain("PLAN MODE ACTIVE");
     expect((systemMsg?.content as string)).toContain("exit_plan_mode");
   });
 
   it("system prompt does NOT include plan mode notice when planMode=false", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValueOnce(noToolResponse("done"));
+    mocked(callOpenRouter).mockResolvedValueOnce(noToolResponse("done"));
 
     const { opts } = loopOpts({ planMode: false });
     await runAgentLoop(opts);
 
-    const callArgs = vi.mocked(callOpenRouter).mock.calls[0]?.[0];
+    const callArgs = mocked(callOpenRouter).mock.calls[0]?.[0];
     const systemMsg = callArgs?.messages?.find((m) => m.role === "system");
     expect((systemMsg?.content as string)).not.toContain("PLAN MODE ACTIVE");
   });

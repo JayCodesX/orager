@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mocked } from "./mock-helpers.js";
 import {
   cosineSimilarity,
   embedEntryIfNeeded,
@@ -173,7 +174,7 @@ describe("makeRememberTool with embeddingOpts", () => {
 
   it("saves entry with _embedding set on successful callEmbeddings", async () => {
     const mockEmbedding = [0.1, 0.2, 0.3];
-    vi.mocked(callEmbeddings).mockResolvedValueOnce([mockEmbedding]);
+    mocked(callEmbeddings).mockResolvedValueOnce([mockEmbedding]);
 
     const tool = makeRememberTool(testKey, 6000, {
       apiKey: "test-api-key",
@@ -201,7 +202,7 @@ describe("makeRememberTool with embeddingOpts", () => {
   });
 
   it("saves entry without _embedding when callEmbeddings fails", async () => {
-    vi.mocked(callEmbeddings).mockRejectedValueOnce(new Error("API error"));
+    mocked(callEmbeddings).mockRejectedValueOnce(new Error("API error"));
 
     const tool = makeRememberTool(testKey, 6000, {
       apiKey: "test-api-key",

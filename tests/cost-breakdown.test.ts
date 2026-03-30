@@ -6,6 +6,7 @@
  * available, and omits the field when no pricing is configured.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mocked } from "./mock-helpers.js";
 import { runAgentLoop } from "../src/loop.js";
 import type { EmitEvent, EmitResultEvent, OpenRouterCallResult, ToolCall } from "../src/types.js";
 
@@ -85,7 +86,7 @@ describe("cost_breakdown in result event (4-C)", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("cost_breakdown is populated when costPerInputToken and costPerOutputToken are set", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValueOnce(response(1000, 500));
+    mocked(callOpenRouter).mockResolvedValueOnce(response(1000, 500));
 
     const { opts, emitted } = loopOpts({
       costPerInputToken: 0.000001,   // $1 per million input tokens
@@ -102,7 +103,7 @@ describe("cost_breakdown in result event (4-C)", () => {
   });
 
   it("total_cost_usd equals input_usd + output_usd when only token-based pricing is used", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValueOnce(response(800, 200));
+    mocked(callOpenRouter).mockResolvedValueOnce(response(800, 200));
 
     const { opts, emitted } = loopOpts({
       costPerInputToken: 0.000003,
@@ -117,7 +118,7 @@ describe("cost_breakdown in result event (4-C)", () => {
   });
 
   it("cost_breakdown is undefined when no pricing is configured", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValueOnce(response(1000, 500));
+    mocked(callOpenRouter).mockResolvedValueOnce(response(1000, 500));
 
     const { opts, emitted } = loopOpts();
     // No costPerInputToken / costPerOutputToken, no live pricing (model unknown)
@@ -128,7 +129,7 @@ describe("cost_breakdown in result event (4-C)", () => {
   });
 
   it("cost_breakdown accumulates across multiple turns", async () => {
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       // Turn 1: read_file tool call (500 prompt, 100 completion)
       .mockResolvedValueOnce(toolCallResponse([readFileCall("tc1")], 500, 100))
       // Turn 2: finish (300 prompt, 200 completion)

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mocked } from "./mock-helpers.js";
 import { runAgentLoop } from "../src/loop.js";
 import type { EmitEvent, OpenRouterCallResult, ToolCall } from "../src/types.js";
 
@@ -83,7 +84,7 @@ beforeEach(() => {
 describe("tool approval", () => {
   it("executes tool without asking when requireApproval is not set", async () => {
     const approvalFn = vi.fn().mockResolvedValue(true);
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       .mockResolvedValueOnce(toolResponse([bashCall("1", "echo hi")]))
       .mockResolvedValueOnce(noToolResponse());
 
@@ -95,7 +96,7 @@ describe("tool approval", () => {
 
   it("calls onApprovalRequest when requireApproval is 'all'", async () => {
     const approvalFn = vi.fn().mockResolvedValue(true);
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       .mockResolvedValueOnce(toolResponse([bashCall("1", "echo hi")]))
       .mockResolvedValueOnce(noToolResponse());
 
@@ -108,7 +109,7 @@ describe("tool approval", () => {
 
   it("runs the tool when approval is granted", async () => {
     const approvalFn = vi.fn().mockResolvedValue(true);
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       .mockResolvedValueOnce(toolResponse([bashCall("1", "echo approved")]))
       .mockResolvedValueOnce(noToolResponse("done"));
 
@@ -124,7 +125,7 @@ describe("tool approval", () => {
 
   it("returns denial result when approval is rejected", async () => {
     const approvalFn = vi.fn().mockResolvedValue(false);
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       .mockResolvedValueOnce(toolResponse([bashCall("1", "rm -rf /")]))
       .mockResolvedValueOnce(noToolResponse());
 
@@ -146,7 +147,7 @@ describe("tool approval", () => {
       function: { name: "read_file", arguments: JSON.stringify({ path: "/tmp/test.txt" }) },
     };
 
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       .mockResolvedValueOnce(toolResponse([bashCall("1", "echo hi"), readCall]))
       .mockResolvedValueOnce(noToolResponse());
 
@@ -164,7 +165,7 @@ describe("tool approval", () => {
 
   it("skips all approvals when dangerouslySkipPermissions is true", async () => {
     const approvalFn = vi.fn().mockResolvedValue(true);
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       .mockResolvedValueOnce(toolResponse([bashCall("1", "echo hi")]))
       .mockResolvedValueOnce(noToolResponse());
 

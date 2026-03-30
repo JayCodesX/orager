@@ -7,6 +7,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mocked } from "../mock-helpers.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -151,7 +152,7 @@ afterEach(async () => {
 
 describe("runAgentLoop — real tool execution", () => {
   it("bash tool executes real command", { timeout: 15000 }, async () => {
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       .mockResolvedValueOnce(toolResponse([makeToolCall("c1", "bash", { command: "echo integration-test" })]))
       .mockResolvedValueOnce(noToolResponse("done"));
 
@@ -169,7 +170,7 @@ describe("runAgentLoop — real tool execution", () => {
     const filePath = join(tmpDir, "hello.txt");
     const fileContent = "integration-file-content";
 
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       // turn 1: write the file
       .mockResolvedValueOnce(
         toolResponse([makeToolCall("c1", "write_file", { path: filePath, content: fileContent })])
@@ -196,7 +197,7 @@ describe("runAgentLoop — real tool execution", () => {
     const filePath = join(tmpDir, "data.json");
     const jsonContent = JSON.stringify({ key: "integration-value", num: 42 });
 
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       // turn 1: write JSON
       .mockResolvedValueOnce(
         toolResponse([makeToolCall("c1", "write_file", { path: filePath, content: jsonContent })])
@@ -226,7 +227,7 @@ describe("runAgentLoop — real tool execution", () => {
   });
 
   it("hooks fire on session start — loop succeeds when hook succeeds", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValueOnce(noToolResponse("hook test done"));
+    mocked(callOpenRouter).mockResolvedValueOnce(noToolResponse("hook test done"));
 
     const { opts, emitted } = baseOpts(tmpDir, {
       hooks: { SessionStart: "echo hook-fired > /dev/null" },
@@ -237,7 +238,7 @@ describe("runAgentLoop — real tool execution", () => {
   });
 
   it("hookErrorMode fail aborts when SessionStart hook exits non-zero", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValue(noToolResponse("should not reach"));
+    mocked(callOpenRouter).mockResolvedValue(noToolResponse("should not reach"));
 
     const { opts } = baseOpts(tmpDir, {
       hooks: { SessionStart: "exit 1" },
@@ -246,11 +247,11 @@ describe("runAgentLoop — real tool execution", () => {
 
     await expect(runAgentLoop(opts)).rejects.toThrow(/SessionStart hook failed/);
     // callOpenRouter should never have been invoked
-    expect(vi.mocked(callOpenRouter)).not.toHaveBeenCalled();
+    expect(mocked(callOpenRouter)).not.toHaveBeenCalled();
   });
 
   it("enableBrowserTools — browser_navigate navigates and returns page title", async () => {
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       .mockResolvedValueOnce(
         toolResponse([makeToolCall("c1", "browser_navigate", { url: "https://example.com" })])
       )
@@ -269,7 +270,7 @@ describe("runAgentLoop — real tool execution", () => {
   });
 
   it("bash sandboxRoot prevents reading outside sandbox", async () => {
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       .mockResolvedValueOnce(
         toolResponse([makeToolCall("c1", "bash", { command: "cat /etc/passwd" })])
       )
@@ -279,7 +280,7 @@ describe("runAgentLoop — real tool execution", () => {
     // in the cwd.  The file-path tools (read_file, write_file) check sandboxRoot.
     // For bash the sandbox check lives in the caller; here we test that
     // read_file (a file-path tool) correctly rejects an out-of-sandbox path.
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       .mockReset()
       .mockResolvedValueOnce(
         toolResponse([makeToolCall("c1", "read_file", { path: "/etc/passwd" })])

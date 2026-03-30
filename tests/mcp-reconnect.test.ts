@@ -10,6 +10,7 @@
  *   5. compactedAt is set; compactedFrom is NOT set for in-place compaction.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mocked } from "./mock-helpers.js";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
@@ -201,7 +202,7 @@ describe("compactSession: compactedAt set, compactedFrom NOT set for in-place co
     });
 
     // Mock the OpenRouter call used for summarization
-    vi.mocked(callOpenRouter).mockResolvedValueOnce({
+    mocked(callOpenRouter).mockResolvedValueOnce({
       content: "Session summary: completed task successfully.",
       reasoning: "",
       toolCalls: [],

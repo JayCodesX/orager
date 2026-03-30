@@ -6,6 +6,7 @@
  * so adapters can detect it without fragile string-matching on stderr.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mocked } from "./mock-helpers.js";
 import { runAgentLoop } from "../src/loop.js";
 import type { EmitEvent, EmitWarnEvent, OpenRouterCallResult } from "../src/types.js";
 
@@ -50,8 +51,8 @@ describe("session_lost warn event", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("emits a warn event with subtype session_lost when sessionId is not found", async () => {
-    vi.mocked(loadSession).mockResolvedValue(null); // session not found
-    vi.mocked(callOpenRouter).mockResolvedValueOnce(noToolResponse("done"));
+    mocked(loadSession).mockResolvedValue(null); // session not found
+    mocked(callOpenRouter).mockResolvedValueOnce(noToolResponse("done"));
 
     const emitted: EmitEvent[] = [];
     await runAgentLoop({
@@ -78,7 +79,7 @@ describe("session_lost warn event", () => {
   });
 
   it("does not emit session_lost when session is found", async () => {
-    vi.mocked(loadSession).mockResolvedValue({
+    mocked(loadSession).mockResolvedValue({
       sessionId: "existing-session",
       model: "test-model",
       messages: [],
@@ -87,7 +88,7 @@ describe("session_lost warn event", () => {
       cwd: "/tmp",
       turnCount: 0,
     });
-    vi.mocked(callOpenRouter).mockResolvedValueOnce(noToolResponse("done"));
+    mocked(callOpenRouter).mockResolvedValueOnce(noToolResponse("done"));
 
     const emitted: EmitEvent[] = [];
     await runAgentLoop({
@@ -111,7 +112,7 @@ describe("session_lost warn event", () => {
   });
 
   it("does not emit session_lost when no sessionId is provided (fresh start)", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValueOnce(noToolResponse("done"));
+    mocked(callOpenRouter).mockResolvedValueOnce(noToolResponse("done"));
 
     const emitted: EmitEvent[] = [];
     await runAgentLoop({

@@ -7,6 +7,7 @@
  * onlineSearch is false/unset.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mocked } from "./mock-helpers.js";
 import { runAgentLoop } from "../src/loop.js";
 import type { EmitEvent, OpenRouterCallResult } from "../src/types.js";
 
@@ -58,37 +59,37 @@ describe(":online suffix (Sprint 3-A)", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("appends :online when onlineSearch=true and model has no variant suffix", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValueOnce(stopResponse());
+    mocked(callOpenRouter).mockResolvedValueOnce(stopResponse());
     await runAgentLoop(loopOpts({ onlineSearch: true, model: "gpt-4o" }));
-    const calledModel = vi.mocked(callOpenRouter).mock.calls[0][0].model;
+    const calledModel = mocked(callOpenRouter).mock.calls[0][0].model;
     expect(calledModel).toBe("gpt-4o:online");
   });
 
   it("does NOT append :online when model already has a variant suffix", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValueOnce(stopResponse());
+    mocked(callOpenRouter).mockResolvedValueOnce(stopResponse());
     await runAgentLoop(loopOpts({ onlineSearch: true, model: "gpt-4o:nitro" }));
-    const calledModel = vi.mocked(callOpenRouter).mock.calls[0][0].model;
+    const calledModel = mocked(callOpenRouter).mock.calls[0][0].model;
     expect(calledModel).toBe("gpt-4o:nitro");
   });
 
   it("does NOT append :online when onlineSearch is false", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValueOnce(stopResponse());
+    mocked(callOpenRouter).mockResolvedValueOnce(stopResponse());
     await runAgentLoop(loopOpts({ onlineSearch: false, model: "gpt-4o" }));
-    const calledModel = vi.mocked(callOpenRouter).mock.calls[0][0].model;
+    const calledModel = mocked(callOpenRouter).mock.calls[0][0].model;
     expect(calledModel).toBe("gpt-4o");
   });
 
   it("does NOT append :online when onlineSearch is unset", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValueOnce(stopResponse());
+    mocked(callOpenRouter).mockResolvedValueOnce(stopResponse());
     await runAgentLoop(loopOpts({ model: "claude-3-5-sonnet" }));
-    const calledModel = vi.mocked(callOpenRouter).mock.calls[0][0].model;
+    const calledModel = mocked(callOpenRouter).mock.calls[0][0].model;
     expect(calledModel).toBe("claude-3-5-sonnet");
   });
 
   it("appends :online to models with slashes (e.g. anthropic/claude-3-5-sonnet)", async () => {
-    vi.mocked(callOpenRouter).mockResolvedValueOnce(stopResponse());
+    mocked(callOpenRouter).mockResolvedValueOnce(stopResponse());
     await runAgentLoop(loopOpts({ onlineSearch: true, model: "anthropic/claude-3-5-sonnet" }));
-    const calledModel = vi.mocked(callOpenRouter).mock.calls[0][0].model;
+    const calledModel = mocked(callOpenRouter).mock.calls[0][0].model;
     expect(calledModel).toBe("anthropic/claude-3-5-sonnet:online");
   });
 });
