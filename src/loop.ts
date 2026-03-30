@@ -644,6 +644,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         let subResult = "";
         let subError: string | null = null;
         let subTurns = 0;
+        let subCostUsd = 0;
+        let subFilesChanged: string[] | undefined;
 
         onLog?.("stderr", `[orager] spawning sub-agent${agentLabel} (depth ${currentSpawnDepth + 1}/${maxSpawnDepth}): ${subTask.slice(0, 100)}\n`);
 
@@ -659,6 +661,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             if (event.type === "result") {
               subResult = event.result ?? "";
               subTurns = event.turnCount ?? 0;
+              subCostUsd = event.total_cost_usd ?? 0;
+              subFilesChanged = (event as { filesChanged?: string[] }).filesChanged;
               if (event.subtype !== "success") {
                 subError = `Sub-agent ended with subtype '${event.subtype}': ${event.result}`;
               }
@@ -673,9 +677,14 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           return { toolCallId: "", content: subError, isError: true };
         }
 
+        // Build a structured summary so the parent model can reason about cost/files
+        const costStr = subCostUsd > 0 ? ` (cost: $${subCostUsd.toFixed(4)})` : "";
+        const filesStr = subFilesChanged && subFilesChanged.length > 0
+          ? `\nFiles changed: ${subFilesChanged.join(", ")}`
+          : "";
         return {
           toolCallId: "",
-          content: `Sub-agent${agentLabel} completed in ${subTurns} turn(s):\n${subResult || "(no result text)"}`,
+          content: `Sub-agent${agentLabel} completed in ${subTurns} turn(s)${costStr}:\n${subResult || "(no result text)"}${filesStr}`,
           isError: false,
         };
       },
@@ -1074,7 +1083,18 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   }
 
   const _sessionStartMs = Date.now();
-  await withSpan("agent_loop", { "orager.session_id": sessionId, "orager.model": model, "orager.prompt_id": sessionId }, async (rootSpan) => {
+  // Stable prompt fingerprint: SHA-256(model + "\n" + prompt), first 16 hex chars.
+  // Distinct from sessionId so repeated prompts on different sessions share the same
+  // prompt_id in traces — enabling cross-session prompt performance analysis.
+  const _promptId = await (async () => {
+    try {
+      const { createHash } = await import("node:crypto");
+      return createHash("sha256").update(`${model}\n${prompt}`).digest("hex").slice(0, 16);
+    } catch {
+      return sessionId; // fallback: crypto unavailable
+    }
+  })();
+  await withSpan("agent_loop", { "orager.session_id": sessionId, "orager.model": model, "orager.prompt_id": _promptId }, async (rootSpan) => {
   void rootSpan; // rootSpan available for attribute setting
   try {
     // ── Pending approval resume ────────────────────────────────────────────────
