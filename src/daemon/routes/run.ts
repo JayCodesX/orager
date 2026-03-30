@@ -139,6 +139,30 @@ export function handleRun(
       }
     }
 
+    // ── Circuit breaker (before counter increment and writeHead) ─────────────
+    // Must run here — after body is parsed (needs runReq.opts.model) but before
+    // ctx.activeRuns++ and res.writeHead(200), so a rejection doesn't leak
+    // run counters or produce a 503 over an already-started 200 stream.
+    const isDirectPath =
+      typeof runReq.opts?.model === "string" &&
+      runReq.opts.model.startsWith("anthropic/") &&
+      !!process.env.ANTHROPIC_API_KEY?.trim();
+    const agentCb = getAgentCircuitBreaker(agentId);
+    if (!isDirectPath && agentCb.isOpen()) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        type: "result",
+        subtype: "error_circuit_open",
+        result: "OpenRouter API circuit breaker is open due to sustained failures. Retry in " +
+          Math.ceil(agentCb.retryInMs / 1000) + "s.",
+        session_id: "",
+        turn_count: 0,
+        total_cost_usd: 0,
+        exit_code: 1,
+      }));
+      return;
+    }
+
     // Track which models are being used for multi-model keep-alive.
     // Cap at 500 entries to prevent unbounded growth on long-running daemons:
     // evict the least-recently-used model when the cap is reached.
@@ -244,27 +268,6 @@ export function handleRun(
         if (stream === "stderr") process.stderr.write(chunk);
       },
     } as AgentLoopOptions;
-
-    // ── Circuit breaker ────────────────────────────────────────────────────────
-    const isDirectPath =
-      typeof runReq.opts?.model === "string" &&
-      runReq.opts.model.startsWith("anthropic/") &&
-      !!process.env.ANTHROPIC_API_KEY?.trim();
-    const agentCb = getAgentCircuitBreaker(agentId);
-    if (!isDirectPath && agentCb.isOpen()) {
-      res.writeHead(503, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({
-        type: "result",
-        subtype: "error_circuit_open",
-        result: "OpenRouter API circuit breaker is open due to sustained failures. Retry in " +
-          Math.ceil(agentCb.retryInMs / 1000) + "s.",
-        session_id: "",
-        turn_count: 0,
-        total_cost_usd: 0,
-        exit_code: 1,
-      }));
-      return;
-    }
 
     // ── Execute ────────────────────────────────────────────────────────────────
     let _runFailed = false;
