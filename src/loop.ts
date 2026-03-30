@@ -1,6 +1,7 @@
 import type {
   AgentLoopOptions,
   AssistantMessage,
+  EmitResultEvent,
   Message,
   OpenRouterUsage,
   SystemMessage,
@@ -19,8 +20,8 @@ import { makeTodoTools } from "./tools/todo.js";
 import { makeRememberTool } from "./tools/remember.js";
 import { loadMemoryStoreAny, pruneExpired, renderMemoryBlock, renderRetrievedBlock, retrieveEntries, retrieveEntriesWithEmbeddings, memoryKeyFromCwd, shouldUseFtsRetrieval } from "./memory.js";
 import { isSqliteMemoryEnabled, searchMemoryFts } from "./memory-sqlite.js";
-import { runHook } from "./hooks.js";
-import type { HookConfig } from "./hooks.js";
+import { fireHooks } from "./hooks.js";
+import type { HookConfig, HookPayload } from "./hooks.js";
 import { loadSettings, mergeSettings, loadClaudeDesktopMcpServers } from "./settings.js";
 import { exitPlanModeTool, PLAN_MODE_TOOL_NAME } from "./tools/plan.js";
 import path from "node:path";
@@ -172,6 +173,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   // ── Load and merge settings file ─────────────────────────────────────────
   const fileSettings = await loadSettings(opts.settingsFile);
   const effectiveOpts = mergeSettings(opts, fileSettings);
+  // Hoisted hook options — shared by all fireHooks / runHook call sites.
+  const _hookOpts = { timeoutMs: effectiveOpts.hookTimeoutMs, errorMode: effectiveOpts.hookErrorMode };
 
   // ── Required environment variable check ───────────────────────────────────
   // Fail fast before any API calls when env vars required by tools are absent.
@@ -716,8 +719,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
 
   // ── SessionStart hook ─────────────────────────────────────────────────────
   if (effectiveOpts.hooks?.SessionStart) {
-    const _hookOpts = { timeoutMs: effectiveOpts.hookTimeoutMs, errorMode: effectiveOpts.hookErrorMode };
-    const _sr = await runHook("SessionStart", effectiveOpts.hooks.SessionStart, { sessionId }, (msg) => onLog?.("stderr", msg), _hookOpts);
+    const _sr = await fireHooks("SessionStart", effectiveOpts.hooks.SessionStart, { event: "SessionStart", sessionId, ts: new Date().toISOString() }, _hookOpts, (msg) => onLog?.("stderr", msg));
     if (!_sr.ok && effectiveOpts.hookErrorMode === "fail") {
       throw new Error(`SessionStart hook failed: ${_sr.error}`);
     }
@@ -972,6 +974,10 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         });
 
         if (!approve) {
+          // ── ToolDenied hook ─────────────────────────────────────────────
+          if (effectiveOpts.hooks?.ToolDenied) {
+            await fireHooks("ToolDenied", effectiveOpts.hooks.ToolDenied, { event: "ToolDenied", sessionId, toolName, toolInput: parsedInput, ts: new Date().toISOString() }, _hookOpts, (msg) => onLog?.("stderr", msg));
+          }
           return { id: toolCall.id, content: `Tool '${toolName}' was denied by the user`, isError: true };
         }
       }
@@ -979,8 +985,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
 
     // ── PreToolCall hook ──────────────────────────────────────────────────
     if (effectiveOpts.hooks?.PreToolCall) {
-      const _hookOpts = { timeoutMs: effectiveOpts.hookTimeoutMs, errorMode: effectiveOpts.hookErrorMode };
-      const _pr = await runHook("PreToolCall", effectiveOpts.hooks.PreToolCall, { sessionId, toolName, toolInput: parsedInput }, (msg) => onLog?.("stderr", msg), _hookOpts);
+      const _pr = await fireHooks("PreToolCall", effectiveOpts.hooks.PreToolCall, { event: "PreToolCall", sessionId, toolName, toolInput: parsedInput, ts: new Date().toISOString() }, _hookOpts, (msg) => onLog?.("stderr", msg));
       if (!_pr.ok && effectiveOpts.hookErrorMode === "fail") {
         return { id: toolCall.id, content: `PreToolCall hook failed: ${_pr.error}`, isError: true };
       }
@@ -1016,6 +1021,10 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         } catch (err) {
           metricIsError = true;
           const msg = err instanceof Error ? err.message : String(err);
+          // ── ToolTimeout hook ──────────────────────────────────────────────
+          if (msg.includes("timed out") && effectiveOpts.hooks?.ToolTimeout) {
+            await fireHooks("ToolTimeout", effectiveOpts.hooks.ToolTimeout, { event: "ToolTimeout", sessionId, toolName, toolInput: parsedInput, isError: true, ts: new Date().toISOString() }, _hookOpts, (m) => onLog?.("stderr", m));
+          }
           return { id: toolCall.id, content: `Tool threw an unexpected error: ${msg}`, isError: true };
         } finally {
           const elapsed = Date.now() - metricStart;
@@ -1030,8 +1039,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
 
     // ── PostToolCall hook ─────────────────────────────────────────────────
     if (effectiveOpts.hooks?.PostToolCall) {
-      const _hookOpts = { timeoutMs: effectiveOpts.hookTimeoutMs, errorMode: effectiveOpts.hookErrorMode };
-      const _por = await runHook("PostToolCall", effectiveOpts.hooks.PostToolCall, { sessionId, toolName, toolInput: parsedInput, isError: toolResult.isError }, (msg) => onLog?.("stderr", msg), _hookOpts);
+      const _por = await fireHooks("PostToolCall", effectiveOpts.hooks.PostToolCall, { event: "PostToolCall", sessionId, toolName, toolInput: parsedInput, isError: toolResult.isError, ts: new Date().toISOString() }, _hookOpts, (msg) => onLog?.("stderr", msg));
       if (!_por.ok && effectiveOpts.hookErrorMode === "fail") {
         return { id: toolCall.id, content: `PostToolCall hook failed: ${_por.error}`, isError: true };
       }
@@ -1095,6 +1103,42 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
 
     const firedOnce = new Set<number>();
 
+    // ── emitResult helper ─────────────────────────────────────────────────────
+    // DRY wrapper: fires onEmit, the webhook, MaxTurnsReached hook (when applicable),
+    // and the Stop hook for every terminal result event.
+    const emitResult = async (resultEvent: EmitResultEvent): Promise<void> => {
+      onEmit(resultEvent);
+      if (isWebhookUrlSafe(opts.webhookUrl)) {
+        await postWebhook(opts.webhookUrl!, resultEvent, opts.webhookFormat);
+      }
+      // MaxTurnsReached fires before Stop so listeners can distinguish the reason.
+      if (resultEvent.subtype === "error_max_turns" && effectiveOpts.hooks?.MaxTurnsReached) {
+        await fireHooks("MaxTurnsReached", effectiveOpts.hooks.MaxTurnsReached, {
+          event: "MaxTurnsReached",
+          sessionId,
+          model: lastResponseModel,
+          turn,
+          subtype: resultEvent.subtype,
+          totalCostUsd: resultEvent.total_cost_usd,
+          turnCount: resultEvent.turnCount,
+          ts: new Date().toISOString(),
+        } satisfies HookPayload, _hookOpts, (msg) => onLog?.("stderr", msg));
+      }
+      if (effectiveOpts.hooks?.Stop) {
+        await fireHooks("Stop", effectiveOpts.hooks.Stop, {
+          event: "Stop",
+          sessionId,
+          model: lastResponseModel,
+          turn,
+          subtype: resultEvent.subtype,
+          result: resultEvent.result,
+          totalCostUsd: resultEvent.total_cost_usd,
+          turnCount: resultEvent.turnCount,
+          ts: new Date().toISOString(),
+        } satisfies HookPayload, _hookOpts, (msg) => onLog?.("stderr", msg));
+      }
+    };
+
     // Rolling average for cost anomaly detection (P3-5)
     // Track per-turn actual costs to compute a running average.
     const _turnCosts: number[] = [];
@@ -1144,8 +1188,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             toolMetrics: Object.fromEntries(toolMetrics),
             filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
           };
-          onEmit(resultEvent);
-          if (isWebhookUrlSafe(opts.webhookUrl)) await postWebhook(opts.webhookUrl!,resultEvent, opts.webhookFormat);
+          await emitResult(resultEvent);
         }
         return;
       }
@@ -1213,8 +1256,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             toolMetrics: Object.fromEntries(toolMetrics),
             filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
           };
-          onEmit(resultEvent);
-          if (isWebhookUrlSafe(opts.webhookUrl)) await postWebhook(opts.webhookUrl!,resultEvent, opts.webhookFormat);
+          await emitResult(resultEvent);
         }
         return;
       }
@@ -1230,6 +1272,11 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         opts.onlineSearch && !_baseModel.includes(":")
           ? `${_baseModel}:online`
           : _baseModel;
+
+      // ── PreLLMRequest hook ────────────────────────────────────────────────
+      if (effectiveOpts.hooks?.PreLLMRequest) {
+        await fireHooks("PreLLMRequest", effectiveOpts.hooks.PreLLMRequest, { event: "PreLLMRequest", sessionId, model: _effectiveModel, turn, ts: new Date().toISOString() }, _hookOpts, (msg) => onLog?.("stderr", msg));
+      }
 
       const response = await withSpan(
         "llm_turn",
@@ -1323,6 +1370,19 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         totalCostUsd  = Math.round(totalCostUsd  * 1e8) / 1e8;
         inputCostUsd  += turnInputCost;
         outputCostUsd += turnOutputCost;
+      }
+
+      // ── PostLLMResponse hook ──────────────────────────────────────────────
+      if (effectiveOpts.hooks?.PostLLMResponse) {
+        await fireHooks("PostLLMResponse", effectiveOpts.hooks.PostLLMResponse, {
+          event: "PostLLMResponse",
+          sessionId,
+          model: lastResponseModel,
+          turn,
+          inputTokens: response.usage.prompt_tokens,
+          outputTokens: response.usage.completion_tokens,
+          ts: new Date().toISOString(),
+        }, _hookOpts, (msg) => onLog?.("stderr", msg));
       }
 
       // ── Generation metadata (fire-and-forget) ────────────────────────────
@@ -1564,8 +1624,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         process.stderr.write(`[orager] WARNING: session save failed for ${sessionId}: ${errMsg}\n`);
         onEmit({ type: "warn", message: "session_save_failed: " + errMsg });
       });
-        onEmit(budgetResultEvent);
-        if (isWebhookUrlSafe(opts.webhookUrl)) await postWebhook(opts.webhookUrl!,budgetResultEvent, opts.webhookFormat);
+        await emitResult(budgetResultEvent);
         return;
       }
 
@@ -1681,8 +1740,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             toolMetrics: Object.fromEntries(toolMetrics),
             filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
           };
-          onEmit(resultEvent);
-          if (isWebhookUrlSafe(opts.webhookUrl)) await postWebhook(opts.webhookUrl!,resultEvent, opts.webhookFormat);
+          await emitResult(resultEvent);
         }
         return; // Exit the agent loop
       }
@@ -1838,8 +1896,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             toolMetrics: Object.fromEntries(toolMetrics),
             filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
           };
-          onEmit(resultEvent);
-          if (isWebhookUrlSafe(opts.webhookUrl)) await postWebhook(opts.webhookUrl!,resultEvent, opts.webhookFormat);
+          await emitResult(resultEvent);
         }
         return;
       }
@@ -1906,8 +1963,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         toolMetrics: Object.fromEntries(toolMetrics),
         filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
       };
-      onEmit(resultEvent);
-      if (isWebhookUrlSafe(opts.webhookUrl)) await postWebhook(opts.webhookUrl!,resultEvent, opts.webhookFormat);
+      await emitResult(resultEvent);
     }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -1955,8 +2011,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         toolMetrics: Object.fromEntries(toolMetrics),
         filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
       };
-      onEmit(resultEvent);
-      if (isWebhookUrlSafe(opts.webhookUrl)) await postWebhook(opts.webhookUrl!,resultEvent, opts.webhookFormat);
+      await emitResult(resultEvent);
     }
   } finally {
     // ── Guaranteed session save on any exit path ──────────────────────────
@@ -2004,8 +2059,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     }
     // ── SessionStop hook and MCP cleanup ─────────────────────────────────
     if (effectiveOpts.hooks?.SessionStop) {
-      const _hookOpts = { timeoutMs: effectiveOpts.hookTimeoutMs, errorMode: effectiveOpts.hookErrorMode };
-      await runHook("SessionStop", effectiveOpts.hooks.SessionStop, { sessionId }, (msg) => onLog?.("stderr", msg), _hookOpts);
+      await fireHooks("SessionStop", effectiveOpts.hooks.SessionStop, { event: "SessionStop", sessionId, ts: new Date().toISOString() }, _hookOpts, (msg) => onLog?.("stderr", msg));
       // Note: hookErrorMode "fail" not enforced in SessionStop — already in cleanup
     }
     for (const h of mcpHandles) await h.close();
