@@ -202,11 +202,7 @@ describe("compactSession: compactedAt set, compactedFrom NOT set for in-place co
     });
 
     // Mock the OpenRouter call used for summarization
-<<<<<<< HEAD
     mocked(callOpenRouter).mockResolvedValueOnce({
-=======
-    vi.mocked(callOpenRouter).mockResolvedValueOnce({
->>>>>>> 7e48efa (feat: MCP HTTP reconnect-on-disconnect, per-call retry, and compactedAt lineage fix)
       content: "Session summary: completed task successfully.",
       reasoning: "",
       toolCalls: [],
