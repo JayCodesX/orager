@@ -668,6 +668,7 @@ export async function compactSession(
     return { sessionId, turnCount: session.messages.length, summary: "(already compacted)" };
   }
 
+
   const releaseLock = await acquireSessionLock(sessionId);
 
   try {
