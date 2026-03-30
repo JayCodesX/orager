@@ -5,6 +5,9 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 300_000;
 const MAX_OUTPUT_CHARS = 100_000;
 
+/** Tracks PIDs of active bash subprocesses for drain-time cleanup. */
+export const activeBashPids = new Set<number>();
+
 // ── Platform availability ─────────────────────────────────────────────────────
 
 let _bashAvailable: boolean | null = null;
@@ -85,6 +88,29 @@ export function containsBlockedCommand(cmd: string, blocked: Set<string>): strin
       if (wordBoundaryRe.test(cmdLower)) return term;
     }
   }
+
+  // Obfuscation-resistant checks — catches common bypass patterns
+  // 5. ANSI-C quoting ($'...') can encode blocked command names as escape sequences
+  //    e.g. $'\x63\x75\x72\x6c' → curl. Block any $'...' containing escape sequences.
+  if (/\$'[^']*(?:\\x[0-9a-fA-F]{1,2}|\\[0-7]{1,3}|\\u[0-9a-fA-F]{4}|\\n|\\t|\\r)[^']*'/.test(cmd)) {
+    return "$'...' (ANSI-C quoting with escape sequences)";
+  }
+
+  // 6. base64 decode pipelines — commonly used to smuggle blocked commands
+  if (/base64\s+(-d|--decode|-D)\b/.test(cmd)) {
+    return "base64 -d";
+  }
+
+  // 7. xxd -r and printf '%b' can reconstruct arbitrary byte strings
+  if (/\bxxd\s+-r\b/.test(cmd)) {
+    return "xxd -r";
+  }
+  if (/\bprintf\s+['"]?%b\b/.test(cmd)) {
+    return "printf '%b'";
+  }
+
+  // NOTE: text-pattern matching alone cannot guarantee full coverage; OS-level
+  // sandboxing is the definitive control. See AUDIT_REPORT_2026-03-29.md C1.
 
   return null;
 }
@@ -260,6 +286,9 @@ export const bashTool: ToolExecutor = {
         detached: true,
       });
 
+      // Track active bash PIDs for drain-time cleanup
+      if (proc.pid !== undefined) activeBashPids.add(proc.pid);
+
       // Unref so the child doesn't keep the parent process alive
       proc.unref();
 
@@ -298,6 +327,7 @@ export const bashTool: ToolExecutor = {
       proc.on("close", (code) => {
         clearTimeout(timeoutHandle);
         if (killTimer !== null) clearTimeout(killTimer);
+        if (proc.pid !== undefined) activeBashPids.delete(proc.pid);
 
         if (timedOut) {
           resolve({
@@ -316,6 +346,7 @@ export const bashTool: ToolExecutor = {
       proc.on("error", (err) => {
         clearTimeout(timeoutHandle);
         if (killTimer !== null) clearTimeout(killTimer);
+        if (proc.pid !== undefined) activeBashPids.delete(proc.pid);
         resolve({
           toolCallId: "",
           content: `Failed to spawn process: ${err.message}`,

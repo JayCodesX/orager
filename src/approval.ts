@@ -52,7 +52,7 @@ export async function promptApproval(
     const timer = setTimeout(() => {
       if (!answered) {
         answered = true;
-        countdownTimers.forEach(clearTimeout);
+        clearInterval(countdownInterval);
         rl.close();
         ttyStream?.destroy();
         process.stderr.write(
@@ -62,29 +62,27 @@ export async function promptApproval(
       }
     }, timeoutMs);
 
-    // Emit countdown warnings at 1-minute intervals before auto-deny
-    const countdownTimers: ReturnType<typeof setTimeout>[] = [];
-    const totalMinutes = Math.floor(timeoutMs / 60_000);
-    for (let minutesLeft = 1; minutesLeft < totalMinutes; minutesLeft++) {
-      const warnAt = timeoutMs - minutesLeft * 60_000;
-      if (warnAt > 0) {
-        countdownTimers.push(
-          setTimeout(() => {
-            if (!answered) {
-              process.stderr.write(
-                `[orager] approval pending — auto-deny in ${minutesLeft} minute${minutesLeft !== 1 ? "s" : ""}\n`,
-              );
-            }
-          }, warnAt),
+    // Emit countdown warnings at 1-minute intervals before auto-deny.
+    // Use a single interval instead of O(minutes) individual timers.
+    const startTs = Date.now();
+    const countdownInterval = setInterval(() => {
+      if (answered) { clearInterval(countdownInterval); return; }
+      const elapsed = Date.now() - startTs;
+      const remainingMs = timeoutMs - elapsed;
+      if (remainingMs <= 0) { clearInterval(countdownInterval); return; }
+      const minutesLeft = Math.round(remainingMs / 60_000);
+      if (minutesLeft >= 1) {
+        process.stderr.write(
+          `[orager] approval pending — auto-deny in ${minutesLeft} minute${minutesLeft !== 1 ? "s" : ""}\n`,
         );
       }
-    }
+    }, 60_000);
 
     rl.once("line", (line) => {
       if (!answered) {
         answered = true;
         clearTimeout(timer);
-        countdownTimers.forEach(clearTimeout);
+        clearInterval(countdownInterval);
         rl.close();
         ttyStream?.destroy();
         const answer = line.trim().toLowerCase();
@@ -96,7 +94,7 @@ export async function promptApproval(
       if (!answered) {
         answered = true;
         clearTimeout(timer);
-        countdownTimers.forEach(clearTimeout);
+        clearInterval(countdownInterval);
         ttyStream?.destroy();
         resolve(false);
       }

@@ -374,7 +374,25 @@ async function _fileAcquireLock(sessionId: string): Promise<() => Promise<void>>
         existing = { at: 0 };
       }
       const age = Date.now() - (existing.at ?? 0);
-      if (age < LOCK_STALE_MS) {
+      // PID-based staleness: if we have a PID, check if it's still alive.
+      // process.kill(pid, 0) throws if the process is dead (ESRCH) or we lack
+      // permissions (EPERM — process exists). Only ESRCH means truly dead.
+      const lockPid = typeof existing.pid === "number" && Number.isFinite(existing.pid) ? existing.pid : null;
+      let pidAlive = true;
+      if (lockPid !== null) {
+        try {
+          process.kill(lockPid, 0);
+          pidAlive = true; // process exists
+        } catch (killErr) {
+          const code = (killErr as NodeJS.ErrnoException).code;
+          if (code === "ESRCH") {
+            pidAlive = false; // process is dead — treat lock as stale
+          }
+          // EPERM means process exists but we can't signal it — treat as alive
+        }
+      }
+      const isStale = !pidAlive || age >= LOCK_STALE_MS;
+      if (!isStale) {
         throw new Error(
           `Session ${sessionId} is already being resumed by PID ${existing.pid ?? "unknown"} on host ${(existing as { host?: string }).host ?? "unknown"}. ` +
           `If this is wrong, delete ${lp} and retry.`,
@@ -413,10 +431,27 @@ async function _fileAcquireLock(sessionId: string): Promise<() => Promise<void>>
     }
   }
 
+  // Heartbeat: rewrite the lock file every 30 seconds to refresh mtime and
+  // keep the PID current. This allows faster stale detection on the next run.
+  const HEARTBEAT_INTERVAL_MS = 30_000;
+  const heartbeatTimer = setInterval(async () => {
+    if (released) return;
+    try {
+      const refreshed = JSON.stringify({ pid: process.pid, at: Date.now(), host: os.hostname() });
+      await fs.writeFile(lp, refreshed, { encoding: "utf8", mode: 0o600 });
+    } catch {
+      // Non-fatal — lock refresh failure doesn't break the run
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+  if ((heartbeatTimer as unknown as { unref?: () => void }).unref) {
+    (heartbeatTimer as unknown as { unref: () => void }).unref();
+  }
+
   let released = false;
   return async () => {
     if (released) return;
     released = true;
+    clearInterval(heartbeatTimer);
     await fs.unlink(lp).catch(() => {});
   };
 }

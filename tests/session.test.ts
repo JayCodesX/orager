@@ -383,9 +383,10 @@ describe("stale lock detection", () => {
     const sessionId = `fresh-${newSessionId()}`;
     const lockFile = path.join(lockDir, `${sessionId}.run.lock`);
 
-    // Write a lock with a timestamp 10 seconds ago — well within the 5-min window
+    // Write a lock with a timestamp 10 seconds ago — well within the 5-min window.
+    // Use process.pid so the PID-liveness check sees a live process (not ESRCH).
     const freshAt = Date.now() - 10 * 1000;
-    await fs.writeFile(lockFile, JSON.stringify({ pid: 12345, at: freshAt, host: "other-host" }), "utf8");
+    await fs.writeFile(lockFile, JSON.stringify({ pid: process.pid, at: freshAt, host: "other-host" }), "utf8");
 
     // Pass a short timeout so retries exhaust quickly in the test
     await expect(
