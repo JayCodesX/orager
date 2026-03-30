@@ -1021,6 +1021,13 @@ export interface AgentLoopOptions {
   webhookFormat?: "discord";
 
   /**
+   * Optional HMAC-SHA256 signing secret for webhook payloads.
+   * When set, every webhook POST includes an `X-Orager-Signature: sha256=<hex>`
+   * header. Receivers should verify: HMAC-SHA256(secret, rawBody) === signature.
+   */
+  webhookSecret?: string;
+
+  /**
    * When true, wraps each tool result in XML tags identifying the source tool.
    * Helps the model resist prompt injection attacks from malicious tool outputs.
    * Example: <tool_result name="web_fetch" url="...">content</tool_result>

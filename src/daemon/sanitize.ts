@@ -49,8 +49,10 @@ const ALLOWED_DAEMON_OPTS = new Set<keyof AgentLoopOptions>([
   "planMode",
   // Context injection
   "injectContext", "readProjectInstructions",
+  // Per-run feature flags
+  "onlineSearch", "autoMemory",
   // Webhook (outbound result delivery)
-  "webhookUrl", "webhookFormat",
+  "webhookUrl", "webhookFormat", "webhookSecret",
   // API keys (caller may supply extra rotation keys or per-agent key isolation)
   "apiKeys", "agentApiKey",
   // Memory

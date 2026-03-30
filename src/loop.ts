@@ -1156,7 +1156,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     // ── OTel metrics: session duration + turn count ──────────────────────
     recordSession(Date.now() - _sessionStartMs, resultEvent.turnCount ?? turn, resultEvent.subtype);
     if (isWebhookUrlSafe(opts.webhookUrl)) {
-      const webhookErr = await postWebhook(opts.webhookUrl!, resultEvent, opts.webhookFormat);
+      const webhookErr = await postWebhook(opts.webhookUrl!, resultEvent, opts.webhookFormat, opts.webhookSecret);
       if (webhookErr) {
         onEmit({ type: "warn", message: `webhook_delivery_failed: ${webhookErr}` });
       }
@@ -1374,6 +1374,12 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           ? `${_baseModel}:online`
           : _baseModel;
 
+      // Apply :online suffix to fallback models too, so web-search mode is
+      // consistent if OpenRouter routes to a fallback instead of the primary.
+      const _effectiveModels = opts.onlineSearch && opts.models && opts.models.length > 0
+        ? opts.models.map((m) => (m.includes(":") ? m : `${m}:online`))
+        : opts.models;
+
       // ── PreLLMRequest hook ────────────────────────────────────────────────
       if (effectiveOpts.hooks?.PreLLMRequest) {
         await fireHooks("PreLLMRequest", effectiveOpts.hooks.PreLLMRequest, { event: "PreLLMRequest", sessionId, model: _effectiveModel, turn, ts: new Date().toISOString() }, _hookOpts, (msg) => onLog?.("stderr", msg));
@@ -1387,7 +1393,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           apiKey,
           apiKeys: opts.apiKeys,
           model: _effectiveModel,
-          models: opts.models,
+          models: _effectiveModels,
           // Pass the session ID so openrouter.ts can set X-Session-Id for
           // sticky routing, maximising prompt cache hits across turns.
           sessionId,

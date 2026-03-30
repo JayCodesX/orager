@@ -132,6 +132,7 @@ SESSIONS
   --compact-session <id>    Summarize a session in-place (like /compact in Claude Code)
   --prune-sessions          Delete sessions older than 30 days (default)
                               --older-than <value>  Override age threshold, e.g. 7d, 24h, 1h
+  --abandoned-sessions      Show runs that were abandoned during the last daemon crash/restart
 
 TOOLS & SAFETY
   --dangerously-skip-permissions  Skip all tool-use permission checks
@@ -497,6 +498,38 @@ async function handleDeleteTrashed(): Promise<void> {
   process.exit(0);
 }
 
+// ── Abandoned sessions subcommand ────────────────────────────────────────────
+
+async function handleAbandonedSessions(): Promise<void> {
+  const recoveryPath = path.join(os.homedir(), ".orager", "recovery.json");
+  let raw: string;
+  try {
+    raw = await fs.readFile(recoveryPath, "utf8");
+  } catch {
+    process.stdout.write("No abandoned session record found.\n");
+    return;
+  }
+  let recovery: { abandonedAt?: string; runs?: Array<{ runId?: string; abandonedAt?: string }> };
+  try {
+    recovery = JSON.parse(raw) as typeof recovery;
+  } catch {
+    process.stderr.write(`[orager] error: recovery file at ${recoveryPath} is corrupt\n`);
+    process.exit(1);
+    return;
+  }
+  const runs = recovery.runs ?? [];
+  if (runs.length === 0) {
+    process.stdout.write(`Abandoned at: ${recovery.abandonedAt ?? "unknown"} — no run details recorded.\n`);
+  } else {
+    process.stdout.write(`${runs.length} run(s) abandoned at ${recovery.abandonedAt ?? "unknown"}:\n`);
+    for (const run of runs) {
+      process.stdout.write(`  runId: ${run.runId ?? "unknown"}  abandonedAt: ${run.abandonedAt ?? recovery.abandonedAt ?? "unknown"}\n`);
+    }
+  }
+  process.stdout.write(`\nTo resume an abandoned session, pass the session ID with --session <id>.\n`);
+  process.stdout.write(`To clear this record: rm ${recoveryPath}\n`);
+}
+
 // ── Prune subcommand ──────────────────────────────────────────────────────────
 
 async function handlePrune(argv: string[]): Promise<void> {
@@ -832,6 +865,7 @@ async function main(): Promise<void> {
   if (argv.includes("--rollback-session")) { await handleRollbackSession(argv); return; }
   if (argv.includes("--compact-session"))  { await handleCompactSession(argv);  return; }
   if (argv.includes("--prune-sessions"))   { await handlePrune(argv);           return; }
+  if (argv.includes("--abandoned-sessions")) { await handleAbandonedSessions(); return; }
   if (argv.includes("--clear-model-cache")) { await handleClearModelCache(); return; }
 
   // ── User config (~/.orager/config.json) — base defaults ──────────────────
@@ -861,6 +895,7 @@ async function main(): Promise<void> {
     if (userCfg.apiKeys && !G.__oragerApiKeys)             G.__oragerApiKeys = userCfg.apiKeys;
     if (userCfg.webhookUrl && !G.__oragerWebhookUrl)             G.__oragerWebhookUrl = userCfg.webhookUrl;
     if (userCfg.webhookFormat && !G.__oragerWebhookFormat)       G.__oragerWebhookFormat = userCfg.webhookFormat;
+    if (userCfg.webhookSecret && !G.__oragerWebhookSecret)       G.__oragerWebhookSecret = userCfg.webhookSecret;
     if (userCfg.maxCostUsdSoft !== undefined && !G.__oragerMaxCostUsdSoft) G.__oragerMaxCostUsdSoft = userCfg.maxCostUsdSoft;
   }
 
@@ -940,6 +975,9 @@ async function main(): Promise<void> {
     }
     if (cfResult.webhookFormat) {
       (globalThis as Record<string, unknown>).__oragerWebhookFormat = cfResult.webhookFormat;
+    }
+    if (cfResult.webhookSecret) {
+      (globalThis as Record<string, unknown>).__oragerWebhookSecret = cfResult.webhookSecret;
     }
     if (cfResult.bashPolicy) {
       (globalThis as Record<string, unknown>).__oragerBashPolicy = cfResult.bashPolicy;
@@ -1176,6 +1214,7 @@ async function main(): Promise<void> {
     summarizeFallbackKeep: (globalThis as Record<string, unknown>).__oragerSummarizeFallbackKeep as number | undefined,
     webhookUrl: (globalThis as Record<string, unknown>).__oragerWebhookUrl as string | undefined,
     webhookFormat: (globalThis as Record<string, unknown>).__oragerWebhookFormat as "discord" | undefined,
+    webhookSecret: (globalThis as Record<string, unknown>).__oragerWebhookSecret as string | undefined,
     bashPolicy: (globalThis as Record<string, unknown>).__oragerBashPolicy as AgentLoopOptions["bashPolicy"] | undefined,
     trackFileChanges: (globalThis as Record<string, unknown>).__oragerTrackFileChanges as boolean | undefined ?? opts.trackFileChanges,
     enableBrowserTools: (globalThis as Record<string, unknown>).__oragerEnableBrowserTools as boolean | undefined ?? opts.enableBrowserTools,

@@ -112,12 +112,24 @@ export function formatDiscordPayload(event: EmitResultEvent): unknown {
  * error message string if delivery permanently failed (all retries exhausted or
  * a non-retriable 4xx). Callers should emit a warn event on non-null returns so
  * the failure is visible in the event stream, not only on stderr.
+ *
+ * When `secret` is provided, adds an `X-Orager-Signature: sha256=<hex>` header
+ * computed as HMAC-SHA256(secret, rawBody). Receivers should verify this to
+ * confirm the payload originated from orager and was not tampered with.
  */
-export async function postWebhook(url: string, payload: unknown, format?: "discord"): Promise<string | null> {
+export async function postWebhook(url: string, payload: unknown, format?: "discord", secret?: string): Promise<string | null> {
   const body = format === "discord" && payload !== null && typeof payload === "object" && "type" in (payload as object) && (payload as { type: string }).type === "result"
     ? formatDiscordPayload(payload as EmitResultEvent)
     : payload;
   const bodyStr = JSON.stringify(body);
+
+  // Compute HMAC-SHA256 signature when a secret is configured
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (secret) {
+    const { createHmac } = await import("node:crypto");
+    const sig = createHmac("sha256", secret).update(bodyStr, "utf8").digest("hex");
+    headers["X-Orager-Signature"] = `sha256=${sig}`;
+  }
 
   // Retry up to 3 attempts with delays: 0ms, 1000ms, 3000ms
   const delays = [0, 1000, 3000];
@@ -129,7 +141,7 @@ export async function postWebhook(url: string, payload: unknown, format?: "disco
     try {
       const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: bodyStr,
         signal: AbortSignal.timeout(10_000),
       });
