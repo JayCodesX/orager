@@ -121,7 +121,7 @@ PROFILES
 
 SESSIONS
   --list-sessions           List all sessions
-  --search-sessions <q>     Search sessions by content
+  --search-sessions <q>     Search sessions by content (use --limit <n> to cap results, default 20)
   --trash-session <id>      Move a session to trash
   --restore-session <id>    Restore a trashed session
   --delete-session <id>     Permanently delete a session
@@ -136,6 +136,7 @@ TOOLS & SAFETY
   --require-approval-for <tools>  Require approval for specific tools (comma-separated)
   --bash-policy <json>            Bash tool policy (blocked commands, env vars)
   --settings-file <path>          Path to a custom settings JSON file
+  --auto-memory                   Enable auto-memory (write_memory/read_memory tools that persist notes to CLAUDE.md)
 
 COST
   --max-cost-usd <n>        Hard stop if cost exceeds this value
@@ -336,7 +337,7 @@ async function handleListSessions(): Promise<void> {
   const trashed = sessions.filter((s) => s.trashed);
 
   const fmt = (s: (typeof sessions)[0]) =>
-    `  ${s.sessionId}  ${s.model.padEnd(40)}  turns:${String(s.turnCount).padStart(3)}  ${s.updatedAt.slice(0, 16).replace("T", " ")}  ${s.trashed ? "[TRASHED]" : ""}`;
+    `  ${s.sessionId}  ${s.model.slice(0, 40).padEnd(40)}  turns:${String(s.turnCount).padStart(3)}  ${s.updatedAt.slice(0, 16).replace("T", " ")}  ${s.trashed ? "[TRASHED]" : ""}`;
 
   if (active.length > 0) {
     process.stdout.write(`Active sessions (${active.length}):\n`);
@@ -436,12 +437,18 @@ async function handleSearchSessions(argv: string[]): Promise<void> {
     process.stderr.write("orager: --search-sessions requires a query string.\n");
     process.exit(1);
   }
-  const results = await searchSessions(query);
+  const limitIdx = argv.indexOf("--limit");
+  const limit = Math.min(
+    Math.max(1, parseInt((limitIdx !== -1 && argv[limitIdx + 1]) ? argv[limitIdx + 1]! : "20", 10) || 20),
+    100,
+  );
+  const results = await searchSessions(query, limit);
   if (results.length === 0) {
     process.stdout.write(`No sessions found matching: ${query}\n`);
   } else {
+    process.stdout.write(`Found ${results.length} session(s) matching "${query}" (limit: ${limit}):\n`);
     for (const s of results) {
-      process.stdout.write(`${s.sessionId}  ${s.model}  ${s.updatedAt.slice(0, 10)}  ${s.cwd}\n`);
+      process.stdout.write(`  ${s.sessionId}  ${s.model.slice(0, 40).padEnd(40)}  turns:${String(s.turnCount).padStart(3)}  ${s.updatedAt.slice(0, 16).replace("T", " ")}  ${s.cwd}\n`);
     }
   }
   process.exit(0);
@@ -459,13 +466,15 @@ async function handleCompactSession(argv: string[]): Promise<void> {
     process.stderr.write("orager: --compact-session requires OPENROUTER_API_KEY or ORAGER_API_KEY to be set.\n");
     process.exit(1);
   }
-  // Optional: --model <id> for the summarization call
+  // Optional: --model <id> or --summarize-model <id> for the summarization call
   const modelIdx = argv.indexOf("--model");
   const model = (modelIdx !== -1 && argv[modelIdx + 1]) ? argv[modelIdx + 1]! : "deepseek/deepseek-chat-v3-2";
+  const sumModelIdx = argv.indexOf("--summarize-model");
+  const summarizeModel = (sumModelIdx !== -1 && argv[sumModelIdx + 1]) ? argv[sumModelIdx + 1]! : undefined;
 
-  process.stderr.write(`[orager] compacting session ${sessionId} using ${model}…\n`);
+  process.stderr.write(`[orager] compacting session ${sessionId} using ${summarizeModel ?? model}…\n`);
   try {
-    const result = await compactSession(sessionId, apiKey, model);
+    const result = await compactSession(sessionId, apiKey, model, { summarizeModel });
     process.stdout.write(`Session ${result.sessionId} compacted (${result.turnCount} turn(s) summarized).\n`);
     process.stdout.write(`Summary: ${result.summary}\n`);
   } catch (err) {
@@ -1165,6 +1174,7 @@ async function main(): Promise<void> {
     bashPolicy: (globalThis as Record<string, unknown>).__oragerBashPolicy as AgentLoopOptions["bashPolicy"] | undefined,
     trackFileChanges: (globalThis as Record<string, unknown>).__oragerTrackFileChanges as boolean | undefined ?? opts.trackFileChanges,
     enableBrowserTools: (globalThis as Record<string, unknown>).__oragerEnableBrowserTools as boolean | undefined ?? opts.enableBrowserTools,
+    autoMemory: opts.autoMemory,
     maxCostUsdSoft: (globalThis as Record<string, unknown>).__oragerMaxCostUsdSoft as number | undefined,
     approvalTimeoutMs: (globalThis as Record<string, unknown>).__oragerApprovalTimeoutMs as number | undefined,
     hookTimeoutMs: (globalThis as Record<string, unknown>).__oragerHookTimeoutMs as number | undefined,

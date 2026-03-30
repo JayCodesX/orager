@@ -157,10 +157,18 @@ export class SqliteSessionStore implements SessionStore {
   }
 
   async prune(olderThanMs: number): Promise<PruneResult> {
-    const cutoff = new Date(Date.now() - olderThanMs).toISOString();
+    // Compacted (summarized) sessions are retained 3× longer than regular sessions.
+    const normalCutoff    = new Date(Date.now() - olderThanMs).toISOString();
+    const compactedCutoff = new Date(Date.now() - olderThanMs * 3).toISOString();
+    // Delete regular sessions older than normalCutoff AND
+    // compacted sessions older than compactedCutoff.
     const victims = this.db
-      .prepare("SELECT session_id FROM sessions WHERE updated_at < ?")
-      .all(cutoff) as Array<{ session_id: string }>;
+      .prepare(`
+        SELECT session_id FROM sessions
+        WHERE (summarized = 0 AND updated_at < ?)
+           OR (summarized = 1 AND updated_at < ?)
+      `)
+      .all(normalCutoff, compactedCutoff) as Array<{ session_id: string }>;
     let deleted = 0, errors = 0;
     const del = this.db.prepare("DELETE FROM sessions WHERE session_id = ?");
     for (const r of victims) {

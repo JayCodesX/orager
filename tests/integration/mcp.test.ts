@@ -12,6 +12,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mocked } from "../mock-helpers.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -258,7 +259,7 @@ describe("orager MCP server — handler logic", () => {
   });
 
   it("run_agent calls runAgentLoop and returns result + session_id", async () => {
-    vi.mocked(runAgentLoop).mockImplementation(async (opts) => {
+    mocked(runAgentLoop).mockImplementation(async (opts) => {
       const emitter = (opts as { onEmit?: (e: unknown) => void }).onEmit;
       // Emit a system/init event with session_id so the handler captures it
       emitter?.({ type: "system", subtype: "init", session_id: "new-sess", model: "gpt-4" });
@@ -278,7 +279,7 @@ describe("orager MCP server — handler logic", () => {
       arguments: { prompt: "do the thing" },
     });
 
-    expect(vi.mocked(runAgentLoop)).toHaveBeenCalledOnce();
+    expect(mocked(runAgentLoop)).toHaveBeenCalledOnce();
     expect(result.isError).toBeFalsy();
 
     const text = (result.content as Array<{ type: string; text?: string }>)
@@ -291,7 +292,7 @@ describe("orager MCP server — handler logic", () => {
   });
 
   it("run_agent with session_id passes forceResume=true to runAgentLoop", async () => {
-    vi.mocked(runAgentLoop).mockImplementation(async (opts) => {
+    mocked(runAgentLoop).mockImplementation(async (opts) => {
       (opts as { onEmit?: (e: unknown) => void }).onEmit?.({
         type: "result",
         subtype: "success",
@@ -308,8 +309,8 @@ describe("orager MCP server — handler logic", () => {
       arguments: { prompt: "continue", session_id: "existing-sess" },
     });
 
-    expect(vi.mocked(runAgentLoop)).toHaveBeenCalledOnce();
-    const callArgs = vi.mocked(runAgentLoop).mock.calls[0]![0] as {
+    expect(mocked(runAgentLoop)).toHaveBeenCalledOnce();
+    const callArgs = mocked(runAgentLoop).mock.calls[0]![0] as {
       sessionId: string | null;
       forceResume: boolean;
     };
@@ -352,7 +353,7 @@ describe("connectAllMcpServers — parallel connection + failure isolation", () 
       close: vi.fn().mockResolvedValue(undefined),
     };
 
-    vi.mocked(_mockConnectMcpServer)
+    mocked(_mockConnectMcpServer)
       .mockResolvedValueOnce(handle1 as never)
       .mockResolvedValueOnce(handle2 as never);
 
@@ -372,7 +373,7 @@ describe("connectAllMcpServers — parallel connection + failure isolation", () 
       close: vi.fn().mockResolvedValue(undefined),
     };
 
-    vi.mocked(_mockConnectMcpServer)
+    mocked(_mockConnectMcpServer)
       .mockRejectedValueOnce(new Error("server1 connection failed"))
       .mockResolvedValueOnce(handle2 as never);
 
@@ -388,7 +389,7 @@ describe("connectAllMcpServers — parallel connection + failure isolation", () 
   it("returns empty array when no servers configured", async () => {
     const handles = await connectAllMcpServers({});
     expect(handles).toHaveLength(0);
-    expect(vi.mocked(_mockConnectMcpServer)).not.toHaveBeenCalled();
+    expect(mocked(_mockConnectMcpServer)).not.toHaveBeenCalled();
   });
 
   it("logs connection success with tool count", async () => {
@@ -400,7 +401,7 @@ describe("connectAllMcpServers — parallel connection + failure isolation", () 
       close: vi.fn().mockResolvedValue(undefined),
     };
 
-    vi.mocked(_mockConnectMcpServer).mockResolvedValueOnce(handle as never);
+    mocked(_mockConnectMcpServer).mockResolvedValueOnce(handle as never);
 
     const logMessages: string[] = [];
     await connectAllMcpServers(
@@ -412,7 +413,7 @@ describe("connectAllMcpServers — parallel connection + failure isolation", () 
   });
 
   it("logs warning when a server fails to connect", async () => {
-    vi.mocked(_mockConnectMcpServer).mockRejectedValueOnce(new Error("ENOENT: not found"));
+    mocked(_mockConnectMcpServer).mockRejectedValueOnce(new Error("ENOENT: not found"));
 
     const logMessages: string[] = [];
     await connectAllMcpServers(

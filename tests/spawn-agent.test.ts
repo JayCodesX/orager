@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mocked } from "./mock-helpers.js";
 import { runAgentLoop } from "../src/loop.js";
 import type { EmitEvent, EmitResultEvent, OpenRouterCallResult, ToolCall } from "../src/types.js";
 
@@ -15,7 +16,7 @@ vi.mock("../src/session.js", () => ({
   newSessionId: vi.fn().mockReturnValue("test-session-id"),
 }));
 
-vi.mock("../src/audit.js", () => ({ auditApproval: vi.fn() }));
+vi.mock("../src/audit.js", () => ({ auditApproval: vi.fn(), logToolCall: vi.fn(), logSandboxViolation: vi.fn() }));
 
 const { callOpenRouter } = await import("../src/openrouter.js");
 
@@ -88,7 +89,7 @@ describe("spawn_agent tool", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("sub-agent result text is returned to parent as tool result", async () => {
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       // Parent turn 1: spawn sub-agent
       .mockResolvedValueOnce(toolResponse([spawnCall("tc1", "research something")]))
       // Sub-agent turn 1: completes
@@ -109,7 +110,7 @@ describe("spawn_agent tool", () => {
   });
 
   it("spawn_agent error is surfaced as an isError tool result when sub-agent fails", async () => {
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       // Parent spawns sub-agent
       .mockResolvedValueOnce(toolResponse([spawnCall("tc1", "failing task")]))
       // Sub-agent hits max turns (returns error_max_turns)
@@ -120,7 +121,7 @@ describe("spawn_agent tool", () => {
 
     const { opts, emitted } = loopOpts();
     // Spawn with max_turns=1 so sub-agent exhausts quickly
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       .mockReset()
       .mockResolvedValueOnce(toolResponse([spawnCall("tc1", "t", { max_turns: 1 })]))
       // Sub-agent: produces content on first (only) turn
@@ -134,7 +135,7 @@ describe("spawn_agent tool", () => {
   });
 
   it("maxSpawnDepth=0 disables spawn_agent — calling it returns unknown tool error", async () => {
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       // Model tries to call spawn_agent (it won't be offered but may call it anyway)
       .mockResolvedValueOnce(toolResponse([spawnCall("tc1", "subtask")]))
       // Parent gets unknown-tool error back, finishes
@@ -144,7 +145,7 @@ describe("spawn_agent tool", () => {
     await runAgentLoop(opts);
 
     // spawn_agent tool should NOT be in the tool definitions sent to the LLM
-    const firstCallArgs = vi.mocked(callOpenRouter).mock.calls[0]?.[0];
+    const firstCallArgs = mocked(callOpenRouter).mock.calls[0]?.[0];
     const toolNames = (firstCallArgs?.tools ?? []).map((t) => t.function.name);
     expect(toolNames).not.toContain("spawn_agent");
 
@@ -158,7 +159,7 @@ describe("spawn_agent tool", () => {
   it("spawn_agent is not offered when current depth equals maxSpawnDepth", async () => {
     // Simulate a sub-agent at depth 2 with maxSpawnDepth=2
     // It should not have spawn_agent in its tool list
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       .mockResolvedValueOnce(noToolResponse("leaf agent done"));
 
     const { opts } = loopOpts({
@@ -168,7 +169,7 @@ describe("spawn_agent tool", () => {
 
     await runAgentLoop(opts);
 
-    const firstCallArgs = vi.mocked(callOpenRouter).mock.calls[0]?.[0];
+    const firstCallArgs = mocked(callOpenRouter).mock.calls[0]?.[0];
     const toolNames = (firstCallArgs?.tools ?? []).map((t) => t.function.name);
     expect(toolNames).not.toContain("spawn_agent");
   });
@@ -183,13 +184,13 @@ describe("spawn_agent tool", () => {
     await runAgentLoop(opts);
 
     // Loop should have returned immediately without calling the LLM
-    expect(vi.mocked(callOpenRouter)).not.toHaveBeenCalled();
+    expect(mocked(callOpenRouter)).not.toHaveBeenCalled();
   });
 
   it("agent_id label appears in log output", async () => {
     const logMessages: string[] = [];
 
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       .mockResolvedValueOnce(toolResponse([spawnCall("tc1", "research", { agent_id: "researcher" })]))
       .mockResolvedValueOnce(noToolResponse("research complete"))
       .mockResolvedValueOnce(noToolResponse("all done"));
@@ -204,7 +205,7 @@ describe("spawn_agent tool", () => {
   });
 
   it("sub-agent events are forwarded to parent onEmit", async () => {
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       .mockResolvedValueOnce(toolResponse([spawnCall("tc1", "subtask")]))
       .mockResolvedValueOnce(noToolResponse("sub result"))
       .mockResolvedValueOnce(noToolResponse("parent done"));
@@ -218,7 +219,7 @@ describe("spawn_agent tool", () => {
   });
 
   it("parallel spawn calls (two in same tool turn) both execute", async () => {
-    vi.mocked(callOpenRouter)
+    mocked(callOpenRouter)
       // Parent: spawn two agents in one turn
       .mockResolvedValueOnce(toolResponse([
         spawnCall("tc1", "task-A", { agent_id: "agent-A" }),

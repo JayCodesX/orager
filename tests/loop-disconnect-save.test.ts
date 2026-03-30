@@ -14,7 +14,12 @@ import fs from "node:fs/promises";
 
 // We mock at the module level for these tests
 vi.mock("../src/openrouter.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/openrouter.js")>();
+  // importOriginal is vitest-specific; bun passes undefined so we fall back to
+  // a direct import() which gives the real module under bun's mock system.
+  const actual: typeof import("../src/openrouter.js") =
+    typeof importOriginal === "function"
+      ? await importOriginal()
+      : await import("../src/openrouter.js");
   return {
     ...actual,
     callOpenRouter: vi.fn().mockImplementation(async () => {
@@ -30,7 +35,12 @@ vi.mock("../src/openrouter.js", async (importOriginal) => {
 });
 
 vi.mock("../src/retry.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/retry.js")>();
+  // importOriginal is vitest-specific; bun passes undefined so we fall back to
+  // a direct import() which gives the real module under bun's mock system.
+  const actual: typeof import("../src/retry.js") =
+    typeof importOriginal === "function"
+      ? await importOriginal()
+      : await import("../src/retry.js");
   return {
     ...actual,
     callWithRetry: vi.fn().mockImplementation(async () => {
