@@ -44,7 +44,7 @@ describe("acquireSessionLock", () => {
 
     // Lock file should exist after acquire
     const lp = lockFilePath(sessionId);
-    await expect(fs.access(lp)).resolves.toBeUndefined();
+    await fs.access(lp); // throws if not accessible — fails test if file missing
 
     await release();
 
@@ -108,7 +108,7 @@ describe("acquireSessionLock", () => {
     const release = await acquireSessionLock(sessionId);
     try {
       const lp2 = lockFilePath(sessionId);
-      await expect(fs.access(lp2)).resolves.toBeUndefined();
+      await fs.access(lp2); // throws if not accessible — fails test if file missing
     } finally {
       await release();
     }
@@ -126,7 +126,7 @@ describe("acquireSessionLock", () => {
     // Should succeed because corrupted = stale
     const release = await acquireSessionLock(sessionId);
     try {
-      await expect(fs.access(lp)).resolves.toBeUndefined();
+      await fs.access(lp); // throws if not accessible — fails test if file missing
     } finally {
       await release();
     }

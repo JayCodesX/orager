@@ -3,9 +3,15 @@
  * flush SQLite WAL, close the HTTP server, then exit.
  */
 import http from "node:http";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { isSqliteMemoryEnabled, closeDb } from "../memory-sqlite.js";
 import { stopKeepAlive } from "./lifecycle.js";
+import { activeBashPids } from "../tools/bash.js";
 import type { DaemonContext } from "./context.js";
+
+const RECOVERY_FILE = join(homedir(), ".orager", "recovery.json");
 
 /**
  * @param ctx          Shared daemon state
@@ -45,8 +51,28 @@ export async function drainAndExit(
     process.stderr.write(
       `[orager daemon] drain timeout — ${ctx.activeRuns} run(s) abandoned\n`,
     );
+    // Kill orphaned bash subprocesses that kept runs alive past drain timeout
+    for (const pid of activeBashPids) {
+      try { process.kill(pid, "SIGTERM"); } catch { /* already exited */ }
+    }
   } else {
     process.stderr.write("[orager daemon] all runs completed — exiting\n");
+  }
+
+  // Write recovery manifest for in-flight runs that couldn't complete gracefully
+  if (ctx.activeRuns > 0) {
+    try {
+      const abandonedRunIds = Array.from(ctx.activeRunControllers.keys());
+      const manifest = {
+        abandonedAt: new Date().toISOString(),
+        activeRunCount: ctx.activeRuns,
+        runs: abandonedRunIds.map((runId) => ({ runId, abandonedAt: new Date().toISOString() })),
+      };
+      mkdirSync(join(homedir(), ".orager"), { recursive: true });
+      writeFileSync(RECOVERY_FILE, JSON.stringify(manifest, null, 2), { encoding: "utf8", mode: 0o600 });
+    } catch {
+      // Non-fatal — recovery manifest write failure must not block shutdown
+    }
   }
 
   // Flush SQLite WAL before exiting so no memory data is lost

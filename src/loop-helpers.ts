@@ -111,16 +111,38 @@ export async function postWebhook(url: string, payload: unknown, format?: "disco
   const body = format === "discord" && payload !== null && typeof payload === "object" && "type" in (payload as object) && (payload as { type: string }).type === "result"
     ? formatDiscordPayload(payload as EmitResultEvent)
     : payload;
-  try {
-    await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(10_000),
-    });
-  } catch {
-    // Non-fatal — webhook delivery failure must never crash the agent
+  const bodyStr = JSON.stringify(body);
+
+  // Retry up to 3 attempts with delays: 0ms, 1000ms, 3000ms
+  const delays = [0, 1000, 3000];
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < delays.length; attempt++) {
+    if (delays[attempt]! > 0) {
+      await new Promise<void>((r) => setTimeout(r, delays[attempt]));
+    }
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: bodyStr,
+        signal: AbortSignal.timeout(10_000),
+      });
+      // Do not retry on 4xx (except 429) — these are permanent failures
+      if (res.ok) return;
+      if (res.status === 429 || res.status >= 500) {
+        lastErr = new Error(`HTTP ${res.status}`);
+        continue; // retry
+      }
+      // 4xx other than 429 — permanent failure, no retry
+      return;
+    } catch (err) {
+      lastErr = err; // network error — retry
+    }
   }
+  // All retries exhausted — log permanently failed webhook delivery
+  process.stderr.write(
+    `[orager] WARNING: webhook delivery failed after ${delays.length} attempts to ${url}: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}\n`,
+  );
 }
 
 /**

@@ -895,9 +895,11 @@ export interface AgentLoopOptions {
    */
   summarizePrompt?: string;
   /**
+   * Number of most-recent turns to keep when summarization fails completely.
    * When summarization fails and the cooldown is active, fall back to hard
    * truncation: keep the system prompt + the last N messages.
-   * Default: 40. Set to 0 to disable fallback truncation.
+   * Set to 0 to disable fallback truncation.
+   * @default 40
    */
   summarizeFallbackKeep?: number;
   /**

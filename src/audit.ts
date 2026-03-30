@@ -102,3 +102,15 @@ export function auditApproval(entry: AuditEntry): void {
     // Silently discard
   }
 }
+
+/**
+ * Record a sandbox path violation to the audit log. Never throws.
+ */
+export function logSandboxViolation(entry: { path: string; sandboxRoot: string; ts: number }): void {
+  try {
+    const line = JSON.stringify({ event: "sandbox_violation", ...entry }) + "\n";
+    getStream().write(line);
+  } catch {
+    // Silently discard
+  }
+}

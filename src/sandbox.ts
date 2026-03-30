@@ -1,5 +1,6 @@
 import { resolve, relative, dirname, basename } from "node:path";
 import fs from "node:fs";
+import { logSandboxViolation } from "./audit.js";
 
 /**
  * Throws if `resolvedPath` is not at or under `sandboxRoot`.
@@ -43,6 +44,7 @@ export function assertPathAllowed(resolvedPath: string, sandboxRoot: string): vo
   // relative() returns a path starting with '..' if target is outside root
   const rel = relative(realRoot, realTarget);
   if (rel.startsWith("..") || rel.startsWith("/")) {
+    logSandboxViolation({ path: realTarget, sandboxRoot: realRoot, ts: Date.now() });
     throw new Error(
       `Path '${resolvedPath}' is outside the sandbox root '${sandboxRoot}'`
     );
