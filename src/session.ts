@@ -503,6 +503,98 @@ export async function deleteTrashedSessions(): Promise<PruneResult> {
   return (await getStore()).deleteTrash();
 }
 
+// ── Session fork ──────────────────────────────────────────────────────────────
+
+/**
+ * Fork a session at an optional turn boundary.
+ *
+ * Creates a new session that starts with the same message history as the
+ * source session, optionally truncated to the first `atTurn` turns. The fork
+ * gets a fresh session ID, reset cost tracking (`cumulativeCostUsd = 0`), and
+ * clears any pending approval state.
+ *
+ * Turn counting: one turn = one assistant message (and all tool calls/results
+ * that follow it, up to the next assistant message). The system message (turn 0
+ * setup) is always preserved.
+ *
+ * @param sourceId  ID of the session to fork from.
+ * @param opts.atTurn  Number of completed turns to include. Defaults to the
+ *                     source session's full turn count (fork at current end).
+ * @returns The new session ID and the effective turn index the fork was taken at.
+ * @throws  If the source session does not exist.
+ */
+export async function forkSession(
+  sourceId: string,
+  opts?: { atTurn?: number },
+): Promise<{ sessionId: string; forkedFrom: string; atTurn: number }> {
+  assertSafeSessionId(sourceId);
+  const source = await loadSession(sourceId);
+  if (!source) throw new Error(`Session "${sourceId}" not found`);
+
+  const sourceTurnCount = source.turnCount ?? 0;
+  const requestedTurn = opts?.atTurn;
+
+  // Determine effective turn count and slice messages
+  let slicedMessages = source.messages;
+  let atTurn = sourceTurnCount;
+
+  if (
+    requestedTurn !== undefined &&
+    requestedTurn >= 0 &&
+    requestedTurn < sourceTurnCount
+  ) {
+    atTurn = requestedTurn;
+    // Walk the message array counting completed turns (= assistant messages).
+    // Collect all messages up to and including the Nth assistant message, plus
+    // any subsequent tool-result messages that belong to that same turn.
+    let turnsSeen = 0;
+    let cutIndex = 0;
+    const msgs = source.messages;
+
+    for (let i = 0; i < msgs.length; i++) {
+      if (msgs[i]!.role === "assistant") {
+        turnsSeen++;
+        if (turnsSeen >= atTurn) {
+          // Include this assistant message and any immediately following tool messages
+          cutIndex = i + 1;
+          while (cutIndex < msgs.length && msgs[cutIndex]!.role === "tool") {
+            cutIndex++;
+          }
+          break;
+        }
+      }
+    }
+
+    if (atTurn === 0) {
+      // Fork before any turns: keep only the system message (if present)
+      slicedMessages = msgs[0]?.role === "system" ? [msgs[0]] : [];
+      cutIndex = slicedMessages.length;
+    } else {
+      slicedMessages = msgs.slice(0, cutIndex);
+    }
+  }
+
+  const newId = newSessionId();
+  const now = new Date().toISOString();
+
+  const forked: SessionData = {
+    ...source,
+    sessionId: newId,
+    messages: slicedMessages,
+    turnCount: atTurn,
+    createdAt: now,
+    updatedAt: now,
+    // Fresh cost tracking — the fork starts its own cost budget.
+    cumulativeCostUsd: 0,
+    // Clear pending approval — the fork must start from a clean state.
+    pendingApproval: null,
+  };
+
+  await saveSession(forked);
+  log.info("session_forked", { sourceId, newId, atTurn });
+  return { sessionId: newId, forkedFrom: sourceId, atTurn };
+}
+
 /**
  * Acquire an advisory resume lock for a session with exponential-backoff retry.
  *
