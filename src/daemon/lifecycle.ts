@@ -50,7 +50,9 @@ export function startKeepAlive(ctx: DaemonContext): void {
         model: m,
         messages: [{ role: "user", content: "ping" }],
         max_completion_tokens: 1,
-      }).catch(() => {});
+      }).catch((err: unknown) => {
+        console.error("[orager] keepalive ping failed:", err instanceof Error ? err.message : String(err));
+      });
     }
     process.stderr.write(
       `[orager daemon] keep-alive ping sent (${ctx.usedModels.size} model(s))\n`,

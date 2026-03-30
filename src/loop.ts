@@ -114,6 +114,23 @@ export function computeToolBudgetTimeout(params: {
   return explicit;
 }
 
+/** SSRF guard: rejects loopback/private IPs and non-http(s) schemes. */
+function isWebhookUrlSafe(raw: string | undefined): boolean {
+  if (!raw) return false;
+  let u: URL;
+  try { u = new URL(raw); } catch { return false; }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return false;
+  const h = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (
+    h === "localhost" || h === "127.0.0.1" || h === "::1" || h === "0.0.0.0" ||
+    /^127\./.test(h) || /^10\./.test(h) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(h) ||
+    /^192\.168\./.test(h) ||
+    /^::ffff:127\./i.test(h) || h === "::ffff:7f00:1"
+  ) return false;
+  return true;
+}
+
 export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   const {
     prompt,
@@ -1061,7 +1078,11 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         cwd,
         pendingApproval: null,
         cumulativeCostUsd: totalCostUsd,
-      }).catch(() => {});
+      }).catch((err: unknown) => {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[orager] WARNING: session save failed for ${sessionId}: ${errMsg}\n`);
+        onEmit({ type: "warn", message: "session_save_failed: " + errMsg });
+      });
 
       const elapsedMs = pendingApproval.questionedAt
         ? Date.now() - new Date(pendingApproval.questionedAt).getTime()
@@ -1099,7 +1120,11 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           turnCount: turn,
           cwd,
           cumulativeCostUsd: totalCostUsd,
-        }).catch(() => {});
+        }).catch((err: unknown) => {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[orager] WARNING: session save failed for ${sessionId}: ${errMsg}\n`);
+        onEmit({ type: "warn", message: "session_save_failed: " + errMsg });
+      });
         {
           const resultEvent = {
             type: "result" as const,
@@ -1120,7 +1145,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
           };
           onEmit(resultEvent);
-          if (opts.webhookUrl) await postWebhook(opts.webhookUrl, resultEvent, opts.webhookFormat);
+          if (isWebhookUrlSafe(opts.webhookUrl)) await postWebhook(opts.webhookUrl!,resultEvent, opts.webhookFormat);
         }
         return;
       }
@@ -1189,7 +1214,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
           };
           onEmit(resultEvent);
-          if (opts.webhookUrl) await postWebhook(opts.webhookUrl, resultEvent, opts.webhookFormat);
+          if (isWebhookUrlSafe(opts.webhookUrl)) await postWebhook(opts.webhookUrl!,resultEvent, opts.webhookFormat);
         }
         return;
       }
@@ -1348,7 +1373,11 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             nativeTokensCompletion: meta.nativeTokensCompletion,
             latencyMs: meta.latencyMs,
           });
-        }).catch(() => {});
+        }).catch((err: unknown) => {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[orager] WARNING: session save failed for ${sessionId}: ${errMsg}\n`);
+        onEmit({ type: "warn", message: "session_save_failed: " + errMsg });
+      });
       }
 
       // Build assistant message and add to history
@@ -1530,9 +1559,13 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           turnCount: turn,
           cwd,
           cumulativeCostUsd: totalCostUsd,
-        }).catch(() => {});
+        }).catch((err: unknown) => {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[orager] WARNING: session save failed for ${sessionId}: ${errMsg}\n`);
+        onEmit({ type: "warn", message: "session_save_failed: " + errMsg });
+      });
         onEmit(budgetResultEvent);
-        if (opts.webhookUrl) await postWebhook(opts.webhookUrl, budgetResultEvent, opts.webhookFormat);
+        if (isWebhookUrlSafe(opts.webhookUrl)) await postWebhook(opts.webhookUrl!,budgetResultEvent, opts.webhookFormat);
         return;
       }
 
@@ -1622,7 +1655,11 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             toolCalls: response.toolCalls,
             questionedAt,
           },
-        }).catch(() => {});
+        }).catch((err: unknown) => {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[orager] WARNING: session save failed for ${sessionId}: ${errMsg}\n`);
+        onEmit({ type: "warn", message: "session_save_failed: " + errMsg });
+      });
 
         // End the run — emit result with success subtype so session is preserved
         {
@@ -1645,7 +1682,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
           };
           onEmit(resultEvent);
-          if (opts.webhookUrl) await postWebhook(opts.webhookUrl, resultEvent, opts.webhookFormat);
+          if (isWebhookUrlSafe(opts.webhookUrl)) await postWebhook(opts.webhookUrl!,resultEvent, opts.webhookFormat);
         }
         return; // Exit the agent loop
       }
@@ -1722,7 +1759,11 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             cwd,
             summarized: true,
             cumulativeCostUsd: totalCostUsd,
-          }).catch(() => {});
+          }).catch((err: unknown) => {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[orager] WARNING: session save failed for ${sessionId}: ${errMsg}\n`);
+        onEmit({ type: "warn", message: "session_save_failed: " + errMsg });
+      });
         } catch (summarizeErr) {
           const msg = summarizeErr instanceof Error ? summarizeErr.message : String(summarizeErr);
           onLog?.("stderr", `[orager] summarization failed (will retry in ${SUMMARIZE_COOLDOWN_TURNS} turns): ${msg}\n`);
@@ -1772,7 +1813,11 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           turnCount: turn,
           cwd,
           cumulativeCostUsd: totalCostUsd,
-        }).catch(() => {});
+        }).catch((err: unknown) => {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[orager] WARNING: session save failed for ${sessionId}: ${errMsg}\n`);
+        onEmit({ type: "warn", message: "session_save_failed: " + errMsg });
+      });
 
         {
           const resultEvent = {
@@ -1794,7 +1839,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
           };
           onEmit(resultEvent);
-          if (opts.webhookUrl) await postWebhook(opts.webhookUrl, resultEvent, opts.webhookFormat);
+          if (isWebhookUrlSafe(opts.webhookUrl)) await postWebhook(opts.webhookUrl!,resultEvent, opts.webhookFormat);
         }
         return;
       }
@@ -1862,7 +1907,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
       };
       onEmit(resultEvent);
-      if (opts.webhookUrl) await postWebhook(opts.webhookUrl, resultEvent, opts.webhookFormat);
+      if (isWebhookUrlSafe(opts.webhookUrl)) await postWebhook(opts.webhookUrl!,resultEvent, opts.webhookFormat);
     }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -1911,7 +1956,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         filesChanged: opts.trackFileChanges ? Array.from(filesChanged) : undefined,
       };
       onEmit(resultEvent);
-      if (opts.webhookUrl) await postWebhook(opts.webhookUrl, resultEvent, opts.webhookFormat);
+      if (isWebhookUrlSafe(opts.webhookUrl)) await postWebhook(opts.webhookUrl!,resultEvent, opts.webhookFormat);
     }
   } finally {
     // ── Guaranteed session save on any exit path ──────────────────────────
@@ -1965,6 +2010,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     }
     for (const h of mcpHandles) await h.close();
     await releaseLock?.();
+    toolResultCache.clear(); // prevent cross-session stale cache hits
   }
   }); // end withSpan("agent_loop")
 }

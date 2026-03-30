@@ -154,14 +154,15 @@ export function handleRun(
         `[orager daemon] warning: at max concurrent runs (${ctx.activeRuns}/${ctx.maxConcurrent})\n`,
       );
     }
+    // ── Per-request timeout + cancellation ────────────────────────────────────
+    const runId = crypto.randomUUID();
+
     res.writeHead(200, {
       "Content-Type": "application/x-ndjson",
       "Transfer-Encoding": "chunked",
       "Cache-Control": "no-cache",
+      "X-Orager-Run-Id": runId,
     });
-
-    // ── Per-request timeout + cancellation ────────────────────────────────────
-    const runId = crypto.randomUUID();
     const abortController = new AbortController();
     ctx.activeRunControllers.set(runId, abortController);
 
