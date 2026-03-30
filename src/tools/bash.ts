@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import type { ToolExecutor, ToolResult } from "../types.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -113,6 +114,105 @@ export function containsBlockedCommand(cmd: string, blocked: Set<string>): strin
   // sandboxing is the definitive control. See AUDIT_REPORT_2026-03-29.md C1.
 
   return null;
+}
+
+// ── OS-level sandbox helpers ──────────────────────────────────────────────────
+
+/**
+ * Check if `sandbox-exec` (macOS) is available. Cached after first call.
+ */
+let _sandboxExecAvailable: boolean | null = null;
+function isSandboxExecAvailable(): boolean {
+  if (_sandboxExecAvailable !== null) return _sandboxExecAvailable;
+  const probe = "(version 1)(deny default)(allow process-exec)(allow process-fork)(allow signal)(allow mach-lookup)(allow file-read*)(allow sysctl-read)";
+  const r = spawnSync("sandbox-exec", ["-p", probe, "true"], {
+    encoding: "utf8",
+    timeout: 3000,
+  });
+  _sandboxExecAvailable = r.status === 0;
+  return _sandboxExecAvailable;
+}
+
+/** Reset sandbox-exec availability cache — for testing only. */
+export function _resetSandboxExecAvailableForTesting(): void {
+  _sandboxExecAvailable = null;
+}
+
+/**
+ * Build a macOS SBPL sandbox profile that:
+ * - Allows reads anywhere (reading arbitrary files is generally safe)
+ * - Restricts writes to `writeRoot` and `/dev` only
+ * - Blocks network by default unless `allowNetwork` is true
+ */
+function buildMacosSandboxProfile(writeRoot: string, allowNetwork: boolean): string {
+  const networkRule = allowNetwork
+    ? "(allow network-outbound)(allow network-inbound)(allow network-bind)"
+    : "(deny network-outbound)(deny network-inbound)(deny network-bind)";
+  return [
+    "(version 1)",
+    "(deny default)",
+    "(allow process-exec)",
+    "(allow process-fork)",
+    "(allow signal)",
+    "(allow mach-lookup)",
+    "(allow sysctl-read)",
+    "(allow ipc-posix*)",
+    "(allow ipc-sysv*)",
+    // Read access is unrestricted — prevents breaking compilers, interpreters, etc.
+    "(allow file-read*)",
+    // Write access: only to the sandboxRoot and /dev (stdout/stderr/null)
+    `(allow file-write* (subpath "${writeRoot}"))`,
+    "(allow file-write* (subpath \"/dev\"))",
+    networkRule,
+  ].join("\n");
+}
+
+/**
+ * Check if `bwrap` (bubblewrap, Linux) is available. Cached after first call.
+ */
+let _bwrapAvailable: boolean | null = null;
+function isBwrapAvailable(): boolean {
+  if (_bwrapAvailable !== null) return _bwrapAvailable;
+  const r = spawnSync("bwrap", ["--version"], { encoding: "utf8", timeout: 3000 });
+  _bwrapAvailable = r.status === 0;
+  return _bwrapAvailable;
+}
+
+/** Reset bwrap availability cache — for testing only. */
+export function _resetBwrapAvailableForTesting(): void {
+  _bwrapAvailable = null;
+}
+
+/**
+ * Build the bwrap argument list for Linux sandboxing.
+ * Creates a minimal writable namespace: bind-mounts / as read-only,
+ * then adds a writable bind on writeRoot, plus /dev and /proc.
+ * Network is isolated (--unshare-net) unless allowNetwork is true.
+ */
+function buildBwrapArgs(writeRoot: string, allowNetwork: boolean): string[] {
+  const args: string[] = [
+    "--ro-bind", "/", "/",         // read-only view of the whole filesystem
+    "--bind", writeRoot, writeRoot, // writable overlay for sandboxRoot
+    "--dev", "/dev",               // real /dev (needed for stdin/stdout/stderr)
+    "--proc", "/proc",             // real /proc (needed by many tools)
+    "--tmpfs", "/tmp",             // isolated /tmp
+  ];
+  if (!allowNetwork) {
+    args.push("--unshare-net");
+  }
+  return args;
+}
+
+/**
+ * Resolve the real (symlink-expanded) absolute path of a directory.
+ * Returns null if the path cannot be resolved (doesn't exist yet).
+ */
+function resolveRealPath(p: string): string | null {
+  try {
+    return realpathSync(p);
+  } catch {
+    return null;
+  }
 }
 
 export const bashTool: ToolExecutor = {
@@ -274,12 +374,44 @@ export const bashTool: ToolExecutor = {
       }
     }
 
+    // ── OS-level sandbox wrapping ─────────────────────────────────────────
+    const context2 = context as { sandboxRoot?: string; bashPolicy?: { osSandbox?: boolean; allowNetwork?: boolean } } | undefined;
+    const sandboxRoot = context2?.sandboxRoot;
+    const osSandbox = context2?.bashPolicy?.osSandbox ?? false;
+    const allowNetwork = context2?.bashPolicy?.allowNetwork ?? false;
+
+    let spawnCmd = "bash";
+    let spawnArgs: string[] = ["-c", command];
+
+    if (osSandbox && sandboxRoot) {
+      const realRoot = resolveRealPath(sandboxRoot);
+      if (realRoot === null) {
+        // sandboxRoot doesn't exist yet — skip OS sandbox, text policy still applies
+        process.stderr.write(
+          `[orager] bash sandbox: sandboxRoot "${sandboxRoot}" does not exist, OS sandbox skipped\n`,
+        );
+      } else if (process.platform === "darwin" && isSandboxExecAvailable()) {
+        const profile = buildMacosSandboxProfile(realRoot, allowNetwork);
+        spawnCmd = "sandbox-exec";
+        spawnArgs = ["-p", profile, "bash", "-c", command];
+      } else if (process.platform === "linux" && isBwrapAvailable()) {
+        const realCwd = resolveRealPath(cwd) ?? cwd;
+        spawnCmd = "bwrap";
+        spawnArgs = [...buildBwrapArgs(realRoot, allowNetwork), "--chdir", realCwd, "bash", "-c", command];
+      } else {
+        process.stderr.write(
+          `[orager] bash sandbox: osSandbox=true but no supported sandbox tool found ` +
+          `(sandbox-exec on macOS, bwrap on Linux) — falling back to text-policy only\n`,
+        );
+      }
+    }
+
     return new Promise<ToolResult>((resolve) => {
       const chunks: string[] = [];
       let timedOut = false;
       let killTimer: ReturnType<typeof setTimeout> | null = null;
 
-      const proc = spawn("bash", ["-c", command], {
+      const proc = spawn(spawnCmd, spawnArgs, {
         cwd,
         env: spawnEnv ?? process.env,
         stdio: ["ignore", "pipe", "pipe"],
