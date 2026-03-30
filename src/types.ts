@@ -815,6 +815,20 @@ export interface BashPolicy {
    * Keys to preserve when `isolateEnv` is true. Defaults to [].
    */
   allowedEnvKeys?: string[];
+  /**
+   * When true, wrap bash subprocess in an OS-level sandbox (macOS sandbox-exec,
+   * Linux bwrap). Requires `sandboxRoot` to be set on `AgentLoopOptions` — the
+   * subprocess gets read-everywhere / write-only-to-sandboxRoot restrictions.
+   * Defaults to false. Falls back gracefully to text-policy-only if the required
+   * OS tool is unavailable.
+   */
+  osSandbox?: boolean;
+  /**
+   * When `osSandbox` is true, allow outbound network connections from the
+   * sandbox. Default false (network blocked). Has no effect when osSandbox
+   * is false.
+   */
+  allowNetwork?: boolean;
 }
 
 // ── Agent loop options ───────────────────────────────────────────────────────
