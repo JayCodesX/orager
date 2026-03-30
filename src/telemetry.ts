@@ -54,13 +54,17 @@ export function getSpanBuffer(): SpanBuffer { return _spanBuffer; }
 // ── Tracer ────────────────────────────────────────────────────────────────────
 
 let _tracer: Tracer | null = null;
+// Guard against multiple initTelemetry() calls (e.g. daemon restart loops)
+let _sdkInitialized = false;
 
 /**
  * Initialize the OTEL SDK. Call once at process start (CLI entry point / daemon start).
- * No-op if OTEL_EXPORTER_OTLP_ENDPOINT is not set.
+ * No-op if OTEL_EXPORTER_OTLP_ENDPOINT is not set.  Idempotent — safe to call more than once.
  */
 export async function initTelemetry(serviceName = "orager"): Promise<void> {
   if (!process.env["OTEL_EXPORTER_OTLP_ENDPOINT"]) return;
+  if (_sdkInitialized) return; // prevent duplicate SDK + SIGTERM handler registration
+  _sdkInitialized = true;
 
   try {
     // Dynamic import so the SDK is only loaded when OTEL is configured.

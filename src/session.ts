@@ -368,11 +368,13 @@ async function _fileAcquireLock(sessionId: string): Promise<() => Promise<void>>
     // Lock already exists — check if it's stale
     try {
       let existing: { at?: number; pid?: number } = {};
+      let lockCorrupted = false;
       try {
         existing = JSON.parse(await fs.readFile(lp, "utf8")) as { at?: number; pid?: number };
       } catch {
-        // Corrupted lock file — treat as stale
+        // Corrupted lock file — treat as stale regardless of mtime
         existing = { at: 0 };
+        lockCorrupted = true;
       }
       // Clock-skew defence: compute age from BOTH the JSON `at` timestamp and
       // the filesystem mtime, then take the MINIMUM (freshest reading).
@@ -380,11 +382,20 @@ async function _fileAcquireLock(sessionId: string): Promise<() => Promise<void>>
       // old (large age from JSON), and backward corrections that would make a
       // stale lock look fresh (mtime already advanced by heartbeat writes).
       // We also clamp to 0 so a backward clock jump never produces a negative age.
+      //
+      // Exception: if the lock file is corrupted (non-JSON), there is no valid `at`
+      // timestamp or PID — skip the mtime check and treat it as always stale.
       const now = Date.now();
       const ageFromJson = Math.max(0, now - (existing.at ?? 0));
-      const fileStat = await fs.stat(lp).catch(() => null);
-      const ageFromMtime = fileStat ? Math.max(0, now - fileStat.mtimeMs) : ageFromJson;
-      const age = Math.min(ageFromJson, ageFromMtime);
+      let age: number;
+      if (lockCorrupted) {
+        // Corrupted lock: no valid metadata — always stale
+        age = LOCK_STALE_MS + 1;
+      } else {
+        const fileStat = await fs.stat(lp).catch(() => null);
+        const ageFromMtime = fileStat ? Math.max(0, now - fileStat.mtimeMs) : ageFromJson;
+        age = Math.min(ageFromJson, ageFromMtime);
+      }
 
       // PID-based staleness: if we have a PID, check if it's still alive.
       // process.kill(pid, 0) throws if the process is dead (ESRCH) or we lack
@@ -634,6 +645,12 @@ export async function compactSession(
   assertSafeSessionId(sessionId);
   const session = await loadSession(sessionId);
   if (!session) throw new Error(`Session "${sessionId}" not found`);
+
+  // Idempotency guard — skip if already compacted
+  if (session.summarized) {
+    process.stderr.write(`[orager] session "${sessionId}" is already compacted — skipping.\n`);
+    return { sessionId, turnCount: session.messages.length, summary: "(already compacted)" };
+  }
 
   const releaseLock = await acquireSessionLock(sessionId);
 

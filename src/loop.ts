@@ -678,6 +678,11 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           return { toolCallId: "", content: subError, isError: true };
         }
 
+        // Merge sub-agent filesChanged into the parent's tracking Set
+        if (subFilesChanged && opts.trackFileChanges) {
+          for (const f of subFilesChanged) filesChanged.add(f);
+        }
+
         // Build a structured summary so the parent model can reason about cost/files
         const costStr = subCostUsd > 0 ? ` (cost: $${subCostUsd.toFixed(4)})` : "";
         const filesStr = subFilesChanged && subFilesChanged.length > 0
