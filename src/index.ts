@@ -121,14 +121,17 @@ PROFILES
 
 SESSIONS
   --list-sessions           List all sessions
-  --search-sessions <q>     Search sessions by content (use --limit <n> to cap results, default 20)
+  --search-sessions <q>     Search sessions by content
+                              --limit <n>    Cap results (default 20, max 100)
+                              --offset <n>   Skip first n results for pagination (default 0)
   --trash-session <id>      Move a session to trash
   --restore-session <id>    Restore a trashed session
   --delete-session <id>     Permanently delete a session
   --delete-trashed          Delete all trashed sessions
   --rollback-session <id>   Roll back a session to previous turn
   --compact-session <id>    Summarize a session in-place (like /compact in Claude Code)
-  --prune-sessions          Delete sessions older than 30 days
+  --prune-sessions          Delete sessions older than 30 days (default)
+                              --older-than <value>  Override age threshold, e.g. 7d, 24h, 1h
 
 TOOLS & SAFETY
   --dangerously-skip-permissions  Skip all tool-use permission checks
@@ -442,11 +445,13 @@ async function handleSearchSessions(argv: string[]): Promise<void> {
     Math.max(1, parseInt((limitIdx !== -1 && argv[limitIdx + 1]) ? argv[limitIdx + 1]! : "20", 10) || 20),
     100,
   );
-  const results = await searchSessions(query, limit);
+  const offsetIdx = argv.indexOf("--offset");
+  const offset = Math.max(0, parseInt((offsetIdx !== -1 && argv[offsetIdx + 1]) ? argv[offsetIdx + 1]! : "0", 10) || 0);
+  const results = await searchSessions(query, limit, offset);
   if (results.length === 0) {
-    process.stdout.write(`No sessions found matching: ${query}\n`);
+    process.stdout.write(`No sessions found matching: ${query}${offset > 0 ? ` (offset: ${offset})` : ""}\n`);
   } else {
-    process.stdout.write(`Found ${results.length} session(s) matching "${query}" (limit: ${limit}):\n`);
+    process.stdout.write(`Found ${results.length} session(s) matching "${query}" (limit: ${limit}, offset: ${offset}):\n`);
     for (const s of results) {
       process.stdout.write(`  ${s.sessionId}  ${s.model.slice(0, 40).padEnd(40)}  turns:${String(s.turnCount).padStart(3)}  ${s.updatedAt.slice(0, 16).replace("T", " ")}  ${s.cwd}\n`);
     }
