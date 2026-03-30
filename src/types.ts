@@ -1052,7 +1052,14 @@ export interface AgentLoopOptions {
    */
   requireMcpServers?: string[];
 
-  /** Shell hooks to run on lifecycle events and tool calls. */
+  /**
+   * Hooks to run on lifecycle events and tool calls.
+   * Each hook target can be a shell command string, an HTTP URL object
+   * `{ url: string; format?: "discord" }`, or an array of both.
+   *
+   * Supported events: PreToolCall, PostToolCall, SessionStart, SessionStop,
+   * PreLLMRequest, PostLLMResponse, Stop, ToolDenied, ToolTimeout, MaxTurnsReached.
+   */
   hooks?: import("./hooks.js").HookConfig;
 
   /**
@@ -1064,7 +1071,7 @@ export interface AgentLoopOptions {
   /**
    * What to do when a hook exits non-zero or times out.
    * - "ignore" — silently discard the failure (default)
-   * - "warn"   — log to stderr and continue (same as previous behaviour)
+   * - "warn"   — emit a warning to stderr and continue
    * - "fail"   — terminate the run with an error result
    */
   hookErrorMode?: "ignore" | "warn" | "fail";
