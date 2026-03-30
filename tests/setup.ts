@@ -14,7 +14,6 @@ if (typeof vi.mocked !== "function") {
   (vi as any).mocked = <T>(fn: T): T => fn;
 }
 
-
 if (typeof vi.resetModules !== "function") {
   // vi.resetModules is similarly absent in some Bun/Vitest combinations.
   // Provide a no-op so tests that call it don't throw.
