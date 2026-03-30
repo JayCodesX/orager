@@ -928,6 +928,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           decision: "delegated",
           mode: "delegated",
         });
+        const delegatedStart = Date.now();
         try {
           const delegatedTimeoutMs = _effectiveToolTimeout(toolName);
           const delegatedPromise = opts.onToolCall(toolName, parsedInput);
@@ -949,9 +950,29 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           } else if (!readOnly) {
             toolResultCache.clear();
           }
+          logToolCall({
+            event: "tool_call",
+            ts: new Date().toISOString(),
+            sessionId,
+            toolName,
+            inputSummary: parsedInput,
+            isError,
+            durationMs: Date.now() - delegatedStart,
+            resultSummary: String(content).slice(0, 200),
+          });
           return { id: toolCall.id, content, isError };
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
+          logToolCall({
+            event: "tool_call",
+            ts: new Date().toISOString(),
+            sessionId,
+            toolName,
+            inputSummary: parsedInput,
+            isError: true,
+            durationMs: Date.now() - delegatedStart,
+            resultSummary: `error: ${msg}`.slice(0, 200),
+          });
           return { id: toolCall.id, content: `Delegated tool '${toolName}' threw: ${msg}`, isError: true };
         }
       }

@@ -144,6 +144,12 @@ export interface SessionData {
    */
   compactedAt?: string;
   /**
+   * Full audit trail of all in-place compactions for this session.
+   * Each entry records when compaction occurred and the turn count at that time.
+   * Appended to on every compaction, so the full history is preserved.
+   */
+  compactionHistory?: Array<{ compactedAt: string; previousTurnCount: number }>;
+  /**
    * Set when this session was created by forking and compacting another session.
    * Stores the source session ID for audit lineage.
    * Not set for in-place compaction (where the session ID doesn't change).
@@ -775,6 +781,8 @@ export interface CliOptions {
   trackFileChanges?: boolean;
   /** Wrap tool outputs in XML tags for cleaner context. Default true. */
   tagToolOutputs?: boolean;
+  /** Enable auto-memory tools (read_memory, write_memory, list_memories). */
+  autoMemory?: boolean;
 }
 
 // ── Bash policy ──────────────────────────────────────────────────────────────
