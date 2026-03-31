@@ -62,6 +62,25 @@ interface SessionsResponse {
   total?: number;
 }
 
+interface ConfigResponse {
+  model?: string;
+  models?: string[];
+  visionModel?: string;
+  maxCostUsd?: number;
+  maxCostUsdSoft?: number;
+}
+
+interface CreditsResponse {
+  configured?: boolean;
+  usage?: number;
+  usage_daily?: number;
+  usage_weekly?: number;
+  usage_monthly?: number;
+  limit?: number | null;
+  limit_remaining?: number | null;
+  is_free_tier?: boolean;
+}
+
 async function fetchStatus(): Promise<DaemonStatusResponse> {
   const r = await fetch("/api/daemon/status", { headers: authHeaders(), signal: AbortSignal.timeout(4000) });
   return r.json() as Promise<DaemonStatusResponse>;
@@ -78,6 +97,16 @@ async function fetchSessions(limit = 20, offset = 0): Promise<SessionsResponse> 
     signal: AbortSignal.timeout(4000),
   });
   return r.json() as Promise<SessionsResponse>;
+}
+
+async function fetchConfig(): Promise<ConfigResponse> {
+  const r = await fetch("/api/config", { headers: authHeaders(), signal: AbortSignal.timeout(4000) });
+  return r.json() as Promise<ConfigResponse>;
+}
+
+async function fetchCredits(): Promise<CreditsResponse> {
+  const r = await fetch("/api/credits", { headers: authHeaders(), signal: AbortSignal.timeout(8000) });
+  return r.json() as Promise<CreditsResponse>;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -136,6 +165,8 @@ function StatCard({ label, value, sub }: { label: string; value: React.ReactNode
 export default function Dashboard() {
   const [status, setStatus] = useState<DaemonStatusResponse | null>(null);
   const [metrics, setMetrics] = useState<MetricsResponse | null>(null);
+  const [config, setConfig] = useState<ConfigResponse | null>(null);
+  const [credits, setCredits] = useState<CreditsResponse | null>(null);
   const [allSessions, setAllSessions] = useState<Session[]>([]);
   const [sessionsPage, setSessionsPage] = useState(0);
   const [dateRange, setDateRange] = useState<DateRangePreset>("7d");
@@ -154,6 +185,10 @@ export default function Dashboard() {
 
   const sessionsTotal = filteredSessions.length;
   const sessions = filteredSessions.slice(sessionsPage * PAGE_SIZE, (sessionsPage + 1) * PAGE_SIZE);
+
+  const totalCost = useMemo(() => {
+    return filteredSessions.reduce((sum, s) => sum + (s.cumulativeCostUsd ?? 0), 0);
+  }, [filteredSessions]);
 
   const refresh = useCallback(async () => {
     try {
@@ -177,11 +212,29 @@ export default function Dashboard() {
     }
   }, []);
 
+  const loadConfig = useCallback(async () => {
+    try {
+      setConfig(await fetchConfig());
+    } catch {
+      // non-fatal
+    }
+  }, []);
+
+  const loadCredits = useCallback(async () => {
+    try {
+      setCredits(await fetchCredits());
+    } catch {
+      // non-fatal
+    }
+  }, []);
+
   // Initial load + polling
   useEffect(() => {
     void refresh();
     void loadSessions();
-  }, [refresh, loadSessions]);
+    void loadConfig();
+    void loadCredits();
+  }, [refresh, loadSessions, loadConfig, loadCredits]);
 
   useEffect(() => {
     if (!autoRefresh) {
@@ -254,6 +307,70 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* ── Configured models ── */}
+      {config && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="card-header" style={{ cursor: "default" }}>
+            <span className="card-title">Configured models</span>
+          </div>
+          <div style={{ padding: "10px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", minWidth: 60 }}>Primary</span>
+              <Badge label={config.model || "not set"} variant={config.model ? "blue" : "gray"} />
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", minWidth: 60 }}>Fallback</span>
+              {(config.models?.length ?? 0) > 0
+                ? config.models!.map((m) => <Badge key={m} label={m} variant="blue" />)
+                : <span style={{ fontSize: 12, color: "var(--text-muted)" }}>none</span>}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", minWidth: 60 }}>Vision</span>
+              {config.visionModel
+                ? <Badge label={config.visionModel} variant="blue" />
+                : <span style={{ fontSize: 12, color: "var(--text-muted)" }}>none</span>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── API credits ── */}
+      {credits?.configured && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="card-header" style={{ cursor: "default" }}>
+            <span className="card-title">API credits</span>
+            {credits.is_free_tier && <Badge label="Free tier" variant="yellow" />}
+          </div>
+          <div style={{ padding: "10px 16px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 10 }}>
+              {credits.limit != null && (
+                <div>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase" }}>Remaining</div>
+                  <div style={{ fontSize: 18, fontWeight: 700 }}>${(credits.limit_remaining ?? 0).toFixed(2)}</div>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)" }}>of ${credits.limit.toFixed(2)} limit</div>
+                </div>
+              )}
+              <div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase" }}>Total usage</div>
+                <div style={{ fontSize: 18, fontWeight: 700 }}>${(credits.usage ?? 0).toFixed(4)}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase" }}>Today</div>
+                <div style={{ fontSize: 16, fontWeight: 600 }}>${(credits.usage_daily ?? 0).toFixed(4)}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase" }}>This week</div>
+                <div style={{ fontSize: 16, fontWeight: 600 }}>${(credits.usage_weekly ?? 0).toFixed(4)}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase" }}>This month</div>
+                <div style={{ fontSize: 16, fontWeight: 600 }}>${(credits.usage_monthly ?? 0).toFixed(4)}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Stat cards ── */}
       {isRunning && metrics && (
         <>
@@ -268,6 +385,11 @@ export default function Dashboard() {
               label="Uptime"
               value={metrics.uptimeMs !== undefined ? formatUptime(metrics.uptimeMs) : "–"}
             />
+            <StatCard
+              label="Total cost"
+              value={`$${totalCost.toFixed(4)}`}
+              sub={config?.maxCostUsd ? `limit $${config.maxCostUsd}` : undefined}
+            />
             {metrics.rateLimitState && (
               <StatCard
                 label="Rate (rpm)"
@@ -276,7 +398,7 @@ export default function Dashboard() {
             )}
           </div>
 
-          {/* Models */}
+          {/* Recent models */}
           {(metrics.recentModels?.length ?? 0) > 0 && (
             <div className="card" style={{ marginBottom: 16 }}>
               <div className="card-header" style={{ cursor: "default" }}>
