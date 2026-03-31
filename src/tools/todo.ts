@@ -15,7 +15,13 @@ export interface TodoItem {
 }
 
 function todoPath(sessionId: string): string {
-  return path.join(os.homedir(), ".orager", "todos", `${sessionId}.json`);
+  // N-05: Sanitize sessionId to prevent path traversal via ../../ sequences.
+  // path.basename strips directory components, leaving only the filename part.
+  const safe = path.basename(sessionId);
+  if (!safe || safe === "." || safe === "..") {
+    throw new Error(`Invalid session ID: ${sessionId}`);
+  }
+  return path.join(os.homedir(), ".orager", "todos", `${safe}.json`);
 }
 
 async function readTodos(sessionId: string): Promise<TodoItem[]> {

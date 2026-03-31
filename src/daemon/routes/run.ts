@@ -340,9 +340,15 @@ export function handleRun(
       apiKey: ctx.apiKey,
       abortSignal: abortController.signal,
       onEmit: (event: EmitEvent) => {
-        // Track per-agent cost from result events (audit E-12)
+        // N-02: Only track cost from "result" events to prevent double-counting.
+        // Other event types (text_delta, thinking_delta, tool_*) may carry
+        // partial cost data that would inflate the budget tracker.
         const eventAny = event as unknown as Record<string, unknown>;
-        if ("total_cost_usd" in event && typeof eventAny.total_cost_usd === "number") {
+        if (
+          eventAny.type === "result" &&
+          "total_cost_usd" in event &&
+          typeof eventAny.total_cost_usd === "number"
+        ) {
           const cost = eventAny.total_cost_usd as number;
           if (cost > 0) ctx.costByAgent.set(agentId, (ctx.costByAgent.get(agentId) ?? 0) + cost);
         }
@@ -378,10 +384,13 @@ export function handleRun(
         if (!timedOut) {
           clearTimeout(timeoutHandle);
           if (!res.destroyed) res.end();
-          auditLog({ timestamp: new Date().toISOString(), agentId, durationMs: Date.now() - startTime, status: "ok", statusCode: 200 });
+          auditLog({ timestamp: new Date().toISOString(), agentId, durationMs: Date.now() - startTime, status: _runFailed ? "error" : "ok", statusCode: 200 });
           releaseSlot();
         }
-        ctx.completedRuns++;
+        // N-06: Only count successful runs in completedRuns. Failed runs are
+        // already tracked by errorRuns. This makes the metrics non-overlapping:
+        // totalFinished = completedRuns + errorRuns.
+        if (!_runFailed) ctx.completedRuns++;
       });
   })(); });
 
