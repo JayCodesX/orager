@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { authHeaders } from "../api";
+import { type DateRangePreset, presetToFromIso, DATE_RANGE_OPTIONS } from "../dateRange";
 import {
   BarChart,
   Bar,
@@ -190,6 +191,7 @@ export default function Telemetry() {
   const [tracesData, setTracesData] = useState<TracesResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedTrace, setSelectedTrace] = useState<string | null>(null);
+  const [dateRange, setDateRange] = useState<DateRangePreset>("today");
 
   const fetchAll = useCallback(async () => {
     try {
@@ -207,10 +209,20 @@ export default function Telemetry() {
 
   useEffect(() => { void fetchAll(); }, [fetchAll]);
 
-  if (loading) return <div className="placeholder"><p>Loading…</p></div>;
+  const allSpans  = spansData?.spans ?? [];
+  const allTraces = tracesData?.traces ?? [];
 
-  const spans  = spansData?.spans ?? [];
-  const traces = tracesData?.traces ?? [];
+  const { spans, traces } = useMemo(() => {
+    const fromIso = presetToFromIso(dateRange);
+    if (!fromIso) return { spans: allSpans, traces: allTraces };
+    const fromMs = new Date(fromIso).getTime();
+    return {
+      spans: allSpans.filter((s) => s.startTimeMs >= fromMs),
+      traces: allTraces.filter((t) => t.startTimeMs >= fromMs),
+    };
+  }, [allSpans, allTraces, dateRange]);
+
+  if (loading) return <div className="placeholder"><p>Loading…</p></div>;
 
   // Summary stats
   const durations  = [...spans].map((s) => s.durationMs).sort((a, b) => a - b);
@@ -223,7 +235,7 @@ export default function Telemetry() {
   const histogram = buildHistogram(spans);
   const timeline  = buildTimeline(spans);
 
-  const noData = spans.length === 0;
+  const noData = allSpans.length === 0;
 
   if (noData) {
     return (
@@ -250,6 +262,19 @@ export default function Telemetry() {
           onClose={() => setSelectedTrace(null)}
         />
       )}
+
+      {/* Filter bar */}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 16, flexShrink: 0 }}>
+        <select value={dateRange} onChange={(e) => setDateRange(e.target.value as DateRangePreset)} style={{ width: 130 }}>
+          {DATE_RANGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        <button className="btn-ghost" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => { setLoading(true); void fetchAll(); }}>
+          Refresh
+        </button>
+        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+          {spans.length} spans · {traces.length} traces
+        </span>
+      </div>
 
       {/* Summary bar */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 12, marginBottom: 20 }}>
