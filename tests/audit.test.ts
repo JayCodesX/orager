@@ -44,8 +44,12 @@ describe("auditApproval", () => {
       });
       setTimeout(() => {}, 200);
     `;
-    // Use node --import tsx/esm for ESM eval — works under both bun and node
-    await execFileP(process.execPath, ["--import", "tsx/esm", "--input-type=module", "--eval", script], {
+    // Detect runtime: bun uses "bun -e", node uses tsx for ESM eval
+    const isBun = typeof (globalThis as Record<string, unknown>).Bun !== "undefined";
+    const args = isBun
+      ? ["-e", script]
+      : ["--import", "tsx/esm", "--input-type=module", "--eval", script];
+    await execFileP(process.execPath, args, {
       env: { ...process.env, ORAGER_AUDIT_LOG: auditPath },
       timeout: 10_000,
     });
