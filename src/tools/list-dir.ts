@@ -116,7 +116,13 @@ async function walkDir(
   let entries;
   try {
     entries = await readdir(dirPath, { withFileTypes: true });
-  } catch {
+  } catch (err) {
+    // L-06: Log non-ENOENT readdir failures for debugging; ENOENT is expected
+    // for directories that disappear during traversal.
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") {
+      process.stderr.write(`[orager] list-dir: cannot read directory ${dirPath}: ${code ?? err}\n`);
+    }
     return;
   }
 
