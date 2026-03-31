@@ -356,6 +356,16 @@ export function parseArgs(argv: string[]): CliOptions {
         opts.toolErrorBudgetHardStop = true;
         break;
       }
+      case "--fork-session": {
+        // P-09: handled in main before loop (forks session, optionally resumes)
+        i++; // skip session ID value
+        break;
+      }
+      case "--at-turn": {
+        // handled in main before loop (paired with --fork-session or --rollback-session)
+        i++;
+        break;
+      }
       case "--prune-sessions": {
         // handled in main before loop
         break;
