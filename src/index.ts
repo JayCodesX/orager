@@ -237,8 +237,7 @@ OTHER
   ui [--port <n>]           Start the browser-based UI server (default port: 3457)
 
 ENVIRONMENT
-  OPENROUTER_API_KEY        OpenRouter API key (required)
-  ORAGER_API_KEY            Alternative API key env var
+  PROTOCOL_API_KEY          LLM provider API key (required)
   ORAGER_SESSIONS_DIR       Override sessions directory
   ORAGER_PROFILES_DIR       Override profiles directory
   ORAGER_SETTINGS_ALLOWED_ROOTS  Colon-separated absolute path roots for settingsFile
@@ -586,9 +585,9 @@ async function handleCompactSession(argv: string[]): Promise<void> {
     process.stderr.write("orager: --compact-session requires a session ID.\n");
     process.exit(1);
   }
-  const apiKey = (process.env["OPENROUTER_API_KEY"] ?? process.env["ORAGER_API_KEY"] ?? "").trim();
+  const apiKey = (process.env["PROTOCOL_API_KEY"] ?? "").trim();
   if (!apiKey) {
-    process.stderr.write("orager: --compact-session requires OPENROUTER_API_KEY or ORAGER_API_KEY to be set.\n");
+    process.stderr.write("orager: --compact-session requires PROTOCOL_API_KEY to be set.\n");
     process.exit(1);
   }
   // Optional: --model <id> or --summarize-model <id> for the summarization call
@@ -902,9 +901,9 @@ async function main(): Promise<void> {
   // ── Daemon mode ─────────────────────────────────────────────────────────────
   if (argv.includes("--serve")) {
     const apiKey =
-      process.env["OPENROUTER_API_KEY"] ?? process.env["ORAGER_API_KEY"] ?? "";
+      process.env["PROTOCOL_API_KEY"] ?? "";
     if (!apiKey) {
-      process.stderr.write("orager: API key not set. Export OPENROUTER_API_KEY or ORAGER_API_KEY.\n");
+      process.stderr.write("orager: API key not set. Export PROTOCOL_API_KEY.\n");
       process.exit(1);
     }
     const portIdx = argv.indexOf("--port");
@@ -1170,11 +1169,11 @@ async function main(): Promise<void> {
 
   // Resolve API key
   const apiKey =
-    process.env["OPENROUTER_API_KEY"] ?? process.env["ORAGER_API_KEY"] ?? "";
+    process.env["PROTOCOL_API_KEY"] ?? "";
 
   if (!apiKey) {
     process.stderr.write(
-      "orager: API key not set. Export OPENROUTER_API_KEY or ORAGER_API_KEY.\n"
+      "orager: API key not set. Export PROTOCOL_API_KEY.\n"
     );
     process.exit(1);
   }

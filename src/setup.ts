@@ -108,10 +108,80 @@ export interface OragerUserConfig {
 }
 
 export const DEFAULT_CONFIG: OragerUserConfig = {
+  // Core
   model: "deepseek/deepseek-chat-v3-0324",
+  models: [],
+  visionModel: "",
+
+  // Loop
   maxTurns: 20,
   maxRetries: 3,
+  timeoutSec: 300,
+
+  // Cost limits
+  maxCostUsd: 5.0,
+  maxCostUsdSoft: 2.0,
+
+  // Sampling
+  temperature: 0.7,
+  top_p: 1.0,
+  top_k: 0,
+  frequency_penalty: 0,
+  presence_penalty: 0,
+  repetition_penalty: 1.0,
+  min_p: 0,
+  seed: undefined,
+
+  // Reasoning
+  reasoningEffort: "medium",
+  reasoningMaxTokens: 4096,
+  reasoningExclude: false,
+
+  // Provider routing
+  providerOrder: [],
+  providerOnly: [],
+  providerIgnore: [],
+  sort: "price",
+  dataCollection: "allow",
+  zdr: false,
+
+  // Context / summarization
+  summarizeAt: 80000,
+  summarizeModel: "",
+  summarizeKeepRecentTurns: 4,
+
+  // Memory
   memory: true,
+  memoryKey: "",
+  memoryMaxChars: 10000,
+  memoryRetrieval: "local",
+  memoryEmbeddingModel: "",
+
+  // Identity
+  siteUrl: "",
+  siteName: "",
+
+  // Approval / security
+  sandboxRoot: "",
+
+  // Agent behavior
+  planMode: false,
+  injectContext: true,
+  tagToolOutputs: true,
+  useFinishTool: true,
+  enableBrowserTools: false,
+  trackFileChanges: true,
+
+  // Daemon defaults
+  daemonPort: 3456,
+  daemonMaxConcurrent: 3,
+  daemonIdleTimeout: "30m",
+
+  // Misc
+  profile: "",
+  webhookUrl: "",
+  webhookFormat: undefined,
+  requiredEnvVars: [],
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -180,15 +250,15 @@ async function quickSetup(rl: readline.Interface): Promise<void> {
   process.stdout.write("\n" + bold("── Quick Setup ──") + "\n");
   process.stdout.write(dim("Sets the three most important model slots. Press Enter to keep the current value.\n\n"));
 
-  const apiKeyEnv = process.env["OPENROUTER_API_KEY"] ?? process.env["ORAGER_API_KEY"] ?? "";
+  const apiKeyEnv = process.env["PROTOCOL_API_KEY"] ?? "";
 
   process.stdout.write(cyan("API Key") + "\n");
-  process.stdout.write(dim("  Set OPENROUTER_API_KEY in your shell profile (e.g. ~/.zshrc or ~/.bashrc).\n"));
+  process.stdout.write(dim("  Set PROTOCOL_API_KEY in your shell profile (e.g. ~/.zshrc or ~/.bashrc).\n"));
   if (apiKeyEnv) {
     process.stdout.write(dim(`  Current: set via env (${apiKeyEnv.slice(0, 8)}...)\n`));
   } else {
-    process.stdout.write(yellow("  Warning: OPENROUTER_API_KEY is not set in the current environment.\n"));
-    process.stdout.write(dim("  Add: export OPENROUTER_API_KEY=sk-or-... to your shell profile.\n"));
+    process.stdout.write(yellow("  Warning: PROTOCOL_API_KEY is not set in the current environment.\n"));
+    process.stdout.write(dim("  Add: export PROTOCOL_API_KEY=sk-or-... to your shell profile.\n"));
   }
 
   process.stdout.write("\n");
@@ -650,9 +720,9 @@ async function checkConfig(): Promise<void> {
   }
 
   // ── 3. API key check ───────────────────────────────────────────────────────
-  const apiKey = process.env["OPENROUTER_API_KEY"] ?? process.env["ORAGER_API_KEY"] ?? cfg.agentApiKey ?? "";
+  const apiKey = process.env["PROTOCOL_API_KEY"] ?? cfg.agentApiKey ?? "";
   if (!apiKey) {
-    process.stdout.write(yellow("⚠ No API key found — set OPENROUTER_API_KEY in your environment.\n"));
+    process.stdout.write(yellow("⚠ No API key found — set PROTOCOL_API_KEY in your environment.\n"));
   } else {
     process.stdout.write(dim(`\nChecking API key (${apiKey.slice(0, 8)}...) against OpenRouter...\n`));
     try {
