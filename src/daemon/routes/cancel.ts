@@ -17,8 +17,9 @@ export function handleCancel(
     res.end(JSON.stringify({ error: "missing bearer token" }));
     return;
   }
-  const claims = verifyJwtDualKey(auth.slice(7), ctx.signingKey, ctx.previousSigningKey);
-  if (!claims) {
+  try {
+    verifyJwtDualKey(ctx, auth.slice(7));
+  } catch {
     res.writeHead(403, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "invalid or expired token" }));
     return;

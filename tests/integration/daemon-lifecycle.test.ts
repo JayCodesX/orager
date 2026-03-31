@@ -14,7 +14,7 @@
  * returned shutdown() function (not process.exit) for cleanup.
  *
  * Test coverage:
- *   1. GET /health                      → 200 { status: "ok", checks: {...} }
+ *   1. GET /health                      → 200 { status: "ok" }
  *   2. POST /run (valid JWT)            → 200 NDJSON stream with result event
  *   3. POST /run (no JWT)               → 401
  *   4. POST /run (invalid JWT)          → 401
@@ -157,16 +157,11 @@ afterAll(async () => {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("daemon HTTP lifecycle", () => {
-  it("GET /health returns 200 { status: 'ok', checks: {...} }", async () => {
+  it("GET /health returns minimal 200 { status: 'ok' }", async () => {
     const { status, body } = await fetchJson(`${daemonUrl}/health`);
     expect(status).toBe(200);
-    const b = body as { status: string; checks: Record<string, string> };
+    const b = body as { status: string };
     expect(b.status).toBe("ok");
-    // checks object must be present with the three sub-checks
-    expect(b.checks).toBeDefined();
-    expect(b.checks).toHaveProperty("keyFile");
-    expect(b.checks).toHaveProperty("sessionsDir");
-    expect(b.checks).toHaveProperty("db");
   });
 
   it("POST /run without JWT returns 401", async () => {
@@ -272,16 +267,30 @@ describe("daemon HTTP lifecycle", () => {
     expect(status).toBe(404);
   });
 
-  it("GET /health returns 503 degraded when a check fails", async () => {
-    // Force the db check to fail by pointing ORAGER_DB_PATH at a directory.
-    // existsSync(dir) returns true so openWasmDb attempts readFileSync(dir),
-    // which throws EISDIR, triggering checks["db"] = "error" → 503 degraded.
-    // The health route reads process.env.ORAGER_DB_PATH at request time so
-    // this is safe to set mid-test without restarting the daemon.
+  it("GET /health/detail with valid JWT returns deep checks (audit E-06)", async () => {
+    const { status, body } = await fetchJson(`${daemonUrl}/health/detail`, {
+      headers: { Authorization: `Bearer ${validJwt()}` },
+    });
+    expect(status).toBe(200);
+    const b = body as { status: string; checks: Record<string, string>; uptimeMs: number; activeRuns: number };
+    expect(b.status).toBe("ok");
+    expect(b.checks).toBeDefined();
+    expect(typeof b.uptimeMs).toBe("number");
+    expect(typeof b.activeRuns).toBe("number");
+  });
+
+  it("GET /health/detail without JWT returns 401", async () => {
+    const { status } = await fetchJson(`${daemonUrl}/health/detail`);
+    expect(status).toBe(401);
+  });
+
+  it("GET /health/detail returns 503 degraded when a check fails", async () => {
     const prev = process.env["ORAGER_DB_PATH"];
     process.env["ORAGER_DB_PATH"] = "/tmp";
     try {
-      const { status, body } = await fetchJson(`${daemonUrl}/health`);
+      const { status, body } = await fetchJson(`${daemonUrl}/health/detail`, {
+        headers: { Authorization: `Bearer ${validJwt()}` },
+      });
       expect(status).toBe(503);
       const b = body as { status: string; reason: string; checks: Record<string, string> };
       expect(b.status).toBe("degraded");
@@ -294,5 +303,23 @@ describe("daemon HTTP lifecycle", () => {
         process.env["ORAGER_DB_PATH"] = prev;
       }
     }
+  });
+
+  it("GET /metrics/prometheus returns Prometheus exposition format (audit E-13)", async () => {
+    const res = await fetch(`${daemonUrl}/metrics/prometheus`, {
+      headers: { Authorization: `Bearer ${validJwt()}` },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/plain");
+    const text = await res.text();
+    expect(text).toContain("orager_active_runs ");
+    expect(text).toContain("orager_completed_runs_total ");
+    expect(text).toContain("orager_error_runs_total ");
+    expect(text).toContain("orager_uptime_seconds ");
+  });
+
+  it("GET /metrics/prometheus without JWT returns 401", async () => {
+    const res = await fetch(`${daemonUrl}/metrics/prometheus`);
+    expect(res.status).toBe(401);
   });
 });

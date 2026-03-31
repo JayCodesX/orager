@@ -6,8 +6,35 @@ import { callOpenRouter } from "../openrouter.js";
 import { fetchApiKeyInfo } from "../openrouter-key.js";
 import type { DaemonContext } from "./context.js";
 
-// ── Audit log ──────────────────────────────────────────────────────────────────
+// ── Audit log with rotation (audit E-02) ─────────────────────────────────────
 // Logs metadata only — never prompt or response content.
+// When ORAGER_AUDIT_LOG is set, writes NDJSON to that file with automatic
+// rotation when the file exceeds AUDIT_MAX_BYTES (default 10 MB, max 3 files).
+
+import { appendFileSync, statSync, renameSync, unlinkSync, existsSync } from "node:fs";
+
+const AUDIT_LOG_PATH = process.env["ORAGER_AUDIT_LOG"] ?? "";
+const AUDIT_MAX_BYTES = parseInt(process.env["ORAGER_AUDIT_MAX_BYTES"] ?? "", 10) || 10 * 1024 * 1024;
+const AUDIT_MAX_FILES = 3;
+
+function rotateAuditLog(): void {
+  if (!AUDIT_LOG_PATH) return;
+  try {
+    const stat = statSync(AUDIT_LOG_PATH);
+    if (stat.size < AUDIT_MAX_BYTES) return;
+  } catch {
+    return; // File doesn't exist yet
+  }
+  // Rotate: audit.log.2 → delete, audit.log.1 → .2, audit.log → .1
+  for (let i = AUDIT_MAX_FILES - 1; i >= 1; i--) {
+    const src = i === 1 ? AUDIT_LOG_PATH : `${AUDIT_LOG_PATH}.${i - 1}`;
+    const dst = `${AUDIT_LOG_PATH}.${i}`;
+    try {
+      if (i === AUDIT_MAX_FILES - 1 && existsSync(dst)) unlinkSync(dst);
+      if (existsSync(src)) renameSync(src, dst);
+    } catch { /* best-effort */ }
+  }
+}
 
 export function auditLog(entry: {
   timestamp: string;
@@ -16,7 +43,14 @@ export function auditLog(entry: {
   status: "ok" | "error" | "timeout" | "rejected";
   statusCode: number;
 }): void {
-  process.stderr.write(`[orager daemon] ${JSON.stringify(entry)}\n`);
+  const line = JSON.stringify(entry);
+  process.stderr.write(`[orager daemon] ${line}\n`);
+  if (AUDIT_LOG_PATH) {
+    try {
+      rotateAuditLog();
+      appendFileSync(AUDIT_LOG_PATH, line + "\n", { mode: 0o600 });
+    } catch { /* non-fatal */ }
+  }
 }
 
 // ── Cache warming (Phase 4c) ───────────────────────────────────────────────────
