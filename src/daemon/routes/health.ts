@@ -70,14 +70,16 @@ export function handleHealthDetail(
       failures.push("sessionsDir");
     }
 
-    // Check 3: if ORAGER_DB_PATH set, run SELECT 1 via WASM SQLite
+    // M-23: Check DB health without opening a new WASM instance per request.
+    // Previously each /health/detail call opened, queried, and closed a full
+    // WASM SQLite database — expensive for large DBs. Now we check if the DB
+    // file exists and is readable, which is sufficient for health monitoring.
+    // The N-10 lastSaveError field on the singleton instance provides write
+    // health visibility separately.
     const dbPath = process.env["ORAGER_DB_PATH"];
     if (dbPath) {
       try {
-        const { openWasmDb } = await import("../../wasm-sqlite.js");
-        const db = openWasmDb(dbPath, { readonly: true });
-        db.prepare("SELECT 1").get();
-        db.close();
+        fsSync.accessSync(dbPath, fsSync.constants.R_OK);
         checks["db"] = "ok";
       } catch {
         checks["db"] = "error";
