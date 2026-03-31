@@ -178,26 +178,45 @@ export const notebookEditTool: ToolExecutor = {
       return { toolCallId: "", content: `Cannot read notebook: ${e instanceof Error ? e.message : String(e)}`, isError: true };
     }
 
-    // Apply operations in order
-    for (const op of operations) {
-      if (op.type === "replace") {
-        const idx = op.cell_index ?? -1;
-        if (idx < 0 || idx >= nb.cells.length) return { toolCallId: "", content: `cell_index ${idx} out of range`, isError: true };
-        nb.cells[idx] = { ...nb.cells[idx], source: op.source ?? "" };
-      } else if (op.type === "delete") {
-        const idx = op.cell_index ?? -1;
-        if (idx < 0 || idx >= nb.cells.length) return { toolCallId: "", content: `cell_index ${idx} out of range`, isError: true };
-        nb.cells.splice(idx, 1);
-      } else if (op.type === "insert") {
-        const insertAt = op.insert_before ?? nb.cells.length;
-        const newCell: NotebookCell = {
-          cell_type: op.cell_type ?? "code",
-          source: op.source ?? "",
-          outputs: op.cell_type !== "code" ? undefined : [],
-          execution_count: null,
-        };
-        nb.cells.splice(insertAt, 0, newCell);
-      }
+    // N-07: Apply operations in two passes to avoid index drift.
+    // First pass: replaces and inserts use original indices (non-destructive).
+    // Second pass: deletes are sorted in descending index order so each splice
+    // only affects cells at higher indices (which are already processed).
+    const replaceOps = operations.filter((op) => op.type === "replace");
+    const insertOps = operations.filter((op) => op.type === "insert");
+    const deleteOps = operations.filter((op) => op.type === "delete");
+
+    // Pass 1: Apply replaces (in-place, no index shift)
+    for (const op of replaceOps) {
+      const idx = op.cell_index ?? -1;
+      if (idx < 0 || idx >= nb.cells.length) return { toolCallId: "", content: `cell_index ${idx} out of range`, isError: true };
+      nb.cells[idx] = { ...nb.cells[idx], source: op.source ?? "" };
+    }
+
+    // Pass 2: Apply deletes in descending index order to avoid index drift
+    const sortedDeletes = [...deleteOps].sort(
+      (a, b) => (b.cell_index ?? -1) - (a.cell_index ?? -1),
+    );
+    for (const op of sortedDeletes) {
+      const idx = op.cell_index ?? -1;
+      if (idx < 0 || idx >= nb.cells.length) return { toolCallId: "", content: `cell_index ${idx} out of range`, isError: true };
+      nb.cells.splice(idx, 1);
+    }
+
+    // Pass 3: Apply inserts in ascending index order (they reference post-delete positions)
+    const sortedInserts = [...insertOps].sort(
+      (a, b) => (a.insert_before ?? nb.cells.length) - (b.insert_before ?? nb.cells.length),
+    );
+    for (let i = 0; i < sortedInserts.length; i++) {
+      const op = sortedInserts[i];
+      const insertAt = (op.insert_before ?? nb.cells.length) + i; // offset by prior inserts
+      const newCell: NotebookCell = {
+        cell_type: op.cell_type ?? "code",
+        source: op.source ?? "",
+        outputs: op.cell_type !== "code" ? undefined : [],
+        execution_count: null,
+      };
+      nb.cells.splice(insertAt, 0, newCell);
     }
 
     try {

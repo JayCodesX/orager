@@ -55,6 +55,16 @@ function withCacheControl(
     } as unknown as Message;
   }
   if (msg.role === "user") {
+    // N-09: If content is already an array (multimodal message with image blocks),
+    // attach cache_control to the last content block instead of wrapping the
+    // entire array inside a single text block (which would corrupt the message).
+    if (Array.isArray(msg.content)) {
+      const blocks = [...(msg.content as unknown as Record<string, unknown>[])];
+      if (blocks.length > 0) {
+        blocks[blocks.length - 1] = { ...blocks[blocks.length - 1], cache_control: cc };
+      }
+      return { ...msg, content: blocks } as unknown as Message;
+    }
     return {
       ...msg,
       content: [{ type: "text", text: msg.content, cache_control: cc }],
