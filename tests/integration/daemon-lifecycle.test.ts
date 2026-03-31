@@ -27,6 +27,9 @@
  */
 
 import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
+import path from "node:path";
+import os from "node:os";
+import fsPromises from "node:fs/promises";
 import { mintJwt } from "../../src/jwt.js";
 
 // vi.hoisted ensures this runs before vi.mock factories (which are also hoisted)
@@ -197,6 +200,15 @@ function validJwt(): string {
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 beforeAll(async () => {
+  // Ensure the signing key file exists so the health/detail check passes.
+  // loadOrCreateSigningKey is mocked, so the real function never creates it.
+  const keyDir = path.join(os.homedir(), ".orager");
+  await fsPromises.mkdir(keyDir, { recursive: true });
+  const keyPath = path.join(keyDir, "daemon.key");
+  try { await fsPromises.access(keyPath); } catch {
+    await fsPromises.writeFile(keyPath, TEST_SIGNING_KEY, { mode: 0o600 });
+  }
+
   const { startDaemon } = await import("../../src/daemon.js");
   const result = await startDaemon({
     port: 0, // OS assigns a free port — avoids conflicts with real daemon
