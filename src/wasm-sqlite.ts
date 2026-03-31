@@ -11,7 +11,7 @@
  * inside an open transaction). Journal-mode WAL is silently ignored
  * (in-memory databases fall back to "memory" journal mode).
  */
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 // The TypeScript types only expose init() with no args, but the underlying
@@ -185,7 +185,11 @@ export class WasmCompatDb {
     const ptr = this._db.pointer;
     if (!ptr) return;
     const data = _sqlite3.capi.sqlite3_js_db_export(ptr);
-    writeFileSync(this._filePath, data);
+    // Atomic write: write to temp file then rename. Rename is atomic on POSIX,
+    // so a crash mid-write leaves the original file intact. (audit E-03)
+    const tmpPath = this._filePath + `.tmp.${process.pid}`;
+    writeFileSync(tmpPath, data);
+    renameSync(tmpPath, this._filePath);
   }
 }
 

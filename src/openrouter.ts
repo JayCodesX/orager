@@ -329,11 +329,17 @@ export async function callOpenRouter(
   // across turns within a single agent session.
   if (opts.sessionId) headers["X-Session-Id"] = opts.sessionId;
 
+  // Compose caller's abort signal with a default 120s timeout (audit B-09)
+  const timeoutSignal = AbortSignal.timeout(120_000);
+  const effectiveSignal = signal
+    ? AbortSignal.any([signal, timeoutSignal])
+    : timeoutSignal;
+
   const response = await fetch(ENDPOINT, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
-    signal,
+    signal: effectiveSignal,
   });
 
   if (!response.ok) {
@@ -491,11 +497,17 @@ export async function callDirect(
     "anthropic-beta": "prompt-caching-2024-07-31,interleaved-thinking-2025-05-14",
   };
 
+  // Compose caller's abort signal with a default 120s timeout (audit B-09)
+  const timeoutSignal = AbortSignal.timeout(120_000);
+  const effectiveSignal = signal
+    ? AbortSignal.any([signal, timeoutSignal])
+    : timeoutSignal;
+
   const response = await fetch(ANTHROPIC_ENDPOINT, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
-    signal,
+    signal: effectiveSignal,
   });
 
   if (!response.ok) {
@@ -628,6 +640,7 @@ export async function callEmbeddings(
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({ model, input: inputs }),
+      signal: AbortSignal.timeout(30_000),
     });
   } catch (err) {
     throw new Error(`callEmbeddings: ${err instanceof Error ? err.message : String(err)}`);

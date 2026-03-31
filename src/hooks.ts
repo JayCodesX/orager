@@ -21,6 +21,8 @@
  * SSRF guard: private IPs and loopback addresses are blocked.
  */
 import { execFile } from "node:child_process";
+import { promises as dnsPromises } from "node:dns";
+import { isIP } from "node:net";
 import { promisify } from "node:util";
 
 const execAsync = promisify(execFile);
@@ -130,21 +132,53 @@ export interface HookContext {
 
 /**
  * Returns true if the URL is safe to POST to.
- * Blocks localhost, loopback (127.x, ::1), and RFC-1918 private ranges.
+ * Resolves DNS and checks the actual IPs to prevent DNS rebinding. (audit B-03)
  */
-export function isHookUrlSafe(raw: string): boolean {
+export async function isHookUrlSafe(raw: string): Promise<boolean> {
   let u: URL;
   try { u = new URL(raw); } catch { return false; }
   if (u.protocol !== "https:" && u.protocol !== "http:") return false;
   const h = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (
-    h === "localhost" || h === "127.0.0.1" || h === "::1" || h === "0.0.0.0" ||
-    /^127\./.test(h) || /^10\./.test(h) ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(h) ||
-    /^192\.168\./.test(h) ||
-    /^::ffff:127\./i.test(h) || h === "::ffff:7f00:1"
-  ) return false;
-  return true;
+
+  // If it's already an IP, check directly
+  if (isIP(h)) return !isPrivateOrReservedIp(h);
+
+  // Resolve DNS and check all resulting IPs
+  try {
+    const [v4, v6] = await Promise.allSettled([
+      dnsPromises.resolve4(h),
+      dnsPromises.resolve6(h),
+    ]);
+    const addrs = [
+      ...(v4.status === "fulfilled" ? v4.value : []),
+      ...(v6.status === "fulfilled" ? v6.value : []),
+    ];
+    if (addrs.length === 0) return false; // unresolvable = blocked
+    return !addrs.some(isPrivateOrReservedIp);
+  } catch {
+    return false;
+  }
+}
+
+function isPrivateOrReservedIp(ip: string): boolean {
+  const v = isIP(ip);
+  if (v === 4) {
+    return (
+      /^127\./.test(ip) || /^10\./.test(ip) || /^192\.168\./.test(ip) ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(ip) || /^169\.254\./.test(ip) ||
+      /^0\./.test(ip) || /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ip) ||
+      /^224\./.test(ip) || /^240\./.test(ip)
+    );
+  }
+  if (v === 6) {
+    const lower = ip.toLowerCase();
+    return (
+      lower === "::1" || /^(fc|fd)/i.test(lower) || /^fe[89ab]/i.test(lower) ||
+      /^::ffff:(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(lower) ||
+      lower === "::ffff:7f00:1" || lower === "::"
+    );
+  }
+  return true; // unknown format = blocked
 }
 
 // ── HTTP hook delivery ────────────────────────────────────────────────────────
@@ -154,7 +188,7 @@ async function postHookUrl(
   payload: HookPayload,
   onLog?: (msg: string) => void,
 ): Promise<{ ok: boolean; error?: string }> {
-  if (!isHookUrlSafe(url)) {
+  if (!(await isHookUrlSafe(url))) {
     const msg = `hook URL '${url}' is blocked (private/loopback address)`;
     onLog?.(`[orager] WARNING: ${msg}\n`);
     return { ok: false, error: msg };

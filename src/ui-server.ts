@@ -10,6 +10,7 @@
  * The daemon (orager --serve) is a completely separate process.
  */
 import http from "node:http";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
@@ -32,6 +33,9 @@ const UI_PORT_PATH = path.join(ORAGER_DIR, "ui.port");
 const UI_PID_PATH = path.join(ORAGER_DIR, "ui.pid");
 const DAEMON_PORT_PATH = path.join(ORAGER_DIR, "daemon.port");
 const DAEMON_PID_PATH = path.join(ORAGER_DIR, "daemon.pid");
+
+/** Random bearer token generated at startup — printed to stdout for the user. */
+const UI_AUTH_TOKEN = crypto.randomBytes(24).toString("hex");
 
 // ── Single-instance PID lock (mirrors daemon.ts pattern) ─────────────────────
 
@@ -128,6 +132,7 @@ async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
     req.on("data", (chunk: Buffer) => {
       size += chunk.length;
       if (size > 512 * 1024) {
+        req.destroy();
         reject(new Error("Request body too large (max 512 KB)"));
         return;
       }
@@ -685,22 +690,45 @@ async function serveStatic(
   }
 }
 
+// ── Auth check ───────────────────────────────────────────────────────────────
+
+function checkUiAuth(req: http.IncomingMessage, res: http.ServerResponse): boolean {
+  // Allow OPTIONS (preflight) without auth
+  if (req.method === "OPTIONS") return true;
+  // Static files (non-API) don't need auth — they're just the SPA bundle
+  const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+  if (!pathname.startsWith("/api/")) return true;
+  // API routes require the bearer token
+  const auth = req.headers.authorization;
+  if (auth === `Bearer ${UI_AUTH_TOKEN}`) return true;
+  // Also accept as query param for SSE endpoints (EventSource can't set headers)
+  const url = new URL(req.url ?? "/", "http://localhost");
+  if (url.searchParams.get("token") === UI_AUTH_TOKEN) return true;
+  res.writeHead(401, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ error: "unauthorized — pass the token printed at startup" }));
+  return false;
+}
+
 // ── Request router ────────────────────────────────────────────────────────────
 
 async function handleRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<void> {
-  // CORS for dev-server proxy (vite dev server on a different port)
-  res.setHeader("Access-Control-Allow-Origin", "http://localhost:5173");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  // CORS: only allow cross-origin requests in development (vite dev server)
+  if (process.env.NODE_ENV === "development" || process.env.ORAGER_UI_DEV === "1") {
+    res.setHeader("Access-Control-Allow-Origin", "http://localhost:5173");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  }
 
   if (req.method === "OPTIONS") {
     res.writeHead(204);
     res.end();
     return;
   }
+
+  if (!checkUiAuth(req, res)) return;
 
   const url = new URL(req.url ?? "/", "http://localhost");
   const pathname = url.pathname;
@@ -776,6 +804,7 @@ export async function startUiServer(opts: UiServerOptions = {}): Promise<void> {
   process.stdout.write(
     `[orager-ui] server running at http://127.0.0.1:${port}\n`,
   );
+  process.stdout.write(`UI auth token: ${UI_AUTH_TOKEN}\n`);
   if (!uiBuilt) {
     process.stdout.write(
       `[orager-ui] WARNING: UI not built. Run 'npm run build:ui' then restart.\n`,
