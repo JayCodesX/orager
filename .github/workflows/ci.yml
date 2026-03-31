@@ -29,6 +29,7 @@ jobs:
 
       - name: Unit tests
         run: bun run test:bun
+        timeout-minutes: 5
 
       - name: Integration tests
         run: bun run test:bun:int
