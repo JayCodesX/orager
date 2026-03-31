@@ -12,6 +12,7 @@
  * (in-memory databases fall back to "memory" journal mode).
  */
 import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
+import { writeFile, rename } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 // The TypeScript types only expose init() with no args, but the underlying
@@ -135,6 +136,13 @@ export class WasmCompatDb {
   /** Incremented while inside a transaction; only persist at depth 0. */
   _txDepth = 0;
 
+  /** Debounce timer for async persistence (audit E-15). */
+  private _saveTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Tracks in-flight async write so close() can await it. */
+  private _saving: Promise<void> | null = null;
+  /** Debounce interval in ms — coalesces rapid writes. */
+  private static readonly SAVE_DEBOUNCE_MS = 100;
+
   constructor(
     private readonly _db:       OO1Db,
     private readonly _filePath: string | null,
@@ -171,22 +179,53 @@ export class WasmCompatDb {
   }
 
   close(): void {
-    this._persistToFile();
+    // Flush any pending debounced write synchronously on close.
+    if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
+    this._persistToFileSync();
     this._db.close();
   }
 
   /** Called by WasmCompatStmt.run() after each statement execution. */
   _autoSave(): void {
-    if (this._txDepth === 0) this._persistToFile();
+    if (this._txDepth === 0) this._scheduleSave();
   }
 
-  private _persistToFile(): void {
+  /**
+   * Debounced async persistence (audit E-15/B-13).
+   * Serialises the DB to a byte array synchronously (cheap — WASM memcpy),
+   * then writes to disk asynchronously so the event loop isn't blocked.
+   * Rapid successive writes are coalesced by the debounce timer.
+   */
+  private _scheduleSave(): void {
+    if (!this._filePath) return;
+    if (this._saveTimer) clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(() => {
+      this._saveTimer = null;
+      this._persistToFileAsync();
+    }, WasmCompatDb.SAVE_DEBOUNCE_MS);
+  }
+
+  private _persistToFileAsync(): void {
+    if (!this._filePath) return;
+    const ptr = this._db.pointer;
+    if (!ptr) return;
+    // Snapshot is synchronous (WASM memory copy) — fast.
+    const data = _sqlite3.capi.sqlite3_js_db_export(ptr);
+    const tmpPath = this._filePath + `.tmp.${process.pid}`;
+    this._saving = writeFile(tmpPath, data)
+      .then(() => rename(tmpPath, this._filePath!))
+      .catch((err) => {
+        process.stderr.write(`[wasm-sqlite] async persist failed: ${err}\n`);
+      })
+      .finally(() => { this._saving = null; });
+  }
+
+  /** Synchronous fallback used only by close(). */
+  private _persistToFileSync(): void {
     if (!this._filePath) return;
     const ptr = this._db.pointer;
     if (!ptr) return;
     const data = _sqlite3.capi.sqlite3_js_db_export(ptr);
-    // Atomic write: write to temp file then rename. Rename is atomic on POSIX,
-    // so a crash mid-write leaves the original file intact. (audit E-03)
     const tmpPath = this._filePath + `.tmp.${process.pid}`;
     writeFileSync(tmpPath, data);
     renameSync(tmpPath, this._filePath);

@@ -122,10 +122,23 @@ export async function loadOrCreateSigningKey(): Promise<string> {
     const key = await fs.readFile(KEY_PATH, "utf8");
     return key.trim();
   } catch {
-    // Key file missing — generate and store
+    // Key file missing — generate and store atomically (audit B-12).
+    // Use O_CREAT|O_EXCL ("wx") so only one process wins the race;
+    // losers re-read the file the winner wrote.
     const key = crypto.randomBytes(32).toString("hex");
     await fs.mkdir(path.dirname(KEY_PATH), { recursive: true });
-    await fs.writeFile(KEY_PATH, key, { encoding: "utf8", mode: 0o600 });
+    try {
+      const fd = await fs.open(KEY_PATH, "wx", 0o600);
+      await fd.writeFile(key, "utf8");
+      await fd.close();
+    } catch (writeErr) {
+      if ((writeErr as NodeJS.ErrnoException).code === "EEXIST") {
+        // Another process created it first — read their key
+        const existingKey = await fs.readFile(KEY_PATH, "utf8");
+        return existingKey.trim();
+      }
+      throw writeErr;
+    }
     return key;
   }
 }
