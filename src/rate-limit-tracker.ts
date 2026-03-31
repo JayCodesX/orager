@@ -78,7 +78,12 @@ export class RateLimitTracker {
 }
 
 /** Process-level singleton for backward compatibility. Per-session code should use RateLimitTracker instances. */
-const _singletonTracker = new RateLimitTracker();
+let _singletonTracker = new RateLimitTracker();
+
+/** Reset the singleton tracker state — for testing only. */
+export function _resetRateLimitTrackerForTesting(): void {
+  _singletonTracker = new RateLimitTracker();
+}
 
 /**
  * Update rate limit state from response headers. Call after each API response.

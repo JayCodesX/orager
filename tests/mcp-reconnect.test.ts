@@ -236,5 +236,8 @@ describe("compactSession: compactedAt set, compactedFrom NOT set for in-place co
 
 vi.mock("../src/openrouter.js", () => ({
   callOpenRouter: vi.fn(),
+  callDirect: vi.fn(),
   shouldUseDirect: vi.fn().mockReturnValue(false),
+  fetchGenerationMeta: vi.fn().mockResolvedValue(null),
+  callEmbeddings: vi.fn().mockResolvedValue([[]]),
 }));

@@ -1,9 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
-// Use vi.resetModules() in beforeEach so that the module-level `_state` is
-// reset to null for each test. Tests use dynamic imports to pick up the fresh module.
-beforeEach(() => {
+// Reset the singleton tracker state before each test.
+// vi.resetModules() is a no-op under bun, so we also call
+// _resetRateLimitTrackerForTesting() explicitly.
+beforeEach(async () => {
   vi.resetModules();
+  const { _resetRateLimitTrackerForTesting } = await import("../src/rate-limit-tracker.js");
+  _resetRateLimitTrackerForTesting();
 });
 
 describe("getRateLimitState", () => {

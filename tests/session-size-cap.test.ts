@@ -79,7 +79,8 @@ describe("P2-1: session size cap", () => {
     process.env["ORAGER_SESSION_MAX_SIZE_BYTES"] = "2000";
     vi.resetModules();
 
-    const { saveSession, loadSession } = await import("../src/session.js");
+    const { saveSession, loadSession, _refreshSessionMaxSize } = await import("../src/session.js");
+    _refreshSessionMaxSize?.();
 
     const sessionId = makeSessionId();
     // Each pair is ~200+ bytes; 20 pairs is well over 2000 bytes when JSON-encoded
@@ -105,7 +106,8 @@ describe("P2-1: session size cap", () => {
     process.env["ORAGER_SESSION_MAX_SIZE_BYTES"] = String(limitBytes);
     vi.resetModules();
 
-    const { saveSession } = await import("../src/session.js");
+    const { saveSession, _refreshSessionMaxSize } = await import("../src/session.js");
+    _refreshSessionMaxSize?.();
 
     const sessionId = makeSessionId();
     const data = buildSession(sessionId, 30, 50);
@@ -122,7 +124,8 @@ describe("P2-1: session size cap", () => {
     process.env["ORAGER_SESSION_MAX_SIZE_BYTES"] = "1500";
     vi.resetModules();
 
-    const { SESSION_MAX_SIZE_BYTES } = await import("../src/session.js");
-    expect(SESSION_MAX_SIZE_BYTES).toBe(1500);
+    const mod = await import("../src/session.js");
+    mod._refreshSessionMaxSize?.();
+    expect(mod.SESSION_MAX_SIZE_BYTES).toBe(1500);
   });
 });

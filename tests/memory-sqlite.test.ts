@@ -249,7 +249,7 @@ describe("_migrate — JSON text embedding → Float32 BLOB conversion", () => {
 
       // loadMemoryStoreSqlite must NOT throw despite the bad JSON
       _resetDbForTesting();
-      await expect(loadMemoryStoreSqlite("keyMigBad")).resolves.not.toThrow();
+      await expect(loadMemoryStoreSqlite("keyMigBad")).resolves.toBeDefined();
       _resetDbForTesting();
 
       // The row is still present (catch swallowed parse error; UPDATE was skipped)

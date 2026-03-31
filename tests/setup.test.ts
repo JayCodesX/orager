@@ -43,9 +43,8 @@ describe("DEFAULT_CONFIG", () => {
     expect(Number.isInteger(DEFAULT_CONFIG.maxRetries)).toBe(true);
   });
 
-  it("does not include timeoutSec by default (unlimited by default)", () => {
-    // timeoutSec being absent means no hard timeout — intentional default
-    expect(DEFAULT_CONFIG.timeoutSec).toBeUndefined();
+  it("has a default timeoutSec of 300 seconds", () => {
+    expect(DEFAULT_CONFIG.timeoutSec).toBe(300);
   });
 
   it("has memory enabled by default", () => {

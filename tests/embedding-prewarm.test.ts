@@ -167,9 +167,7 @@ describe("P2-7: embedding cold-start prewarm", () => {
     const setCached = vi.fn();
 
     // Should not throw
-    await expect(
-      runEmbeddingPrewarm("test-api-key", TEST_SESSIONS_DIR, callEmbeddings, setCached),
-    ).resolves.not.toThrow();
+    await runEmbeddingPrewarm("test-api-key", TEST_SESSIONS_DIR, callEmbeddings, setCached);
 
     // setCached should not have been called since callEmbeddings threw
     expect(setCached).not.toHaveBeenCalled();

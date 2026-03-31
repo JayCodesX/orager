@@ -26,8 +26,23 @@ import type { DaemonContext } from "../src/daemon/context.js";
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
 // Mock runAgentLoop so tests are fully hermetic — no LLM API calls.
+// The mock calls onEmit with a minimal result event before resolving,
+// mirroring real loop behavior and ensuring the chunked HTTP response
+// has data (bun's fetch hangs on empty chunked responses).
 vi.mock("../src/loop.js", () => ({
-  runAgentLoop: vi.fn().mockResolvedValue(undefined),
+  runAgentLoop: vi.fn().mockImplementation(async (opts: Record<string, unknown>) => {
+    const onEmit = opts.onEmit as ((e: unknown) => void) | undefined;
+    if (onEmit) {
+      onEmit({
+        type: "result",
+        result: "",
+        session_id: "",
+        finish_reason: "stop",
+        usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 },
+        total_cost_usd: 0,
+      });
+    }
+  }),
 }));
 
 // Silence auditLog — it writes to disk/stdout in production.
@@ -75,6 +90,8 @@ function makeCtx(): DaemonContext {
     keepAliveTimer: null,
     usedModels: new Set(["test-model"]),
     modelLastUsedAt: new Map(),
+    costByAgent: new Map(),
+    maxCostPerAgent: 0,
   } as unknown as DaemonContext;
 }
 

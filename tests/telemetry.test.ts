@@ -43,12 +43,12 @@ describe("initTelemetry", () => {
 
   it("initTelemetry does not throw when no OTEL vars are set", async () => {
     const { initTelemetry } = await import("../src/telemetry.js");
-    await expect(Promise.resolve(initTelemetry())).resolves.not.toThrow();
+    await initTelemetry();
   });
 
   it("initTelemetry does not throw when OTEL_SDK_DISABLED=true", async () => {
     process.env.OTEL_SDK_DISABLED = "true";
     const { initTelemetry } = await import("../src/telemetry.js");
-    await expect(Promise.resolve(initTelemetry())).resolves.not.toThrow();
+    await initTelemetry();
   });
 });

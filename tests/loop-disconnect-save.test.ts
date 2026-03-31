@@ -12,45 +12,27 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 
-// We mock at the module level for these tests
-vi.mock("../src/openrouter.js", async (importOriginal) => {
-  // importOriginal is vitest-specific; bun passes undefined so we fall back to
-  // a direct import() which gives the real module under bun's mock system.
-  const actual: typeof import("../src/openrouter.js") =
-    typeof importOriginal === "function"
-      ? await importOriginal()
-      : await import("../src/openrouter.js");
-  return {
-    ...actual,
-    callOpenRouter: vi.fn().mockImplementation(async () => {
-      // Hang until abort
-      await new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error("The operation was aborted")), 5000);
-      });
-    }),
-    fetchGenerationMeta: vi.fn().mockResolvedValue(null),
-    shouldUseDirect: vi.fn().mockReturnValue(false),
-    callEmbeddings: vi.fn().mockResolvedValue([[0.1, 0.2, 0.3]]),
-  };
-});
+// Complete explicit mocks — importOriginal pattern is broken under bun
+// (import() inside a mock factory returns the mock itself, not the real module).
+vi.mock("../src/openrouter.js", () => ({
+  callOpenRouter: vi.fn().mockImplementation(async () => {
+    await new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error("The operation was aborted")), 5000);
+    });
+  }),
+  callDirect: vi.fn(),
+  shouldUseDirect: vi.fn().mockReturnValue(false),
+  fetchGenerationMeta: vi.fn().mockResolvedValue(null),
+  callEmbeddings: vi.fn().mockResolvedValue([[0.1, 0.2, 0.3]]),
+}));
 
-vi.mock("../src/retry.js", async (importOriginal) => {
-  // importOriginal is vitest-specific; bun passes undefined so we fall back to
-  // a direct import() which gives the real module under bun's mock system.
-  const actual: typeof import("../src/retry.js") =
-    typeof importOriginal === "function"
-      ? await importOriginal()
-      : await import("../src/retry.js");
-  return {
-    ...actual,
-    callWithRetry: vi.fn().mockImplementation(async () => {
-      // Hang until the test times out — aborted runs should be caught by our finally block
-      await new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error("The operation was aborted")), 100);
-      });
-    }),
-  };
-});
+vi.mock("../src/retry.js", () => ({
+  callWithRetry: vi.fn().mockImplementation(async () => {
+    await new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error("The operation was aborted")), 100);
+    });
+  }),
+}));
 
 const TEST_SESSIONS_DIR = path.join(os.tmpdir(), `orager-test-disconnect-${process.pid}`);
 
