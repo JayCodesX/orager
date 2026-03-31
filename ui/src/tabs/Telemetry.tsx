@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
+import { authHeaders } from "../api";
 import {
   BarChart,
   Bar,
@@ -192,9 +193,10 @@ export default function Telemetry() {
 
   const fetchAll = useCallback(async () => {
     try {
+      const hdrs = authHeaders();
       const [sr, tr] = await Promise.all([
-        fetch("/api/telemetry/spans?limit=500").then((r) => r.json()) as Promise<SpansResponse>,
-        fetch("/api/telemetry/traces").then((r) => r.json()) as Promise<TracesResponse>,
+        fetch("/api/telemetry/spans?limit=500", { headers: hdrs }).then((r) => r.json()) as Promise<SpansResponse>,
+        fetch("/api/telemetry/traces", { headers: hdrs }).then((r) => r.json()) as Promise<TracesResponse>,
       ]);
       setSpansData(sr);
       setTracesData(tr);

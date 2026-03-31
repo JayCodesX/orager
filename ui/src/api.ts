@@ -73,12 +73,27 @@ export interface OragerSettings {
   hooksEnabled?: boolean;
 }
 
+function getToken(): string {
+  return (window as unknown as { __ORAGER_TOKEN__?: string }).__ORAGER_TOKEN__ ?? "";
+}
+
+/** Auth headers for direct fetch calls that bypass apiFetch. */
+export function authHeaders(): Record<string, string> {
+  const token = getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function apiFetch<T>(
   path: string,
   init?: RequestInit,
 ): Promise<T> {
+  const token = getToken();
   const res = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...init?.headers,
+    },
     ...init,
   });
   if (!res.ok) {

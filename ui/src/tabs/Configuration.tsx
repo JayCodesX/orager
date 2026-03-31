@@ -469,8 +469,8 @@ export default function Configuration() {
   useEffect(() => {
     Promise.all([api.getConfig(), api.getSettings()])
       .then(([cfg, settings]) => {
-        setCfgForm(configToForm(cfg));
-        setSetForm(settingsToForm(settings));
+        setCfgForm(configToForm(cfg ?? {} as OragerUserConfig));
+        setSetForm(settingsToForm(settings ?? {} as OragerSettings));
       })
       .catch((err: Error) => showToast(`Failed to load config: ${err.message}`, "error"))
       .finally(() => setLoading(false));

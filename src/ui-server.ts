@@ -671,12 +671,22 @@ async function serveStatic(
   async function serveIndex(): Promise<void> {
     try {
       const indexPath = path.join(UI_STATIC_DIR, "index.html");
-      const content = await fs.readFile(indexPath);
+      let html = await fs.readFile(indexPath, "utf8");
+      // Inject auth token so the SPA can authenticate API calls.
+      // Use a per-request nonce so the inline script passes CSP.
+      const nonce = crypto.randomBytes(16).toString("base64");
+      const tokenScript = `<script nonce="${nonce}">window.__ORAGER_TOKEN__="${UI_AUTH_TOKEN}";</script>`;
+      html = html.replace("</head>", `${tokenScript}</head>`);
+      const buf = Buffer.from(html, "utf8");
       res.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
-        "Content-Length": content.length,
+        "Content-Length": buf.length,
+        "Content-Security-Policy":
+          `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; ` +
+          "img-src 'self' data:; font-src 'self'; connect-src 'self'; " +
+          "frame-ancestors 'none'; form-action 'self'; base-uri 'self'",
       });
-      res.end(content);
+      res.end(buf);
     } catch {
       jsonResponse(res, 503, { error: "UI not built. Run: npm run build:ui" });
     }

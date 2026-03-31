@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { authHeaders } from "../api";
 
 // ── API types ─────────────────────────────────────────────────────────────────
 
@@ -61,17 +62,18 @@ interface SessionsResponse {
 }
 
 async function fetchStatus(): Promise<DaemonStatusResponse> {
-  const r = await fetch("/api/daemon/status", { signal: AbortSignal.timeout(4000) });
+  const r = await fetch("/api/daemon/status", { headers: authHeaders(), signal: AbortSignal.timeout(4000) });
   return r.json() as Promise<DaemonStatusResponse>;
 }
 
 async function fetchMetrics(): Promise<MetricsResponse> {
-  const r = await fetch("/api/daemon/metrics", { signal: AbortSignal.timeout(4000) });
+  const r = await fetch("/api/daemon/metrics", { headers: authHeaders(), signal: AbortSignal.timeout(4000) });
   return r.json() as Promise<MetricsResponse>;
 }
 
 async function fetchSessions(limit = 20, offset = 0): Promise<SessionsResponse> {
   const r = await fetch(`/api/daemon/sessions?limit=${limit}&offset=${offset}`, {
+    headers: authHeaders(),
     signal: AbortSignal.timeout(4000),
   });
   return r.json() as Promise<SessionsResponse>;
