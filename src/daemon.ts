@@ -109,17 +109,31 @@ async function acquirePidLock(port: number): Promise<void> {
     if ((readErr as Error).message?.includes("orager daemon")) throw readErr;
   }
 
-  await fs.unlink(PID_FILE).catch(() => {});
-  try {
-    await fs.writeFile(PID_FILE, pidData, { encoding: "utf8", mode: 0o600, flag: "wx" });
-  } catch {
-    const existing2 = await fs.readFile(PID_FILE, "utf8").catch(() => "{}");
-    const parsed2 = JSON.parse(existing2) as { pid?: number; port?: number };
-    if (parsed2.pid && parsed2.pid !== process.pid) {
-      throw new Error(
-        `[orager daemon] race: another daemon started (PID ${parsed2.pid}). ` +
-        `Only one daemon can run at a time.`,
-      );
+  // M-07: Atomic unlink-then-create with retry to narrow the TOCTOU window.
+  // The exclusive "wx" flag ensures only one process can create the file.
+  // A short retry loop handles the race where another daemon creates the file
+  // between our unlink and writeFile.
+  for (let retry = 0; retry < 3; retry++) {
+    await fs.unlink(PID_FILE).catch(() => {});
+    try {
+      await fs.writeFile(PID_FILE, pidData, { encoding: "utf8", mode: 0o600, flag: "wx" });
+      return; // success — lock acquired
+    } catch {
+      // Another process won the race — check if it's alive
+      const existing2 = await fs.readFile(PID_FILE, "utf8").catch(() => "{}");
+      const parsed2 = JSON.parse(existing2) as { pid?: number; port?: number };
+      if (parsed2.pid && parsed2.pid !== process.pid) {
+        try {
+          process.kill(parsed2.pid, 0);
+          throw new Error(
+            `[orager daemon] race: another daemon started (PID ${parsed2.pid}). ` +
+            `Only one daemon can run at a time.`,
+          );
+        } catch (killErr) {
+          if ((killErr as Error).message?.includes("orager daemon")) throw killErr;
+          // Process is dead — retry the acquire loop
+        }
+      }
     }
   }
 }
@@ -291,13 +305,11 @@ export async function startDaemon(
   const requestHandler = (req: http.IncomingMessage, res: http.ServerResponse): void => {
     ctx.lastActivityAt = Date.now();
 
-    // Rate limiting (all endpoints)
-    const ip =
-      (Array.isArray(req.headers["x-forwarded-for"])
-        ? req.headers["x-forwarded-for"][0]
-        : req.headers["x-forwarded-for"]?.split(",")[0])?.trim() ??
-      req.socket.remoteAddress ??
-      "unknown";
+    // M-22: Rate limiting uses socket remoteAddress only. The daemon binds to
+    // 127.0.0.1 exclusively, so x-forwarded-for is never legitimate and can be
+    // trivially spoofed to bypass rate limits. If a reverse proxy is used in
+    // the future, add a trustedProxies config option before trusting XFF.
+    const ip = req.socket.remoteAddress ?? "unknown";
     const isRunEndpoint = req.method === "POST" && req.url === "/run";
     const rl = checkRateLimit(ip, isRunEndpoint);
     if (!rl.allowed) {

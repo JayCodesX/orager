@@ -189,52 +189,35 @@ class ReconnectableMcpClient {
     private client: Client,
   ) {}
 
+  /**
+   * M-24: Reconnect and rate-limit retries are now tracked independently.
+   * A disconnect+reconnect does NOT consume a rate-limit retry attempt.
+   * This prevents the sequence "disconnect → reconnect → rate limit" from
+   * exhausting all retries prematurely.
+   */
   async callTool(toolName: string, input: Record<string, unknown>) {
     let lastErr: unknown;
+    let rateLimitAttempt = 0; // separate counter for rate-limit retries
 
-    for (let attempt = 0; attempt <= MCP_TOOL_CALL_RETRIES; attempt++) {
+    // Outer loop: rate-limit retries (up to MCP_TOOL_CALL_RETRIES)
+    while (rateLimitAttempt <= MCP_TOOL_CALL_RETRIES) {
       try {
-        // Single callTool promise raced against a timeout.
-        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-        return await Promise.race([
-          this.client.callTool({ name: toolName, arguments: input }),
-          new Promise<never>((_, reject) => {
-            timeoutHandle = setTimeout(
-              () => reject(new Error(`MCP tool '${toolName}' timed out after ${MCP_TOOL_TIMEOUT_MS / 1000}s`)),
-              MCP_TOOL_TIMEOUT_MS,
-            );
-          }),
-        ]).finally(() => {
-          if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
-        });
+        // Inner: attempt the call, handling disconnects with reconnection
+        return await this._callWithReconnect(toolName, input);
       } catch (err) {
         lastErr = err;
         if (this._closed) throw err;
 
         const msg = err instanceof Error ? err.message : String(err);
 
-        if (isTransportDisconnect(msg) &&
-            this._reconnectAttempts < ReconnectableMcpClient.MAX_RECONNECT_ATTEMPTS) {
-          // Transport dropped — reconnect and retry (tracked across all calls)
-          this._reconnectAttempts++;
+        // Rate-limit errors get their own retry budget
+        if (isRateLimitError(msg) && rateLimitAttempt < MCP_TOOL_CALL_RETRIES) {
+          const delay = MCP_TOOL_CALL_RETRY_DELAYS[rateLimitAttempt] ?? 3000;
           process.stderr.write(
-            `[orager] MCP server '${this.serverName}' connection lost (${msg.slice(0, 80)}), reconnecting… (attempt ${this._reconnectAttempts}/${ReconnectableMcpClient.MAX_RECONNECT_ATTEMPTS})\n`,
-          );
-          try {
-            await this._reconnect();
-            this._reconnectAttempts = 0; // reset on successful reconnect
-          } catch (reconnectErr) {
-            throw reconnectErr; // surface reconnect failure directly
-          }
-          continue; // retry without delay
-        }
-
-        if (isRateLimitError(msg) && attempt < MCP_TOOL_CALL_RETRIES) {
-          const delay = MCP_TOOL_CALL_RETRY_DELAYS[attempt] ?? 3000;
-          process.stderr.write(
-            `[orager] MCP server '${this.serverName}' rate-limited — retry ${attempt + 1}/${MCP_TOOL_CALL_RETRIES} after ${delay}ms\n`,
+            `[orager] MCP server '${this.serverName}' rate-limited — retry ${rateLimitAttempt + 1}/${MCP_TOOL_CALL_RETRIES} after ${delay}ms\n`,
           );
           await new Promise<void>((r) => setTimeout(r, delay));
+          rateLimitAttempt++;
           continue;
         }
 
@@ -243,6 +226,56 @@ class ReconnectableMcpClient {
     }
 
     throw lastErr;
+  }
+
+  /** Attempt a single tool call, reconnecting on transport disconnect. */
+  private async _callWithReconnect(
+    toolName: string,
+    input: Record<string, unknown>,
+  ): Promise<Awaited<ReturnType<Client["callTool"]>>> {
+    try {
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+      return await Promise.race([
+        this.client.callTool({ name: toolName, arguments: input }),
+        new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(
+            () => reject(new Error(`MCP tool '${toolName}' timed out after ${MCP_TOOL_TIMEOUT_MS / 1000}s`)),
+            MCP_TOOL_TIMEOUT_MS,
+          );
+        }),
+      ]).finally(() => {
+        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+      });
+    } catch (err) {
+      if (this._closed) throw err;
+
+      const msg = err instanceof Error ? err.message : String(err);
+
+      if (isTransportDisconnect(msg) &&
+          this._reconnectAttempts < ReconnectableMcpClient.MAX_RECONNECT_ATTEMPTS) {
+        this._reconnectAttempts++;
+        process.stderr.write(
+          `[orager] MCP server '${this.serverName}' connection lost (${msg.slice(0, 80)}), reconnecting… (attempt ${this._reconnectAttempts}/${ReconnectableMcpClient.MAX_RECONNECT_ATTEMPTS})\n`,
+        );
+        await this._reconnect();
+        this._reconnectAttempts = 0;
+        // Retry the call once after reconnect (does not consume rate-limit budget)
+        let timeoutHandle2: ReturnType<typeof setTimeout> | undefined;
+        return await Promise.race([
+          this.client.callTool({ name: toolName, arguments: input }),
+          new Promise<never>((_, reject) => {
+            timeoutHandle2 = setTimeout(
+              () => reject(new Error(`MCP tool '${toolName}' timed out after ${MCP_TOOL_TIMEOUT_MS / 1000}s`)),
+              MCP_TOOL_TIMEOUT_MS,
+            );
+          }),
+        ]).finally(() => {
+          if (timeoutHandle2 !== undefined) clearTimeout(timeoutHandle2);
+        });
+      }
+
+      throw err;
+    }
   }
 
   private async _reconnect(): Promise<void> {
