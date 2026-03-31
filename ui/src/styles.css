@@ -5,27 +5,52 @@
 }
 
 :root {
-  --bg:        #0f1117;
-  --bg-card:   #1a1d27;
-  --bg-input:  #12141e;
-  --border:    #2a2d3e;
-  --text:      #e2e4f0;
-  --text-muted:#7c7f9a;
-  --accent:    #6c7bff;
-  --accent-hover: #8492ff;
-  --success:   #3ecf8e;
-  --warn:      #f59e0b;
-  --error:     #f87171;
-  --radius:    6px;
-  --shadow:    0 2px 8px rgba(0,0,0,0.4);
+  /* ── Base surfaces ── */
+  --bg:          #0c0e14;
+  --bg-card:     #141620;
+  --bg-input:    #1a1d2b;
+  --bg-elevated: #1e2130;
+
+  /* ── Borders ── */
+  --border:      #252838;
+  --border-subtle:#1e2030;
+
+  /* ── Text ── */
+  --text:        #e2e6f0;
+  --text-secondary: #a0a6be;
+  --text-muted:  #636a83;
+
+  /* ── Accent (purple) ── */
+  --accent:       #7c8aff;
+  --accent-hover: #9aa4ff;
+  --accent-glow:  rgba(124, 138, 255, 0.15);
+  --accent-subtle:rgba(124, 138, 255, 0.08);
+
+  /* ── Semantic ── */
+  --success:     #34d399;
+  --success-bg:  rgba(52, 211, 153, 0.1);
+  --warn:        #fbbf24;
+  --warn-bg:     rgba(251, 191, 36, 0.1);
+  --error:       #f87171;
+  --error-bg:    rgba(248, 113, 113, 0.1);
+
+  /* ── Shared ── */
+  --radius:      8px;
+  --radius-sm:   6px;
+  --shadow:      0 4px 16px rgba(0, 0, 0, 0.35);
+  --shadow-sm:   0 2px 6px rgba(0, 0, 0, 0.25);
+  --transition:  0.15s ease;
+
   font-size: 14px;
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   background: var(--bg);
   color: var(--text);
   min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* ── Layout ── */
@@ -39,16 +64,17 @@ body {
 .app-header {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 0 24px;
-  height: 52px;
+  gap: 16px;
+  padding: 0 28px;
+  height: 56px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-card);
+  backdrop-filter: blur(12px);
 }
 
 .app-logo {
   font-weight: 700;
-  font-size: 16px;
+  font-size: 17px;
   letter-spacing: -0.5px;
   color: var(--text);
 }
@@ -64,29 +90,29 @@ body {
 }
 
 .tab-link {
-  padding: 6px 14px;
-  border-radius: var(--radius);
+  padding: 7px 16px;
+  border-radius: var(--radius-sm);
   text-decoration: none;
   color: var(--text-muted);
   font-size: 13px;
   font-weight: 500;
-  transition: color 0.15s, background 0.15s;
+  transition: color var(--transition), background var(--transition);
 }
 
 .tab-link:hover {
-  color: var(--text);
-  background: rgba(255,255,255,0.05);
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .tab-link.active {
   color: var(--accent);
-  background: rgba(108,123,255,0.12);
+  background: var(--accent-subtle);
 }
 
 .app-content {
   flex: 1;
-  padding: 28px 24px;
-  max-width: 900px;
+  padding: 32px 28px;
+  max-width: 920px;
   width: 100%;
   margin: 0 auto;
 }
@@ -99,28 +125,39 @@ body {
   border-radius: var(--radius);
   margin-bottom: 16px;
   overflow: hidden;
+  transition: border-color var(--transition);
+}
+
+.card:hover {
+  border-color: #2e3248;
 }
 
 .card-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-subtle);
   cursor: pointer;
   user-select: none;
+  transition: background var(--transition);
+}
+
+.card-header:hover {
+  background: rgba(255, 255, 255, 0.02);
 }
 
 .card-title {
   font-weight: 600;
   font-size: 13px;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.2px;
+  color: var(--text);
 }
 
 .card-chevron {
   color: var(--text-muted);
   font-size: 11px;
-  transition: transform 0.2s;
+  transition: transform 0.2s ease;
 }
 
 .card-chevron.open {
@@ -128,10 +165,10 @@ body {
 }
 
 .card-body {
-  padding: 16px;
+  padding: 18px;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 12px;
+  gap: 14px;
 }
 
 /* ── Form fields ── */
@@ -139,7 +176,7 @@ body {
 .field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
 }
 
 .field-full {
@@ -150,6 +187,7 @@ label {
   font-size: 12px;
   color: var(--text-muted);
   font-weight: 500;
+  letter-spacing: 0.2px;
 }
 
 input[type="text"],
@@ -159,22 +197,29 @@ select,
 textarea {
   background: var(--bg-input);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
   color: var(--text);
-  padding: 7px 10px;
+  padding: 8px 12px;
   font-size: 13px;
   font-family: inherit;
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color var(--transition), box-shadow var(--transition);
   width: 100%;
 }
 
 input:focus, select:focus, textarea:focus {
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+input::placeholder, textarea::placeholder {
+  color: var(--text-muted);
+  opacity: 0.7;
 }
 
 input.error, select.error, textarea.error {
   border-color: var(--error);
+  box-shadow: 0 0 0 3px var(--error-bg);
 }
 
 .field-error {
@@ -195,8 +240,8 @@ textarea {
 }
 
 .checkbox-row input[type="checkbox"] {
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
   accent-color: var(--accent);
   cursor: pointer;
 }
@@ -218,39 +263,42 @@ textarea {
 }
 
 button {
-  padding: 8px 18px;
-  border-radius: var(--radius);
+  padding: 8px 20px;
+  border-radius: var(--radius-sm);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
   border: none;
-  transition: background 0.15s, opacity 0.15s;
+  transition: background var(--transition), opacity var(--transition), box-shadow var(--transition);
   font-family: inherit;
 }
 
 button:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
 .btn-primary {
   background: var(--accent);
   color: #fff;
+  box-shadow: 0 1px 3px rgba(124, 138, 255, 0.25);
 }
 
 .btn-primary:hover:not(:disabled) {
   background: var(--accent-hover);
+  box-shadow: 0 2px 8px rgba(124, 138, 255, 0.35);
 }
 
 .btn-ghost {
   background: transparent;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   border: 1px solid var(--border);
 }
 
 .btn-ghost:hover:not(:disabled) {
-  background: rgba(255,255,255,0.05);
+  background: rgba(255, 255, 255, 0.04);
   color: var(--text);
+  border-color: #353848;
 }
 
 /* ── Permissions table ── */
@@ -263,7 +311,7 @@ button:disabled {
 
 .perm-table th {
   text-align: left;
-  padding: 8px 10px;
+  padding: 8px 12px;
   color: var(--text-muted);
   font-weight: 500;
   font-size: 12px;
@@ -271,8 +319,12 @@ button:disabled {
 }
 
 .perm-table td {
-  padding: 7px 10px;
-  border-bottom: 1px solid rgba(42,45,62,0.6);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.perm-table tr:hover td {
+  background: rgba(255, 255, 255, 0.02);
 }
 
 .perm-table select {
@@ -295,21 +347,22 @@ button:disabled {
 
 .toast {
   pointer-events: auto;
-  padding: 10px 16px;
-  border-radius: var(--radius);
+  padding: 10px 18px;
+  border-radius: var(--radius-sm);
   font-size: 13px;
   font-weight: 500;
   box-shadow: var(--shadow);
-  animation: toast-in 0.2s ease;
-  max-width: 320px;
+  animation: toast-in 0.25s ease;
+  max-width: 340px;
+  backdrop-filter: blur(8px);
 }
 
-.toast.success { background: #1a3a2a; border: 1px solid var(--success); color: var(--success); }
-.toast.error   { background: #3a1a1a; border: 1px solid var(--error);   color: var(--error); }
-.toast.info    { background: #1a1f3a; border: 1px solid var(--accent);  color: var(--accent); }
+.toast.success { background: var(--success-bg); border: 1px solid var(--success); color: var(--success); }
+.toast.error   { background: var(--error-bg);   border: 1px solid var(--error);   color: var(--error); }
+.toast.info    { background: var(--accent-subtle); border: 1px solid var(--accent); color: var(--accent); }
 
 @keyframes toast-in {
-  from { opacity: 0; transform: translateY(8px); }
+  from { opacity: 0; transform: translateY(10px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 
@@ -323,16 +376,38 @@ button:disabled {
   padding: 80px 24px;
   color: var(--text-muted);
   text-align: center;
-  gap: 10px;
+  gap: 12px;
 }
 
 .placeholder h2 {
   font-size: 18px;
   color: var(--text);
+  font-weight: 600;
 }
 
 .placeholder p {
   font-size: 13px;
-  max-width: 360px;
-  line-height: 1.6;
+  max-width: 380px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+/* ── Scrollbar ── */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
 }

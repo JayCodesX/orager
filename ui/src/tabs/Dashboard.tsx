@@ -96,7 +96,7 @@ function Badge({ label, variant }: { label: string; variant: "green" | "red" | "
     green:  { background: "rgba(62,207,142,0.15)", color: "var(--success)", border: "1px solid rgba(62,207,142,0.3)" },
     red:    { background: "rgba(248,113,113,0.15)", color: "var(--error)",   border: "1px solid rgba(248,113,113,0.3)" },
     yellow: { background: "rgba(245,158,11,0.15)",  color: "var(--warn)",    border: "1px solid rgba(245,158,11,0.3)" },
-    blue:   { background: "rgba(108,123,255,0.15)", color: "var(--accent)",  border: "1px solid rgba(108,123,255,0.3)" },
+    blue:   { background: "var(--accent-glow)", color: "var(--accent)",  border: "1px solid rgba(124,138,255,0.3)" },
     gray:   { background: "rgba(124,127,154,0.15)", color: "var(--text-muted)", border: "1px solid rgba(124,127,154,0.3)" },
   };
   return (

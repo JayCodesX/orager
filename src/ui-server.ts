@@ -174,9 +174,9 @@ function stripSecrets<T extends object>(obj: T, keys: string[]): T {
 async function loadConfig(): Promise<OragerUserConfig> {
   try {
     const raw = await fs.readFile(CONFIG_PATH, "utf8");
-    return JSON.parse(raw) as OragerUserConfig;
+    return { ...DEFAULT_CONFIG, ...JSON.parse(raw) as OragerUserConfig };
   } catch {
-    return {};
+    return { ...DEFAULT_CONFIG };
   }
 }
 

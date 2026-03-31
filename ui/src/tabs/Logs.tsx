@@ -67,7 +67,7 @@ function LogRow({ entry, expanded, onToggle }: {
         borderBottom: "1px solid var(--border)",
         padding: "6px 12px",
         cursor: extra.length > 0 ? "pointer" : "default",
-        background: expanded ? "rgba(108,123,255,0.04)" : undefined,
+        background: expanded ? "var(--accent-subtle)" : undefined,
       }}
       onClick={extra.length > 0 ? onToggle : undefined}
     >
