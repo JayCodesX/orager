@@ -454,6 +454,9 @@ export function isReadOnlyTool(toolName: string): boolean {
 /**
  * Run `fn` over every item with at most `limit` concurrent executions.
  * Results are returned in the same order as the input array.
+ *
+ * M-08: When any worker throws, remaining workers stop picking up new items.
+ * In-flight items complete naturally but no new work is started.
  */
 export async function runConcurrent<T, R>(
   items: T[],
@@ -465,11 +468,17 @@ export async function runConcurrent<T, R>(
   }
   const results: R[] = new Array(items.length);
   let nextIndex = 0;
+  let failed = false; // M-08: signal workers to stop on first error
 
   async function worker(): Promise<void> {
-    while (nextIndex < items.length) {
+    while (!failed && nextIndex < items.length) {
       const i = nextIndex++;
-      results[i] = await fn(items[i]);
+      try {
+        results[i] = await fn(items[i]);
+      } catch (err) {
+        failed = true;
+        throw err;
+      }
     }
   }
 
@@ -477,7 +486,12 @@ export async function runConcurrent<T, R>(
     { length: Math.min(limit, items.length) },
     worker,
   );
-  await Promise.all(workers);
+  // Use allSettled to let in-flight items finish, then rethrow the first error
+  const settled = await Promise.allSettled(workers);
+  const firstError = settled.find((r) => r.status === "rejected");
+  if (firstError && firstError.status === "rejected") {
+    throw firstError.reason;
+  }
   return results;
 }
 
