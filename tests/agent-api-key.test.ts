@@ -28,19 +28,32 @@ vi.mock("../src/openrouter-model-meta.js", () => ({
   liveModelSupportsTools: vi.fn().mockReturnValue(null),
 }));
 
-vi.mock("../src/loop-helpers.js", async (importOriginal) => {
-  // importOriginal is vitest-specific; bun passes undefined so we fall back to
-  // a direct import() which gives the real module under bun's mock system.
-  const original: typeof import("../src/loop-helpers.js") =
-    typeof importOriginal === "function"
-      ? await importOriginal()
-      : await import("../src/loop-helpers.js");
-  return {
-    ...original,
-    fetchModelContextLengths: vi.fn().mockResolvedValue(undefined),
-    isModelContextCacheWarm: vi.fn().mockReturnValue(true),
-  };
-});
+vi.mock("../src/loop-helpers.js", () => ({
+  postWebhook: vi.fn().mockResolvedValue(null),
+  estimateTokens: vi.fn().mockResolvedValue(0),
+  fetchModelContextLengths: vi.fn().mockResolvedValue(undefined),
+  getContextWindow: vi.fn().mockReturnValue(128_000),
+  isModelContextCacheWarm: vi.fn().mockReturnValue(true),
+  MAX_SESSION_MESSAGES: 500,
+  summarizeSession: vi.fn().mockResolvedValue([]),
+  CACHE_TTL_MS: 30_000,
+  runConcurrent: vi.fn().mockImplementation(async (items: unknown[], _max: number, fn: (item: unknown) => Promise<unknown>) => {
+    const results = [];
+    for (const item of items) results.push(await fn(item));
+    return results;
+  }),
+  MAX_PARALLEL_TOOLS: 10,
+  evaluateTurnModelRules: vi.fn().mockReturnValue(null),
+  defaultTimeoutForModel: vi.fn().mockReturnValue(120),
+  loadCl100k: vi.fn().mockResolvedValue(null),
+  loadO200k: vi.fn().mockResolvedValue(null),
+  bpeEncoderFamily: vi.fn().mockReturnValue(null),
+  getCharsPerToken: vi.fn().mockReturnValue(4),
+  isReadOnlyTool: vi.fn().mockReturnValue(false),
+  getContextWindowFromFallback: vi.fn().mockReturnValue(128_000),
+  _resetModelCacheForTesting: vi.fn(),
+  formatDiscordPayload: vi.fn().mockReturnValue({}),
+}));
 
 vi.mock("../src/retry.js", () => ({
   callWithRetry: vi.fn(),
