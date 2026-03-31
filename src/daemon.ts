@@ -40,8 +40,8 @@ import { fetchLiveModelMeta } from "./openrouter-model-meta.js";
 import type { DaemonContext } from "./daemon/context.js";
 import { warmCache, startKeepAlive, scheduleIdleCheck } from "./daemon/lifecycle.js";
 import { drainAndExit as _drainAndExitImpl } from "./daemon/drain.js";
-import { handleHealth } from "./daemon/routes/health.js";
-import { handleMetrics } from "./daemon/routes/metrics.js";
+import { handleHealth, handleHealthDetail } from "./daemon/routes/health.js";
+import { handleMetrics, handleMetricsPrometheus } from "./daemon/routes/metrics.js";
 import { handleRun } from "./daemon/routes/run.js";
 import { handleSessions } from "./daemon/routes/sessions.js";
 import { handleRotateKey } from "./daemon/routes/rotate-key.js";
@@ -257,6 +257,12 @@ export async function startDaemon(
     keepAliveTimer: null,
     usedModels: new Set([model]),
     modelLastUsedAt: new Map([[model, Date.now()]]),
+
+    costByAgent: new Map(),
+    maxCostPerAgent: (() => {
+      const v = parseFloat(process.env["ORAGER_MAX_COST_PER_AGENT"] ?? "");
+      return Number.isFinite(v) && v > 0 ? v : 0;
+    })(),
   };
 
   // ── HTTP(S) server (audit E-14) ────────────────────────────────────────────
@@ -303,8 +309,14 @@ export async function startDaemon(
     if (req.method === "GET" && req.url === "/health") {
       handleHealth(ctx, req, res); return;
     }
+    if (req.method === "GET" && req.url === "/health/detail") {
+      handleHealthDetail(ctx, req, res); return;
+    }
     if (req.method === "GET" && req.url === "/metrics") {
       handleMetrics(ctx, req, res); return;
+    }
+    if (req.method === "GET" && req.url === "/metrics/prometheus") {
+      handleMetricsPrometheus(ctx, req, res); return;
     }
     if (req.method === "POST" && req.url === "/run") {
       handleRun(ctx, req, res); return;
