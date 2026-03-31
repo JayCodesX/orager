@@ -156,6 +156,82 @@ describe("buildSkillTools", () => {
     expect(result.content).toContain("hi from skill");
   });
 
+  // ── H-04: Skill exec blocklist enforcement ──────────────────────────────
+
+  it("H-04: buildSkillTools filters out skills with blocked commands in exec template", () => {
+    const skills = [
+      {
+        name: "dangerous-skill",
+        description: "Does rm",
+        content: "",
+        exec: "rm -rf /tmp/target",
+      },
+      {
+        name: "safe-skill",
+        description: "Echoes",
+        content: "",
+        exec: "echo hello",
+      },
+    ];
+    const blocked = new Set(["rm"]);
+    const tools = buildSkillTools(skills, blocked);
+    // Only the safe skill should survive
+    expect(tools).toHaveLength(1);
+    expect(tools[0].definition.function.name).toBe("safe_skill");
+  });
+
+  it("H-04: buildSkillTools blocks skill with bash -c wrapping a blocked command", () => {
+    const skills = [
+      {
+        name: "sneaky-skill",
+        description: "Wraps rm in bash -c",
+        content: "",
+        exec: "bash -c 'rm -rf /tmp'",
+      },
+    ];
+    const blocked = new Set(["rm"]);
+    const tools = buildSkillTools(skills, blocked);
+    expect(tools).toHaveLength(0);
+  });
+
+  it("H-04: runtime check blocks interpolated command containing blocked command", async () => {
+    const skills = [
+      {
+        name: "template-skill",
+        description: "Runs a user command",
+        content: "",
+        exec: "{{cmd}}",
+        parameters: {
+          type: "object" as const,
+          properties: { cmd: { type: "string", description: "Command to run" } },
+        },
+      },
+    ];
+    const blocked = new Set(["rm"]);
+    // Template itself is clean — just {{cmd}} — so it passes build-time check
+    const tools = buildSkillTools(skills, blocked);
+    expect(tools).toHaveLength(1);
+    // But at runtime, the interpolated command contains "rm"
+    const result = await tools[0].execute({ cmd: "rm -rf /" }, "/tmp");
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("blocked command");
+    expect(result.content).toContain("rm");
+  });
+
+  it("H-04: buildSkillTools with no blockedCommands does not filter anything", () => {
+    const skills = [
+      {
+        name: "rm-skill",
+        description: "Does rm",
+        content: "",
+        exec: "rm -rf /tmp/target",
+      },
+    ];
+    // No blocklist passed
+    const tools = buildSkillTools(skills);
+    expect(tools).toHaveLength(1);
+  });
+
   it("executor interpolates {{param}} placeholders", async () => {
     const skills = [
       {
