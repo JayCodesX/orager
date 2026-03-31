@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { authHeaders } from "../api";
+import { type DateRangePreset, presetToFromIso, DATE_RANGE_OPTIONS } from "../dateRange";
 
 // ── API types ─────────────────────────────────────────────────────────────────
 
@@ -135,15 +136,24 @@ function StatCard({ label, value, sub }: { label: string; value: React.ReactNode
 export default function Dashboard() {
   const [status, setStatus] = useState<DaemonStatusResponse | null>(null);
   const [metrics, setMetrics] = useState<MetricsResponse | null>(null);
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [sessionsTotal, setSessionsTotal] = useState(0);
+  const [allSessions, setAllSessions] = useState<Session[]>([]);
   const [sessionsPage, setSessionsPage] = useState(0);
+  const [dateRange, setDateRange] = useState<DateRangePreset>("7d");
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [loading, setLoading] = useState(true);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const PAGE_SIZE = 20;
+
+  const filteredSessions = useMemo(() => {
+    const fromIso = presetToFromIso(dateRange);
+    if (!fromIso) return allSessions;
+    return allSessions.filter((s) => s.updatedAt && s.updatedAt >= fromIso);
+  }, [allSessions, dateRange]);
+
+  const sessionsTotal = filteredSessions.length;
+  const sessions = filteredSessions.slice(sessionsPage * PAGE_SIZE, (sessionsPage + 1) * PAGE_SIZE);
 
   const refresh = useCallback(async () => {
     try {
@@ -158,11 +168,10 @@ export default function Dashboard() {
     }
   }, []);
 
-  const loadSessions = useCallback(async (page: number) => {
+  const loadSessions = useCallback(async () => {
     try {
-      const res = await fetchSessions(PAGE_SIZE, page * PAGE_SIZE);
-      setSessions(res.sessions ?? []);
-      setSessionsTotal(res.total ?? 0);
+      const res = await fetchSessions(500, 0);
+      setAllSessions(res.sessions ?? []);
     } catch {
       // non-fatal
     }
@@ -171,7 +180,7 @@ export default function Dashboard() {
   // Initial load + polling
   useEffect(() => {
     void refresh();
-    void loadSessions(0);
+    void loadSessions();
   }, [refresh, loadSessions]);
 
   useEffect(() => {
@@ -197,10 +206,8 @@ export default function Dashboard() {
     return () => document.removeEventListener("visibilitychange", handler);
   }, [autoRefresh, refresh]);
 
-  // Reload sessions when page changes
-  useEffect(() => {
-    void loadSessions(sessionsPage);
-  }, [sessionsPage, loadSessions]);
+  // Reset page when date range changes
+  useEffect(() => { setSessionsPage(0); }, [dateRange]);
 
   if (loading) {
     return <div className="placeholder"><p>Loading…</p></div>;
@@ -228,7 +235,7 @@ export default function Dashboard() {
             <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} style={{ accentColor: "var(--accent)" }} />
             Auto-refresh
           </label>
-          <button className="btn-ghost" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => { void refresh(); void loadSessions(sessionsPage); }}>
+          <button className="btn-ghost" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => { void refresh(); void loadSessions(); }}>
             Refresh
           </button>
         </div>
@@ -370,6 +377,13 @@ export default function Dashboard() {
       <div className="card">
         <div className="card-header" style={{ cursor: "default" }}>
           <span className="card-title">Sessions {sessionsTotal > 0 ? `(${sessionsTotal})` : ""}</span>
+          <select
+            value={dateRange}
+            onChange={(e) => setDateRange(e.target.value as DateRangePreset)}
+            style={{ marginLeft: "auto", width: 130, padding: "4px 8px", fontSize: 12 }}
+          >
+            {DATE_RANGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
         </div>
         {sessions.length === 0 ? (
           <div style={{ padding: "20px 16px", color: "var(--text-muted)", fontSize: 13 }}>
