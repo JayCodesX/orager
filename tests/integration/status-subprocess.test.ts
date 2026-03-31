@@ -15,7 +15,7 @@
  * NOTE: Writes to ~/.orager/daemon.port during test execution. Do not run
  * alongside a real orager daemon.
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
 import http from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -95,6 +95,12 @@ afterAll(async () => {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("orager --status (subprocess, live mock daemon)", () => {
+  // Re-write port file before each test — other integration tests (daemon-lifecycle)
+  // may start a real daemon that overwrites ~/.orager/daemon.port concurrently.
+  beforeEach(async () => {
+    await fs.writeFile(PORT_FILE, String(mockPort), "utf8");
+  });
+
   it("exits 0 and prints a 'running' line in text mode", async () => {
     const { code, stdout } = await runStatus();
     expect(code).toBe(0);

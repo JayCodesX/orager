@@ -21,18 +21,18 @@ function makeTempDbPath(): string {
 }
 
 describe("WASM SQLite — serialize/deserialize persistence round-trip", () => {
-  it("data written and close()d survives a second openWasmDb() call", () => {
+  it("data written and close()d survives a second openWasmDb() call", async () => {
     const dbPath = makeTempDbPath();
     try {
       // ── Phase 1: write ────────────────────────────────────────────────────
-      const db1 = openWasmDb(dbPath);
+      const db1 = await openWasmDb(dbPath);
       db1.exec("CREATE TABLE items (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
       db1.prepare("INSERT INTO items VALUES (?, ?)").run("a", "hello");
       db1.prepare("INSERT INTO items VALUES (?, ?)").run("b", "world");
       db1.close(); // triggers _persistToFile → sqlite3_js_db_export → writeFileSync
 
       // ── Phase 2: read from a new DB instance ─────────────────────────────
-      const db2 = openWasmDb(dbPath); // readFileSync + sqlite3_deserialize
+      const db2 = await openWasmDb(dbPath); // readFileSync + sqlite3_deserialize
       const rows = db2.prepare("SELECT id, value FROM items ORDER BY id").all();
       db2.close();
 
@@ -44,10 +44,10 @@ describe("WASM SQLite — serialize/deserialize persistence round-trip", () => {
     }
   });
 
-  it("file is written to disk (non-empty) after inserting a row", () => {
+  it("file is written to disk (non-empty) after inserting a row", async () => {
     const dbPath = makeTempDbPath();
     try {
-      const db = openWasmDb(dbPath);
+      const db = await openWasmDb(dbPath);
       db.exec("CREATE TABLE t (x INTEGER)");
       db.prepare("INSERT INTO t VALUES (?)").run(42);
       db.close();
@@ -59,10 +59,10 @@ describe("WASM SQLite — serialize/deserialize persistence round-trip", () => {
     }
   });
 
-  it("transaction data persists across close + reopen", () => {
+  it("transaction data persists across close + reopen", async () => {
     const dbPath = makeTempDbPath();
     try {
-      const db1 = openWasmDb(dbPath);
+      const db1 = await openWasmDb(dbPath);
       db1.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, msg TEXT)");
 
       const insert = db1.prepare("INSERT INTO t VALUES (?, ?)");
@@ -72,7 +72,7 @@ describe("WASM SQLite — serialize/deserialize persistence round-trip", () => {
       doInsert([[1, "first"], [2, "second"], [3, "third"]]);
       db1.close();
 
-      const db2 = openWasmDb(dbPath);
+      const db2 = await openWasmDb(dbPath);
       const count = db2.prepare("SELECT COUNT(*) as c FROM t").get() as { c: number };
       const last = db2.prepare("SELECT msg FROM t WHERE id = 3").get() as { msg: string } | undefined;
       db2.close();
@@ -84,20 +84,21 @@ describe("WASM SQLite — serialize/deserialize persistence round-trip", () => {
     }
   });
 
-  it("_autoSave writes the file after each top-level statement (without close())", () => {
+  it("_autoSave writes the file after each top-level statement (without close())", async () => {
     const dbPath = makeTempDbPath();
-    let db: ReturnType<typeof openWasmDb> | undefined;
+    let db: Awaited<ReturnType<typeof openWasmDb>> | undefined;
     try {
-      db = openWasmDb(dbPath);
+      db = await openWasmDb(dbPath);
       db.exec("CREATE TABLE t (v TEXT)");
       db.prepare("INSERT INTO t VALUES (?)").run("auto-saved");
-      // Do NOT call close() — _autoSave should have flushed after INSERT
+      // _autoSave uses a 100ms debounce — wait for it to flush
+      await db.flush();
 
       const stat = fs.statSync(dbPath);
       expect(stat.size).toBeGreaterThan(0);
 
       // Open a second instance to verify the data is present on disk
-      const db2 = openWasmDb(dbPath);
+      const db2 = await openWasmDb(dbPath);
       const row = db2.prepare("SELECT v FROM t").get() as { v: string } | undefined;
       db2.close();
 
@@ -108,22 +109,22 @@ describe("WASM SQLite — serialize/deserialize persistence round-trip", () => {
     }
   });
 
-  it("multiple rows survive across three sequential open/close cycles", () => {
+  it("multiple rows survive across three sequential open/close cycles", async () => {
     const dbPath = makeTempDbPath();
     try {
       // Write first batch
-      const db1 = openWasmDb(dbPath);
+      const db1 = await openWasmDb(dbPath);
       db1.exec("CREATE TABLE log (ts INTEGER, msg TEXT)");
       db1.prepare("INSERT INTO log VALUES (?, ?)").run(1, "alpha");
       db1.close();
 
       // Append second batch
-      const db2 = openWasmDb(dbPath);
+      const db2 = await openWasmDb(dbPath);
       db2.prepare("INSERT INTO log VALUES (?, ?)").run(2, "beta");
       db2.close();
 
       // Read all
-      const db3 = openWasmDb(dbPath);
+      const db3 = await openWasmDb(dbPath);
       const rows = db3.prepare("SELECT ts, msg FROM log ORDER BY ts").all() as Array<{ ts: number; msg: string }>;
       db3.close();
 
@@ -135,18 +136,18 @@ describe("WASM SQLite — serialize/deserialize persistence round-trip", () => {
     }
   });
 
-  it("readonly mode reads persisted data without modifying the file", () => {
+  it("readonly mode reads persisted data without modifying the file", async () => {
     const dbPath = makeTempDbPath();
     try {
       // Create DB and persist
-      const dbW = openWasmDb(dbPath);
+      const dbW = await openWasmDb(dbPath);
       dbW.exec("CREATE TABLE t (v TEXT)");
       dbW.prepare("INSERT INTO t VALUES (?)").run("original");
       dbW.close();
       const sizeBefore = fs.statSync(dbPath).size;
 
       // Open readonly — read value, no writes
-      const dbRo = openWasmDb(dbPath, { readonly: true });
+      const dbRo = await openWasmDb(dbPath, { readonly: true });
       const row = dbRo.prepare("SELECT v FROM t").get() as { v: string } | undefined;
       dbRo.close();
       const sizeAfter = fs.statSync(dbPath).size;
@@ -159,12 +160,12 @@ describe("WASM SQLite — serialize/deserialize persistence round-trip", () => {
     }
   });
 
-  it("opening a non-existent path produces a fresh empty database", () => {
+  it("opening a non-existent path produces a fresh empty database", async () => {
     const dbPath = makeTempDbPath();
     // Guarantee the file does NOT exist before opening
     expect(fs.existsSync(dbPath)).toBe(false);
     try {
-      const db = openWasmDb(dbPath);
+      const db = await openWasmDb(dbPath);
       db.exec("CREATE TABLE t (x INTEGER)");
       const row = db.prepare("SELECT COUNT(*) as c FROM t").get() as { c: number };
       db.close();

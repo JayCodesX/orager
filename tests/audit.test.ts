@@ -24,9 +24,13 @@ describe("auditApproval", () => {
   });
 
   it("writes a valid JSON line to the audit log", async () => {
-    // Run the actual audit write in a subprocess so bun's process-wide
+    // Run the actual audit write in a subprocess so process-wide
     // vi.mock("../src/audit.js") stubs (set by other test files) cannot
     // intercept the real auditApproval implementation.
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const execFileP = promisify(execFile);
+
     const script = `
       import { auditApproval } from ${JSON.stringify(path.join(srcRoot, "src/audit.js"))};
       auditApproval({
@@ -38,13 +42,13 @@ describe("auditApproval", () => {
         mode: "tty",
         durationMs: 1234,
       });
-      await new Promise((r) => setTimeout(r, 200));
+      setTimeout(() => {}, 200);
     `;
-    const proc = Bun.spawn(["bun", "--eval", script], {
+    // Use node --import tsx/esm for ESM eval — works under both bun and node
+    await execFileP(process.execPath, ["--import", "tsx/esm", "--input-type=module", "--eval", script], {
       env: { ...process.env, ORAGER_AUDIT_LOG: auditPath },
-      stderr: "pipe",
+      timeout: 10_000,
     });
-    await proc.exited;
 
     const contents = fs.readFileSync(auditPath, "utf8");
     const lines = contents.trim().split("\n").filter(Boolean);

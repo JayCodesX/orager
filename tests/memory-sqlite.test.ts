@@ -45,7 +45,7 @@ describe("addMemoryEntrySqlite + loadMemoryStoreSqlite", () => {
     _resetDbForTesting();
 
     try {
-      const entry = addMemoryEntrySqlite("key1", {
+      const entry = await addMemoryEntrySqlite("key1", {
         content: "test content",
         importance: 2,
       });
@@ -54,7 +54,7 @@ describe("addMemoryEntrySqlite + loadMemoryStoreSqlite", () => {
       expect(entry.createdAt).toBeTruthy();
       expect(entry.content).toBe("test content");
 
-      const store = loadMemoryStoreSqlite("key1");
+      const store = await loadMemoryStoreSqlite("key1");
       expect(store.memoryKey).toBe("key1");
       expect(store.entries).toHaveLength(1);
       expect(store.entries[0].id).toBe(entry.id);
@@ -74,19 +74,19 @@ describe("removeMemoryEntrySqlite", () => {
     _resetDbForTesting();
 
     try {
-      const entry = addMemoryEntrySqlite("key2", {
+      const entry = await addMemoryEntrySqlite("key2", {
         content: "to be deleted",
         importance: 2,
       });
 
-      const deleted = removeMemoryEntrySqlite("key2", entry.id);
+      const deleted = await removeMemoryEntrySqlite("key2", entry.id);
       expect(deleted).toBe(true);
 
-      const store = loadMemoryStoreSqlite("key2");
+      const store = await loadMemoryStoreSqlite("key2");
       expect(store.entries).toHaveLength(0);
 
       // Removing again returns false
-      const deletedAgain = removeMemoryEntrySqlite("key2", entry.id);
+      const deletedAgain = await removeMemoryEntrySqlite("key2", entry.id);
       expect(deletedAgain).toBe(false);
     } finally {
       _resetDbForTesting();
@@ -103,14 +103,14 @@ describe("loadMemoryStoreSqlite isolation", () => {
     _resetDbForTesting();
 
     try {
-      addMemoryEntrySqlite("keyA", { content: "entry for keyA", importance: 2 });
-      addMemoryEntrySqlite("keyB", { content: "entry for keyB", importance: 2 });
+      await addMemoryEntrySqlite("keyA", { content: "entry for keyA", importance: 2 });
+      await addMemoryEntrySqlite("keyB", { content: "entry for keyB", importance: 2 });
 
-      const storeA = loadMemoryStoreSqlite("keyA");
+      const storeA = await loadMemoryStoreSqlite("keyA");
       expect(storeA.entries).toHaveLength(1);
       expect(storeA.entries[0].content).toBe("entry for keyA");
 
-      const storeB = loadMemoryStoreSqlite("keyB");
+      const storeB = await loadMemoryStoreSqlite("keyB");
       expect(storeB.entries).toHaveLength(1);
       expect(storeB.entries[0].content).toBe("entry for keyB");
     } finally {
@@ -127,19 +127,19 @@ describe("loadMemoryStoreSqlite isolation", () => {
 
     try {
       // Add an already-expired entry
-      addMemoryEntrySqlite("keyC", {
+      await addMemoryEntrySqlite("keyC", {
         content: "expired entry",
         importance: 2,
         expiresAt: new Date(Date.now() - 1000).toISOString(),
       });
 
       // Add a live entry
-      addMemoryEntrySqlite("keyC", {
+      await addMemoryEntrySqlite("keyC", {
         content: "live entry",
         importance: 2,
       });
 
-      const store = loadMemoryStoreSqlite("keyC");
+      const store = await loadMemoryStoreSqlite("keyC");
       expect(store.entries).toHaveLength(1);
       expect(store.entries[0].content).toBe("live entry");
     } finally {
@@ -157,10 +157,10 @@ describe("searchMemoryFts", () => {
     _resetDbForTesting();
 
     try {
-      addMemoryEntrySqlite("keyD", { content: "TypeScript configuration is important", importance: 2 });
-      addMemoryEntrySqlite("keyD", { content: "User prefers dark mode", importance: 2 });
+      await addMemoryEntrySqlite("keyD", { content: "TypeScript configuration is important", importance: 2 });
+      await addMemoryEntrySqlite("keyD", { content: "User prefers dark mode", importance: 2 });
 
-      const results = searchMemoryFts("keyD", "TypeScript configuration");
+      const results = await searchMemoryFts("keyD", "TypeScript configuration");
       expect(results.length).toBeGreaterThan(0);
       expect(results[0].content).toContain("TypeScript");
     } finally {
@@ -176,10 +176,10 @@ describe("searchMemoryFts", () => {
     _resetDbForTesting();
 
     try {
-      addMemoryEntrySqlite("keyE", { content: "unique phrase only in keyE", importance: 2 });
-      addMemoryEntrySqlite("keyF", { content: "different content for keyF", importance: 2 });
+      await addMemoryEntrySqlite("keyE", { content: "unique phrase only in keyE", importance: 2 });
+      await addMemoryEntrySqlite("keyF", { content: "different content for keyF", importance: 2 });
 
-      const results = searchMemoryFts("keyF", "unique phrase only in keyE");
+      const results = await searchMemoryFts("keyF", "unique phrase only in keyE");
       expect(results).toHaveLength(0);
     } finally {
       _resetDbForTesting();
@@ -197,17 +197,17 @@ describe("_migrate — JSON text embedding → Float32 BLOB conversion", () => {
 
     try {
       // Create schema + insert a real entry via the module
-      const entry = addMemoryEntrySqlite("keyMig", { content: "migration test content", importance: 2 });
+      const entry = await addMemoryEntrySqlite("keyMig", { content: "migration test content", importance: 2 });
       _resetDbForTesting(); // closes DB and flushes to file
 
       // Directly overwrite the embedding column with a JSON text string (legacy format)
       const embeddingJson = JSON.stringify([1.0, 2.0, 3.0]);
-      const dbRaw = openWasmDb(dbPath);
+      const dbRaw = await openWasmDb(dbPath);
       dbRaw.prepare("UPDATE memory_entries SET embedding = ? WHERE id = ?").run(embeddingJson, entry.id);
       dbRaw.close();
 
       // Confirm the embedding is stored as TEXT before migration
-      const dbBefore = openWasmDb(dbPath, { readonly: true });
+      const dbBefore = await openWasmDb(dbPath, { readonly: true });
       const before = dbBefore.prepare(
         "SELECT typeof(embedding) as t FROM memory_entries WHERE id = ?",
       ).get(entry.id) as { t: string };
@@ -216,11 +216,11 @@ describe("_migrate — JSON text embedding → Float32 BLOB conversion", () => {
 
       // Re-open via memory-sqlite module — _migrate() converts TEXT → BLOB
       _resetDbForTesting();
-      loadMemoryStoreSqlite("keyMig");
+      await loadMemoryStoreSqlite("keyMig");
       _resetDbForTesting(); // flush, close
 
       // Confirm the embedding is now stored as BLOB
-      const dbAfter = openWasmDb(dbPath, { readonly: true });
+      const dbAfter = await openWasmDb(dbPath, { readonly: true });
       const after = dbAfter.prepare(
         "SELECT typeof(embedding) as t FROM memory_entries WHERE id = ?",
       ).get(entry.id) as { t: string };
@@ -239,21 +239,21 @@ describe("_migrate — JSON text embedding → Float32 BLOB conversion", () => {
     _resetDbForTesting();
 
     try {
-      const entry = addMemoryEntrySqlite("keyMigBad", { content: "malformed embedding test", importance: 2 });
+      const entry = await addMemoryEntrySqlite("keyMigBad", { content: "malformed embedding test", importance: 2 });
       _resetDbForTesting();
 
       // Inject invalid JSON as the embedding TEXT value
-      const dbRaw = openWasmDb(dbPath);
+      const dbRaw = await openWasmDb(dbPath);
       dbRaw.prepare("UPDATE memory_entries SET embedding = ? WHERE id = ?").run("not-valid-json!!", entry.id);
       dbRaw.close();
 
       // loadMemoryStoreSqlite must NOT throw despite the bad JSON
       _resetDbForTesting();
-      expect(() => loadMemoryStoreSqlite("keyMigBad")).not.toThrow();
+      await expect(loadMemoryStoreSqlite("keyMigBad")).resolves.not.toThrow();
       _resetDbForTesting();
 
       // The row is still present (catch swallowed parse error; UPDATE was skipped)
-      const dbAfter = openWasmDb(dbPath, { readonly: true });
+      const dbAfter = await openWasmDb(dbPath, { readonly: true });
       const row = dbAfter.prepare(
         "SELECT id, typeof(embedding) as t FROM memory_entries WHERE id = ?",
       ).get(entry.id) as { id: string; t: string } | undefined;
@@ -277,12 +277,12 @@ describe("_migrate — JSON text embedding → Float32 BLOB conversion", () => {
 
     try {
       // Insert entries with no embedding at all
-      addMemoryEntrySqlite("keyMigNone", { content: "no embedding here", importance: 2 });
+      await addMemoryEntrySqlite("keyMigNone", { content: "no embedding here", importance: 2 });
       _resetDbForTesting();
 
       // Should open cleanly and return entries unchanged
       _resetDbForTesting();
-      const store = loadMemoryStoreSqlite("keyMigNone");
+      const store = await loadMemoryStoreSqlite("keyMigNone");
       expect(store.entries).toHaveLength(1);
       expect(store.entries[0].content).toBe("no embedding here");
     } finally {
@@ -300,7 +300,7 @@ describe("full round-trip", () => {
     _resetDbForTesting();
 
     try {
-      const entry = addMemoryEntrySqlite("keyG", {
+      const entry = await addMemoryEntrySqlite("keyG", {
         content: "persistent memory fact",
         tags: ["important"],
         importance: 3,
@@ -310,7 +310,7 @@ describe("full round-trip", () => {
       _resetDbForTesting();
 
       // Reload — path still set, same DB file
-      const store = loadMemoryStoreSqlite("keyG");
+      const store = await loadMemoryStoreSqlite("keyG");
       expect(store.entries).toHaveLength(1);
       expect(store.entries[0].id).toBe(entry.id);
       expect(store.entries[0].content).toBe("persistent memory fact");
