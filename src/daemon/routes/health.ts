@@ -1,10 +1,9 @@
 /**
- * GET /health — deep health check for the daemon process.
+ * GET /health       — minimal public health check (no auth required).
+ * GET /health/detail — deep health check (JWT-authenticated, audit E-06).
  *
- * Checks: signing key file readable, sessions dir writable, SQLite DB (if configured),
- * and HTTP MCP server reachability (if mcpServers with URL transport are configured).
- * No authentication required — intentionally minimal info to prevent leaking
- * internal state to unauthenticated callers.
+ * The public endpoint returns only {"status":"ok"} to avoid leaking internal
+ * details. The authenticated detail endpoint runs full subsystem checks.
  */
 import http from "node:http";
 import path from "node:path";
@@ -12,13 +11,40 @@ import fsSync from "node:fs";
 import { KEY_PATH } from "../../jwt.js";
 import { getSessionsDir } from "../../session.js";
 import { loadClaudeDesktopMcpServers } from "../../settings.js";
+import { verifyJwtDualKey } from "../context.js";
 import type { DaemonContext } from "../context.js";
 
+/**
+ * GET /health — public, no auth. Returns only status to prevent leaking
+ * internal state to unauthenticated callers on the loopback interface.
+ */
 export function handleHealth(
   _ctx: DaemonContext,
   _req: http.IncomingMessage,
   res: http.ServerResponse,
 ): void {
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ status: "ok" }));
+}
+
+/**
+ * GET /health/detail — authenticated deep health check (audit E-06).
+ * Runs subsystem checks and returns detailed results.
+ */
+export function handleHealthDetail(
+  ctx: DaemonContext,
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): void {
+  const authHeader = req.headers["authorization"] ?? "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+  if (!token) { res.writeHead(401); res.end(); return; }
+  try {
+    verifyJwtDualKey(ctx, token);
+  } catch {
+    res.writeHead(403); res.end(); return;
+  }
+
   void (async () => {
     const checks: Record<string, "ok" | "error" | "n/a"> = {};
     const failures: string[] = [];
@@ -61,9 +87,7 @@ export function handleHealth(
       checks["db"] = "n/a";
     }
 
-    // Check 4: HTTP MCP server reachability — ping each configured URL-based server.
-    // stdio-transport MCP servers are spawned per-run and not checked here.
-    // Non-fatal: MCP failures mark the daemon degraded but don't prevent runs.
+    // Check 4: HTTP MCP server reachability
     try {
       const mcpServers = await loadClaudeDesktopMcpServers();
       const httpServers = Object.entries(mcpServers).filter(([, cfg]) => "url" in cfg);
@@ -76,7 +100,6 @@ export function handleHealth(
               const ctrl = new AbortController();
               const timer = setTimeout(() => ctrl.abort(), 3_000);
               const r = await fetch(url, { method: "GET", signal: ctrl.signal }).finally(() => clearTimeout(timer));
-              // Any response (even 4xx) means the server is reachable
               mcpChecks[name] = r.status < 600 ? "ok" : "error";
             } catch {
               mcpChecks[name] = "error";
@@ -90,16 +113,18 @@ export function handleHealth(
         checks["mcp"] = "n/a";
       }
     } catch {
-      // Settings load failed — non-fatal, skip MCP check
       checks["mcp"] = "n/a";
     }
 
-    if (failures.length === 0) {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok", checks }));
-    } else {
-      res.writeHead(503, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "degraded", reason: failures.join(","), checks }));
-    }
+    const statusCode = failures.length === 0 ? 200 : 503;
+    const status = failures.length === 0 ? "ok" : "degraded";
+    res.writeHead(statusCode, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      status,
+      ...(failures.length > 0 ? { reason: failures.join(",") } : {}),
+      checks,
+      uptimeMs: Date.now() - ctx.daemonStartedAt,
+      activeRuns: ctx.activeRuns,
+    }));
   })();
 }
