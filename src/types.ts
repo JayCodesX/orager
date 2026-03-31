@@ -776,6 +776,8 @@ export interface CliOptions {
   onlineSearch?: boolean;
   /** Stable agent identifier sent as the OpenRouter `user` field for attribution. */
   agentId?: string;
+  /** Repository URL — used to derive memory key when memoryKey is not explicit. */
+  repoUrl?: string;
   /** Load browser automation tools (Puppeteer). */
   enableBrowserTools?: boolean;
   /** Track file changes made during the run and report them in the result event. */
@@ -1179,6 +1181,13 @@ export interface AgentLoopOptions {
    * standalone use. Sanitized to [a-zA-Z0-9_-], max 128 chars.
    */
   memoryKey?: string;
+
+  /**
+   * Repository URL — used to derive memory key when memoryKey is not explicit.
+   * Produces a stable key based on agent ID + repo slug, which survives workspace
+   * path changes (unlike CWD-based keying). Ignored when memoryKey is set.
+   */
+  repoUrl?: string;
 
   /**
    * Maximum characters injected into the system prompt from the memory store.

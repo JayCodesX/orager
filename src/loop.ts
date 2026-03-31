@@ -19,7 +19,7 @@ import type { McpClientHandle } from "./mcp-client.js";
 import { makeTodoTools } from "./tools/todo.js";
 import { makeRememberTool } from "./tools/remember.js";
 import { makeWriteMemoryTool, makeReadMemoryTool, loadAutoMemory } from "./tools/auto-memory.js";
-import { loadMemoryStoreAny, pruneExpired, renderMemoryBlock, renderRetrievedBlock, retrieveEntries, retrieveEntriesWithEmbeddings, memoryKeyFromCwd, shouldUseFtsRetrieval } from "./memory.js";
+import { loadMemoryStoreAny, pruneExpired, renderMemoryBlock, renderRetrievedBlock, retrieveEntries, retrieveEntriesWithEmbeddings, memoryKeyFromCwd, buildMemoryKeyFromRepo, shouldUseFtsRetrieval } from "./memory.js";
 import { isSqliteMemoryEnabled, searchMemoryFts } from "./memory-sqlite.js";
 import { fireHooks } from "./hooks.js";
 import type { HookConfig, HookPayload } from "./hooks.js";
@@ -537,10 +537,13 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   const memoryMaxChars = typeof opts.memoryMaxChars === "number" && opts.memoryMaxChars > 0
     ? opts.memoryMaxChars
     : 6000;
-  // Use provided memoryKey, or derive a stable key from the cwd for standalone use
+  // Use provided memoryKey, or derive from repoUrl (stable across workspace moves),
+  // or fall back to CWD-based keying for standalone use.
   const effectiveMemoryKey = (typeof opts.memoryKey === "string" && opts.memoryKey.trim())
     ? opts.memoryKey.trim()
-    : memoryKeyFromCwd(cwd);
+    : opts.repoUrl
+      ? buildMemoryKeyFromRepo(opts.agentId ?? "default", opts.repoUrl)
+      : memoryKeyFromCwd(cwd);
   if (memoryEnabled) {
     // Load + prune the store, inject into system prompt, and register the tool
     try {
