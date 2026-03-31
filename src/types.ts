@@ -776,6 +776,8 @@ export interface CliOptions {
   onlineSearch?: boolean;
   /** Stable agent identifier sent as the OpenRouter `user` field for attribution. */
   agentId?: string;
+  /** Repository URL — used to derive memory key when memoryKey is not explicit. */
+  repoUrl?: string;
   /** Load browser automation tools (Puppeteer). */
   enableBrowserTools?: boolean;
   /** Track file changes made during the run and report them in the result event. */
