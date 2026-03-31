@@ -280,6 +280,10 @@ export function parseArgs(argv: string[]): CliOptions {
         opts.summarizeModel = argv[++i];
         break;
       }
+      case "--vision-model": {
+        opts.visionModel = argv[++i];
+        break;
+      }
       case "--summarize-keep-recent-turns": {
         const n = parseInt(argv[++i], 10);
         if (!isNaN(n) && n >= 0) opts.summarizeKeepRecentTurns = n;

@@ -116,6 +116,12 @@ export interface ConfigFileSchema {
   memoryRetrieval?: "local" | "embedding";
   /** OpenRouter embedding model for memoryRetrieval === "embedding". */
   memoryEmbeddingModel?: string;
+  /**
+   * Fallback model to use when the primary model does not support vision and
+   * the prompt contains image attachments. orager auto-detects this and swaps
+   * models for the run. Example: "google/gemini-2.0-flash"
+   */
+  visionModel?: string;
 }
 
 export type LoadConfigFileResult = {
@@ -255,6 +261,7 @@ export async function loadConfigFile(filePath: string): Promise<LoadConfigFileRe
   if (cfg.summarizeAt !== undefined) args.push("--summarize-at", String(cfg.summarizeAt));
   if (cfg.summarizeModel) args.push("--summarize-model", cfg.summarizeModel);
   if (cfg.summarizeKeepRecentTurns !== undefined) args.push("--summarize-keep-recent-turns", String(cfg.summarizeKeepRecentTurns));
+  if (cfg.visionModel) args.push("--vision-model", cfg.visionModel);
 
   const result: LoadConfigFileResult = { args };
   if (Array.isArray(cfg.turnModelRules) && cfg.turnModelRules.length > 0) {

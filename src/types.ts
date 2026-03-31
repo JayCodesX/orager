@@ -711,8 +711,9 @@ export interface CliOptions {
   summarizeAt?: number;
   /** Model to use for summarization. */
   summarizeModel?: string;
-  /**
-   * When summarizing, keep the last N assistant turns intact and only summarize
+  /** Fallback model to use when the primary model does not support vision and the prompt contains images. */
+  visionModel?: string;
+  /** When summarizing, keep the last N assistant turns intact and only summarize
    * the older messages. 0 or undefined = summarize everything (default behavior).
    */
   summarizeKeepRecentTurns?: number;
@@ -945,6 +946,12 @@ export interface AgentLoopOptions {
   turnModelRules?: TurnModelRule[];
   /** Structured first-message content for multimodal prompts. Overrides the text `prompt` field. */
   promptContent?: UserMessageContentBlock[];
+  /**
+   * Fallback model to use when the primary model does not support vision and
+   * the prompt contains image_url blocks. orager detects this automatically and
+   * swaps models for the run. Example: "google/gemini-2.0-flash"
+   */
+  visionModel?: string;
   /**
    * Answer to a pending approval from a previous run.
    * When set and the session has a pendingApproval, the loop resolves

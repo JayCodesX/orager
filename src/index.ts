@@ -1193,6 +1193,7 @@ async function main(): Promise<void> {
     summarizeAt: opts.summarizeAt,
     summarizeModel: opts.summarizeModel,
     summarizeKeepRecentTurns: opts.summarizeKeepRecentTurns,
+    visionModel: opts.visionModel,
     turnModelRules: (globalThis as Record<string, unknown>).__oragerTurnModelRules as TurnModelRule[] | undefined,
     promptContent: (globalThis as Record<string, unknown>).__oragerPromptContent as UserMessageContentBlock[] | undefined,
     approvalAnswer: ((globalThis as Record<string, unknown>).__oragerApprovalAnswer as { choiceKey: string; toolCallId: string } | null | undefined) ?? opts.approvalAnswer ?? null,
