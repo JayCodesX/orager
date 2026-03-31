@@ -25,6 +25,7 @@
  */
 
 import http from "node:http";
+import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
@@ -258,8 +259,30 @@ export async function startDaemon(
     modelLastUsedAt: new Map([[model, Date.now()]]),
   };
 
-  // ── HTTP server ────────────────────────────────────────────────────────────
-  const server = http.createServer((req, res) => {
+  // ── HTTP(S) server (audit E-14) ────────────────────────────────────────────
+  // When ORAGER_TLS_CERT and ORAGER_TLS_KEY are set, the daemon uses HTTPS
+  // so JWTs and API keys are encrypted on the loopback interface.
+  const tlsCert = process.env["ORAGER_TLS_CERT"];
+  const tlsKey = process.env["ORAGER_TLS_KEY"];
+  let useTls = false;
+  let tlsOpts: https.ServerOptions | undefined;
+  if (tlsCert && tlsKey) {
+    try {
+      const [certData, keyData] = await Promise.all([
+        fs.readFile(tlsCert),
+        fs.readFile(tlsKey),
+      ]);
+      tlsOpts = { cert: certData, key: keyData };
+      useTls = true;
+      process.stderr.write(`[orager daemon] TLS enabled (cert=${tlsCert})\n`);
+    } catch (tlsErr) {
+      process.stderr.write(
+        `[orager daemon] WARNING: TLS cert/key configured but unreadable: ${tlsErr}. Falling back to plain HTTP.\n`,
+      );
+    }
+  }
+
+  const requestHandler = (req: http.IncomingMessage, res: http.ServerResponse): void => {
     ctx.lastActivityAt = Date.now();
 
     // Rate limiting (all endpoints)
@@ -297,7 +320,11 @@ export async function startDaemon(
     }
 
     res.writeHead(404); res.end();
-  });
+  };
+
+  const server = useTls
+    ? https.createServer(tlsOpts!, requestHandler)
+    : http.createServer(requestHandler);
 
   // ── Check for recovery manifest from previous crash ───────────────────────
   const RECOVERY_FILE = path.join(os.homedir(), ".orager", "recovery.json");
@@ -362,8 +389,9 @@ export async function startDaemon(
     }
   }, 60 * 60 * 1000).unref(); // hourly, non-blocking
 
+  const proto = useTls ? "https" : "http";
   process.stderr.write(
-    `[orager daemon] listening on 127.0.0.1:${actualPort} (max ${maxConcurrent} concurrent runs)\n`,
+    `[orager daemon] listening on ${proto}://127.0.0.1:${actualPort} (max ${maxConcurrent} concurrent runs)\n`,
   );
   process.stderr.write(
     `[orager daemon] idle shutdown after ${idleTimeoutMs >= 60_000 ? `${idleTimeoutMs / 60_000}min` : `${idleTimeoutMs / 1_000}s`}\n`,
