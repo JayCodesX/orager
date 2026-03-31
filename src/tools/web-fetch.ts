@@ -442,9 +442,27 @@ export const webFetchTool: ToolExecutor = {
       };
     }
 
+    // N-04: Apply a separate timeout to the body-read phase.
+    // After headers arrive, the initial abort controller is cleared, so a
+    // malicious server could trickle the body indefinitely. Use a dedicated
+    // AbortController to cap the body read at FETCH_TIMEOUT_MS.
     let responseText: string;
     try {
-      responseText = await response.text();
+      const bodyController = new AbortController();
+      const bodyTimeout = setTimeout(() => bodyController.abort(), FETCH_TIMEOUT_MS);
+      try {
+        // Race the body read against the timeout
+        responseText = await Promise.race([
+          response.text(),
+          new Promise<never>((_, reject) => {
+            bodyController.signal.addEventListener("abort", () =>
+              reject(new Error(`Body read timed out after ${FETCH_TIMEOUT_MS}ms`)),
+            );
+          }),
+        ]);
+      } finally {
+        clearTimeout(bodyTimeout);
+      }
     } catch (err) {
       return {
         toolCallId: "",

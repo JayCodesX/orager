@@ -8,11 +8,28 @@ const MAX_RESULTS = 500;
 // Minimal glob matcher supporting *, **, and ? patterns.
 // Does NOT support character classes ([abc]) or brace expansion ({a,b}) —
 // those are edge cases not needed for typical file-discovery patterns.
-function matchGlob(pattern: string, filePath: string): boolean {
-  return matchSegments(pattern.split("/"), filePath.split("/"));
+/**
+ * N-08: Collapse consecutive ** segments to prevent O(n^k) exponential
+ * backtracking on patterns like **\/**\/**\/*.ts in deep directory trees.
+ */
+function collapseDoubleStars(segments: string[]): string[] {
+  const result: string[] = [];
+  for (const seg of segments) {
+    if (seg === "**" && result.length > 0 && result[result.length - 1] === "**") continue;
+    result.push(seg);
+  }
+  return result;
 }
 
-function matchSegments(patterns: string[], parts: string[]): boolean {
+function matchGlob(pattern: string, filePath: string): boolean {
+  return matchSegments(collapseDoubleStars(pattern.split("/")), filePath.split("/"));
+}
+
+const MAX_MATCH_RECURSION = 64;
+
+function matchSegments(patterns: string[], parts: string[], depth = 0): boolean {
+  if (depth > MAX_MATCH_RECURSION) return false; // prevent runaway recursion
+
   let pi = 0; // pattern index
   let si = 0; // string (path) index
 
@@ -22,7 +39,7 @@ function matchSegments(patterns: string[], parts: string[]): boolean {
       // ** matches zero or more path segments
       // Try matching the rest of the pattern against every possible suffix
       for (let k = si; k <= parts.length; k++) {
-        if (matchSegments(patterns.slice(pi + 1), parts.slice(k))) return true;
+        if (matchSegments(patterns.slice(pi + 1), parts.slice(k), depth + 1)) return true;
       }
       return false;
     }

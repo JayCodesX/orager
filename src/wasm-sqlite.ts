@@ -205,6 +205,9 @@ export class WasmCompatDb {
     }, WasmCompatDb.SAVE_DEBOUNCE_MS);
   }
 
+  /** N-10: Last save error, exposed for health checks. Null when healthy. */
+  public lastSaveError: Error | null = null;
+
   private _persistToFileAsync(): void {
     if (!this._filePath) return;
     const ptr = this._db.pointer;
@@ -214,7 +217,9 @@ export class WasmCompatDb {
     const tmpPath = this._filePath + `.tmp.${process.pid}`;
     this._saving = writeFile(tmpPath, data)
       .then(() => rename(tmpPath, this._filePath!))
+      .then(() => { this.lastSaveError = null; })
       .catch((err) => {
+        this.lastSaveError = err instanceof Error ? err : new Error(String(err));
         process.stderr.write(`[wasm-sqlite] async persist failed: ${err}\n`);
       })
       .finally(() => { this._saving = null; });
