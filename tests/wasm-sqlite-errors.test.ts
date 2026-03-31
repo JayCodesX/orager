@@ -25,13 +25,13 @@ function tmpPath(suffix: string): string {
 }
 
 describe("openWasmDb — error paths", () => {
-  it("corrupt file: openWasmDb itself does not throw, but first SQL operation throws SQLITE_NOTADB", () => {
+  it("corrupt file: openWasmDb itself does not throw, but first SQL operation throws SQLITE_NOTADB", async () => {
     const filePath = tmpPath("corrupt.db");
     fs.writeFileSync(filePath, Buffer.from("this is not a sqlite3 database - corrupted content!"));
     let db;
     try {
       // openWasmDb does NOT throw — sqlite3_deserialize returns SQLITE_OK (rc=0) for any bytes
-      expect(() => { db = openWasmDb(filePath); }).not.toThrow();
+      db = await openWasmDb(filePath);
 
       // But the returned DB is unusable — the first SQL op reveals the corruption
       expect(() => db!.exec("SELECT 1")).toThrow(/SQLITE_NOTADB|file is not a database/i);
@@ -41,12 +41,12 @@ describe("openWasmDb — error paths", () => {
     }
   });
 
-  it("empty file: deserialization is skipped and the returned DB is fully functional", () => {
+  it("empty file: deserialization is skipped and the returned DB is fully functional", async () => {
     const filePath = tmpPath("empty.db");
     fs.writeFileSync(filePath, Buffer.alloc(0));
     let db;
     try {
-      db = openWasmDb(filePath);
+      db = await openWasmDb(filePath);
       // A working DB must be returned — basic SQL must execute without error
       expect(() => db.exec("SELECT 1")).not.toThrow();
     } finally {
@@ -55,12 +55,12 @@ describe("openWasmDb — error paths", () => {
     }
   });
 
-  it("non-existent file: opens a fresh in-memory DB that is fully functional", () => {
+  it("non-existent file: opens a fresh in-memory DB that is fully functional", async () => {
     const filePath = tmpPath("nonexistent.db");
     fs.rmSync(filePath, { force: true }); // ensure it really doesn't exist
     let db;
     try {
-      db = openWasmDb(filePath);
+      db = await openWasmDb(filePath);
       expect(() => db.exec("SELECT 1")).not.toThrow();
     } finally {
       try { db?.close(); } catch { /* ignore */ }

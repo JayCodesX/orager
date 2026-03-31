@@ -153,11 +153,12 @@ describe("P1-1 agentApiKey — API key resolution", () => {
 // ── Test 2: agentApiKey passes through the daemon opts allowlist ──────────────
 
 describe("P1-1 agentApiKey — daemon opts allowlist", () => {
-  it("agentApiKey passes through sanitizeDaemonRunOpts", () => {
+  it("agentApiKey is stripped by sanitizeDaemonRunOpts (security-sensitive)", () => {
     const raw = { agentApiKey: "per-agent-key-123", model: "test-model" };
-    const { safe, rejected } = sanitizeDaemonRunOpts(raw);
-    expect(rejected).not.toContain("agentApiKey");
-    expect(safe.agentApiKey).toBe("per-agent-key-123");
+    const { safe } = sanitizeDaemonRunOpts(raw);
+    // agentApiKey is explicitly deleted as a security-sensitive field (line 86 of sanitize.ts)
+    expect(safe.agentApiKey).toBeUndefined();
+    expect(safe.model).toBe("test-model");
   });
 
   it("sessionLockTimeoutMs passes through sanitizeDaemonRunOpts", () => {
@@ -168,10 +169,10 @@ describe("P1-1 agentApiKey — daemon opts allowlist", () => {
   });
 
   it("model is included in safe opts", () => {
-    const raw = { model: "deepseek/deepseek-chat-v3-2", agentApiKey: "key" };
+    const raw = { model: "deepseek/deepseek-chat-v3-2", sessionLockTimeoutMs: 5000 };
     const { safe } = sanitizeDaemonRunOpts(raw);
     expect(safe.model).toBe("deepseek/deepseek-chat-v3-2");
-    expect(safe.agentApiKey).toBe("key");
+    expect(safe.sessionLockTimeoutMs).toBe(5000);
   });
 });
 
