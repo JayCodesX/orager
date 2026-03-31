@@ -233,6 +233,7 @@ describe("daemon HTTP lifecycle", () => {
     const fakeId = "00000000-0000-0000-0000-000000000000";
     const { status, body } = await fetchJson(`${daemonUrl}/runs/${fakeId}/cancel`, {
       method: "POST",
+      headers: { Authorization: `Bearer ${validJwt()}` },
     });
     expect(status).toBe(404);
     expect((body as { error: string }).error).toContain("run not found");
@@ -241,6 +242,7 @@ describe("daemon HTTP lifecycle", () => {
   it("POST /runs/:id/cancel with invalid UUID format returns 400", async () => {
     const { status } = await fetchJson(`${daemonUrl}/runs/not-a-uuid/cancel`, {
       method: "POST",
+      headers: { Authorization: `Bearer ${validJwt()}` },
     });
     expect(status).toBe(400);
   });
@@ -286,7 +288,7 @@ describe("daemon HTTP lifecycle", () => {
 
   it("GET /health/detail returns 503 degraded when a check fails", async () => {
     const prev = process.env["ORAGER_DB_PATH"];
-    process.env["ORAGER_DB_PATH"] = "/tmp";
+    process.env["ORAGER_DB_PATH"] = "/tmp/nonexistent-orager-db-healthcheck-test.sqlite";
     try {
       const { status, body } = await fetchJson(`${daemonUrl}/health/detail`, {
         headers: { Authorization: `Bearer ${validJwt()}` },
