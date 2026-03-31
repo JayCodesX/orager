@@ -399,10 +399,17 @@ export const bashTool: ToolExecutor = {
         spawnCmd = "bwrap";
         spawnArgs = [...buildBwrapArgs(realRoot, allowNetwork), "--chdir", realCwd, "bash", "-c", command];
       } else {
-        process.stderr.write(
-          `[orager] bash sandbox: osSandbox=true but no supported sandbox tool found ` +
-          `(sandbox-exec on macOS, bwrap on Linux) — falling back to text-policy only\n`,
-        );
+        // H-06: Fail closed when OS sandbox is requested but no sandbox tool
+        // is available. Text-pattern blocklist alone is bypassable; the OS
+        // sandbox is the authoritative control.
+        return {
+          toolCallId: "",
+          content:
+            `bash: osSandbox=true but no supported sandbox tool found ` +
+            `(sandbox-exec on macOS, bwrap on Linux). ` +
+            `Install bwrap (bubblewrap) or disable osSandbox in bashPolicy to proceed.`,
+          isError: true,
+        };
       }
     }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { webFetchTool } from "../src/tools/web-fetch.js";
+import { webFetchTool, isBlockedHost } from "../src/tools/web-fetch.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -153,6 +153,136 @@ describe("web_fetch — truncation", () => {
     expect(result.isError).toBe(false);
     expect(result.content).toBe("short");
     expect(result.content).not.toContain("[truncated]");
+  });
+});
+
+// ── SSRF protection (H-01 / H-02) ────────────────────────────────────────────
+
+describe("web_fetch — SSRF protection", () => {
+  it("H-01: tool schema does not expose allow_private_urls parameter", () => {
+    const params = webFetchTool.definition.function.parameters as {
+      properties: Record<string, unknown>;
+    };
+    expect(params.properties).not.toHaveProperty("allow_private_urls");
+    expect(params.properties).not.toHaveProperty("allowPrivateUrls");
+  });
+
+  it("H-01: LLM-supplied allow_private_urls in input is ignored", async () => {
+    // Even if the LLM injects allow_private_urls, SSRF should still block 127.x
+    const result = await webFetchTool.execute(
+      { url: "http://127.0.0.1:8080/admin", allow_private_urls: true },
+      "/tmp"
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("SSRF blocked");
+  });
+
+  it("H-01: server-side context allowPrivateUrls=true bypasses SSRF", async () => {
+    mockFetch("private ok");
+    const result = await webFetchTool.execute(
+      { url: "http://127.0.0.1:8080/" },
+      "/tmp",
+      undefined,
+      { allowPrivateUrls: true }
+    );
+    // Should succeed when context says it's allowed
+    expect(result.isError).toBe(false);
+    expect(result.content).toContain("private ok");
+  });
+
+  it("H-02: blocks IPv4-mapped IPv6 address (::ffff:127.0.0.1)", async () => {
+    const result = await webFetchTool.execute(
+      { url: "http://[::ffff:127.0.0.1]:8080/" },
+      "/tmp"
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("SSRF blocked");
+  });
+
+  it("H-02: blocks IPv4-compatible IPv6 address (::10.0.0.1)", async () => {
+    const result = await webFetchTool.execute(
+      { url: "http://[::10.0.0.1]:8080/" },
+      "/tmp"
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("SSRF blocked");
+  });
+
+  it("H-02: blocks ::ffff:169.254.169.254 (AWS IMDS via IPv6)", async () => {
+    const result = await webFetchTool.execute(
+      { url: "http://[::ffff:169.254.169.254]/" },
+      "/tmp"
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("SSRF blocked");
+  });
+
+  it("blocks plain IPv4 private addresses (127.0.0.1)", async () => {
+    const result = await webFetchTool.execute(
+      { url: "http://127.0.0.1/" },
+      "/tmp"
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("SSRF blocked");
+  });
+
+  it("blocks plain IPv4 private addresses (10.0.0.1)", async () => {
+    const result = await webFetchTool.execute(
+      { url: "http://10.0.0.1/" },
+      "/tmp"
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("SSRF blocked");
+  });
+
+  it("blocks plain IPv4 private addresses (192.168.1.1)", async () => {
+    const result = await webFetchTool.execute(
+      { url: "http://192.168.1.1/" },
+      "/tmp"
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("SSRF blocked");
+  });
+
+  it("blocks IPv6 loopback (::1)", async () => {
+    const result = await webFetchTool.execute(
+      { url: "http://[::1]/" },
+      "/tmp"
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("SSRF blocked");
+  });
+});
+
+// ── isBlockedHost unit tests (H-02) ──────────────────────────────────────────
+
+describe("isBlockedHost — IPv4-mapped IPv6 handling", () => {
+  it("blocks ::ffff:127.0.0.1", async () => {
+    expect(await isBlockedHost("::ffff:127.0.0.1")).toBe(true);
+  });
+
+  it("blocks ::ffff:10.0.0.1", async () => {
+    expect(await isBlockedHost("::ffff:10.0.0.1")).toBe(true);
+  });
+
+  it("blocks ::ffff:192.168.1.1", async () => {
+    expect(await isBlockedHost("::ffff:192.168.1.1")).toBe(true);
+  });
+
+  it("blocks ::ffff:169.254.169.254 (AWS IMDS)", async () => {
+    expect(await isBlockedHost("::ffff:169.254.169.254")).toBe(true);
+  });
+
+  it("blocks ::10.0.0.1 (IPv4-compatible)", async () => {
+    expect(await isBlockedHost("::10.0.0.1")).toBe(true);
+  });
+
+  it("does not block public IPv4", async () => {
+    expect(await isBlockedHost("8.8.8.8")).toBe(false);
+  });
+
+  it("blocks IPv6 loopback ::1", async () => {
+    expect(await isBlockedHost("::1")).toBe(true);
   });
 });
 

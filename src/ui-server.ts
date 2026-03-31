@@ -21,6 +21,7 @@ import { DEFAULT_CONFIG } from "./setup.js";
 import type { OragerSettings } from "./settings.js";
 import { mintJwt, KEY_PATH } from "./jwt.js";
 import { getSpanBuffer, type BufferedSpan } from "./telemetry.js";
+import { isBlockedHost } from "./tools/web-fetch.js";
 import { formatDiscordPayload } from "./loop-helpers.js";
 import split2 from "split2";
 
@@ -607,6 +608,19 @@ async function handleWebhookTest(
     jsonResponse(res, 400, { error: "url must be a valid http/https URL" });
     return;
   }
+  // H-03: SSRF protection — block requests to private/internal IP ranges
+  try {
+    const blocked = await isBlockedHost(url.hostname);
+    if (blocked) {
+      jsonResponse(res, 400, {
+        error: `SSRF blocked: '${url.hostname}' resolves to a private or internal IP address`,
+      });
+      return;
+    }
+  } catch {
+    // DNS error is non-fatal; let fetch surface network errors naturally
+  }
+
   const format = parsed.format === "discord" ? "discord" : undefined;
   const testPayload = {
     type: "result" as const,

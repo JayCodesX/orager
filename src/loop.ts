@@ -515,7 +515,14 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   // Merge: built-in tools + skill tools + finish tool (opt-in) + browser tools (opt-in) + caller-supplied extra tools
   const allTools = [
     ...ALL_TOOLS,
-    ...buildSkillTools(skills),
+    ...buildSkillTools(
+      skills,
+      // H-04: Pass bash policy blocked commands to skill tools so they
+      // cannot bypass the blocklist by running commands via exec templates.
+      effectiveOpts.bashPolicy?.blockedCommands?.length
+        ? new Set(effectiveOpts.bashPolicy.blockedCommands.map((b: string) => b.toLowerCase()))
+        : undefined,
+    ),
     ...(opts.useFinishTool ? [finishTool] : []),
     ...(opts.enableBrowserTools ? BROWSER_TOOLS : []),
     ...(opts.extraTools ?? []),
