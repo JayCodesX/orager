@@ -69,20 +69,27 @@ export function handleRun(
     return;
   }
 
-  // ── Parse body ──────────────────────────────────────────────────────────────
-  let body = "";
-  let bodySize = 0;
-  let bodyTooLarge = false;
+  // ── Reserve concurrency slot immediately (audit B-20) ──────────────────────
+  // Increment counters before async body parsing to prevent concurrent requests
+  // from racing past the concurrency check during the parse window.
+  ctx.activeRuns++;
+  ctx.activeRunsByAgent.set(agentId, (ctx.activeRunsByAgent.get(agentId) ?? 0) + 1);
 
-  let runCounted = false;
-  let agentCountDecremented = false;
-  function decrementAgentCount() {
-    if (agentCountDecremented) return;
-    agentCountDecremented = true;
+  // Single cleanup flag prevents double-decrement (audit B-21)
+  let slotReleased = false;
+  function releaseSlot() {
+    if (slotReleased) return;
+    slotReleased = true;
+    ctx.activeRuns--;
     const cur = ctx.activeRunsByAgent.get(agentId) ?? 1;
     if (cur <= 1) ctx.activeRunsByAgent.delete(agentId);
     else ctx.activeRunsByAgent.set(agentId, cur - 1);
   }
+
+  // ── Parse body ──────────────────────────────────────────────────────────────
+  let body = "";
+  let bodySize = 0;
+  let bodyTooLarge = false;
 
   req.on("data", (chunk: Buffer) => {
     bodySize += chunk.length;
@@ -96,6 +103,7 @@ export function handleRun(
 
   req.on("end", () => { void (async () => {
     if (bodyTooLarge) {
+      releaseSlot();
       if (!res.destroyed) {
         res.writeHead(413);
         res.end(JSON.stringify({ error: "request body too large (max 4 MB)" }));
@@ -108,12 +116,14 @@ export function handleRun(
     try {
       runReq = JSON.parse(body) as typeof runReq;
     } catch {
+      releaseSlot();
       res.writeHead(400);
       res.end(JSON.stringify({ error: "invalid JSON body" }));
       return;
     }
 
     if (!runReq.prompt?.trim()) {
+      releaseSlot();
       res.writeHead(400);
       res.end(JSON.stringify({ error: "prompt is required" }));
       return;
@@ -132,6 +142,7 @@ export function handleRun(
         (prefix) => canonicalCwd === prefix || canonicalCwd.startsWith(prefix + "/"),
       );
       if (!allowed) {
+        releaseSlot();
         res.writeHead(403);
         res.end(JSON.stringify({ error: `cwd '${reqCwd}' is not within an allowed prefix` }));
         auditLog({ timestamp: new Date().toISOString(), agentId, durationMs: 0, status: "rejected", statusCode: 403 });
@@ -149,6 +160,7 @@ export function handleRun(
       !!process.env.ANTHROPIC_API_KEY?.trim();
     const agentCb = getAgentCircuitBreaker(agentId);
     if (!isDirectPath && agentCb.isOpen()) {
+      releaseSlot();
       res.writeHead(503, { "Content-Type": "application/json" });
       res.end(JSON.stringify({
         type: "result",
@@ -187,9 +199,6 @@ export function handleRun(
     }
     ctx.lastRealRequestAt = Date.now();
 
-    ctx.activeRuns++;
-    ctx.activeRunsByAgent.set(agentId, (ctx.activeRunsByAgent.get(agentId) ?? 0) + 1);
-    runCounted = true;
     if (ctx.activeRuns >= ctx.maxConcurrent) {
       process.stderr.write(
         `[orager daemon] warning: at max concurrent runs (${ctx.activeRuns}/${ctx.maxConcurrent})\n`,
@@ -208,7 +217,7 @@ export function handleRun(
     ctx.activeRunControllers.set(runId, abortController);
 
     res.on("close", () => {
-      if (runCounted && !timedOut) abortController.abort();
+      if (!timedOut) abortController.abort();
     });
 
     let timedOut = false;
@@ -224,8 +233,7 @@ export function handleRun(
         }) + "\n",
       );
       res.end();
-      ctx.activeRuns--;
-      decrementAgentCount();
+      releaseSlot();
       auditLog({ timestamp: new Date().toISOString(), agentId, durationMs: Date.now() - startTime, status: "timeout", statusCode: 200 });
     }, ctx.requestTimeoutMs);
 
@@ -295,18 +303,14 @@ export function handleRun(
           clearTimeout(timeoutHandle);
           if (!res.destroyed) res.end();
           auditLog({ timestamp: new Date().toISOString(), agentId, durationMs: Date.now() - startTime, status: "ok", statusCode: 200 });
-          ctx.activeRuns--;
-          decrementAgentCount();
+          releaseSlot();
         }
         ctx.completedRuns++;
       });
   })(); });
 
   req.on("error", () => {
-    if (runCounted) {
-      ctx.activeRuns--;
-      decrementAgentCount();
-    }
+    releaseSlot();
     res.destroy();
   });
 }
