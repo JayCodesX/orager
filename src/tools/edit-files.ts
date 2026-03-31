@@ -121,7 +121,7 @@ export const editFilesTool: ToolExecutor = {
           };
         }
 
-        content = content.replace(old_string, new_string);
+        content = content.replace(old_string, () => new_string);
       }
 
       pendingWrites.set(abs, content);

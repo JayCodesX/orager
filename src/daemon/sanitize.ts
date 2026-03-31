@@ -37,24 +37,18 @@ const ALLOWED_DAEMON_OPTS = new Set<keyof AgentLoopOptions>([
   "trackFileChanges", "toolTimeouts", "maxSpawnDepth",
   "toolErrorBudgetHardStop", "maxIdenticalToolCallTurns",
   "requiredCapabilities", "requiredEnvVars",
-  // Approval
-  "approvalMode", "approvalAnswer", "approvalTimeoutMs",
+  // Approval (approvalMode/approvalAnswer stripped below — security-sensitive)
+  "approvalTimeoutMs",
   // Turn routing
   "turnModelRules",
-  // Hooks
-  "hooks", "hookTimeoutMs", "hookErrorMode",
-  // MCP
-  "mcpServers", "requireMcpServers",
   // Plan mode
   "planMode",
   // Context injection
   "injectContext", "readProjectInstructions",
   // Per-run feature flags
   "onlineSearch", "autoMemory",
-  // Webhook (outbound result delivery)
-  "webhookUrl", "webhookFormat", "webhookSecret",
-  // API keys (caller may supply extra rotation keys or per-agent key isolation)
-  "apiKeys", "agentApiKey",
+  // Webhook format only (webhookUrl/webhookSecret stripped below — SSRF/exfil risk)
+  "webhookFormat",
   // Memory
   "memory", "memoryKey", "memoryMaxChars",
   "memoryRetrieval", "memoryEmbeddingModel", "memoryRetrievalThreshold",
@@ -74,10 +68,23 @@ export function sanitizeDaemonRunOpts(
       rejected.push(k);
     }
   }
-  // Security-sensitive: always stripped, even if somehow in the allowlist above
+  // Security-sensitive: always stripped, even if somehow in the allowlist above.
+  // hooks/mcpServers enable arbitrary code execution; apiKeys/webhookUrl enable
+  // exfiltration; approvalMode can bypass the approval mechanism. (audit B-01)
   delete safe["sandboxRoot"];
   delete safe["requireApproval"];
   delete safe["bashPolicy"];
   delete safe["dangerouslySkipPermissions"];
+  delete safe["hooks"];
+  delete safe["hookTimeoutMs"];
+  delete safe["hookErrorMode"];
+  delete safe["mcpServers"];
+  delete safe["requireMcpServers"];
+  delete safe["webhookUrl"];
+  delete safe["webhookSecret"];
+  delete safe["apiKeys"];
+  delete safe["agentApiKey"];
+  delete safe["approvalMode"];
+  delete safe["approvalAnswer"];
   return { safe, rejected };
 }

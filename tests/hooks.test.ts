@@ -30,42 +30,46 @@ function basePayload(event: HookEvent): HookPayload {
 // ── isHookUrlSafe ─────────────────────────────────────────────────────────────
 
 describe("isHookUrlSafe", () => {
-  it("allows public HTTPS URLs", () => {
-    expect(isHookUrlSafe("https://hooks.slack.com/services/abc")).toBe(true);
-    expect(isHookUrlSafe("https://example.com/webhook")).toBe(true);
+  it("allows public HTTPS URLs", async () => {
+    await expect(isHookUrlSafe("https://hooks.slack.com/services/abc")).resolves.toBe(true);
+    await expect(isHookUrlSafe("https://example.com/webhook")).resolves.toBe(true);
   });
 
-  it("allows public HTTP URLs", () => {
-    expect(isHookUrlSafe("http://myserver.example.com/hook")).toBe(true);
+  it("allows public HTTP URLs", async () => {
+    // Use a public IP directly to avoid DNS resolution dependency
+    await expect(isHookUrlSafe("http://8.8.8.8/hook")).resolves.toBe(true);
   });
 
-  it("blocks localhost", () => {
-    expect(isHookUrlSafe("http://localhost/hook")).toBe(false);
-    expect(isHookUrlSafe("http://127.0.0.1/hook")).toBe(false);
-    expect(isHookUrlSafe("http://::1/hook")).toBe(false);
-    expect(isHookUrlSafe("http://0.0.0.0/hook")).toBe(false);
+  it("blocks localhost IPs directly", async () => {
+    await expect(isHookUrlSafe("http://127.0.0.1/hook")).resolves.toBe(false);
+    await expect(isHookUrlSafe("http://[::1]/hook")).resolves.toBe(false);
+    await expect(isHookUrlSafe("http://0.0.0.0/hook")).resolves.toBe(false);
   });
 
-  it("blocks RFC-1918 private ranges", () => {
-    expect(isHookUrlSafe("http://10.0.0.1/hook")).toBe(false);
-    expect(isHookUrlSafe("http://192.168.1.1/hook")).toBe(false);
-    expect(isHookUrlSafe("http://172.16.0.1/hook")).toBe(false);
-    expect(isHookUrlSafe("http://172.31.255.255/hook")).toBe(false);
+  it("blocks localhost hostname via DNS resolution", async () => {
+    await expect(isHookUrlSafe("http://localhost/hook")).resolves.toBe(false);
   });
 
-  it("allows 172.x outside the private range", () => {
-    expect(isHookUrlSafe("http://172.32.0.1/hook")).toBe(true);
-    expect(isHookUrlSafe("http://172.15.0.1/hook")).toBe(true);
+  it("blocks RFC-1918 private ranges", async () => {
+    await expect(isHookUrlSafe("http://10.0.0.1/hook")).resolves.toBe(false);
+    await expect(isHookUrlSafe("http://192.168.1.1/hook")).resolves.toBe(false);
+    await expect(isHookUrlSafe("http://172.16.0.1/hook")).resolves.toBe(false);
+    await expect(isHookUrlSafe("http://172.31.255.255/hook")).resolves.toBe(false);
   });
 
-  it("blocks non-http/https protocols", () => {
-    expect(isHookUrlSafe("ftp://example.com/hook")).toBe(false);
-    expect(isHookUrlSafe("file:///etc/passwd")).toBe(false);
+  it("allows 172.x outside the private range", async () => {
+    await expect(isHookUrlSafe("http://172.32.0.1/hook")).resolves.toBe(true);
+    await expect(isHookUrlSafe("http://172.15.0.1/hook")).resolves.toBe(true);
   });
 
-  it("returns false for invalid URLs", () => {
-    expect(isHookUrlSafe("not-a-url")).toBe(false);
-    expect(isHookUrlSafe("")).toBe(false);
+  it("blocks non-http/https protocols", async () => {
+    await expect(isHookUrlSafe("ftp://example.com/hook")).resolves.toBe(false);
+    await expect(isHookUrlSafe("file:///etc/passwd")).resolves.toBe(false);
+  });
+
+  it("returns false for invalid URLs", async () => {
+    await expect(isHookUrlSafe("not-a-url")).resolves.toBe(false);
+    await expect(isHookUrlSafe("")).resolves.toBe(false);
   });
 });
 

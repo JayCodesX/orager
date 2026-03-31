@@ -22,6 +22,8 @@
  *   list_models — return the configured default/fallback models
  */
 import process from "node:process";
+import path from "node:path";
+import fs from "node:fs/promises";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -90,11 +92,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "number",
             description:
               "Stop the agent if cumulative cost exceeds this amount in USD.",
-          },
-          dangerously_skip_permissions: {
-            type: "boolean",
-            description:
-              "Skip all tool approval prompts. Use with caution in trusted environments only.",
           },
           system_prompt: {
             type: "string",
@@ -171,10 +168,36 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       typeof args?.["session_id"] === "string" && args["session_id"].trim()
         ? args["session_id"].trim()
         : null;
-    const cwd =
+    const rawCwd =
       typeof args?.["cwd"] === "string" && args["cwd"].trim()
         ? args["cwd"].trim()
         : process.cwd();
+    const cwd = path.resolve(rawCwd);
+
+    // Reject path-traversal attempts: after resolving, the normalized form must not contain ".."
+    if (path.normalize(cwd).includes("..")) {
+      return {
+        content: [{ type: "text", text: "Error: cwd must not contain path traversal (..)." }],
+        isError: true,
+      };
+    }
+
+    // Verify the directory actually exists
+    try {
+      const stat = await fs.stat(cwd);
+      if (!stat.isDirectory()) {
+        return {
+          content: [{ type: "text", text: `Error: cwd is not a directory: ${cwd}` }],
+          isError: true,
+        };
+      }
+    } catch {
+      return {
+        content: [{ type: "text", text: `Error: cwd does not exist: ${cwd}` }],
+        isError: true,
+      };
+    }
+
     const maxTurns =
       typeof args?.["max_turns"] === "number"
         ? args["max_turns"]
@@ -185,8 +208,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         : DEFAULT_MAX_COST_USD > 0
           ? DEFAULT_MAX_COST_USD
           : undefined;
-    const dangerouslySkipPermissions =
-      args?.["dangerously_skip_permissions"] === true;
     const appendSystemPrompt =
       typeof args?.["system_prompt"] === "string"
         ? args["system_prompt"]
@@ -210,7 +231,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         addDirs: [],
         maxTurns,
         cwd,
-        dangerouslySkipPermissions,
+        dangerouslySkipPermissions: false,
         verbose: false,
         appendSystemPrompt,
         maxCostUsd,
