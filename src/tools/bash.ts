@@ -377,7 +377,7 @@ export const bashTool: ToolExecutor = {
     // ── OS-level sandbox wrapping ─────────────────────────────────────────
     const context2 = context as { sandboxRoot?: string; bashPolicy?: { osSandbox?: boolean; allowNetwork?: boolean } } | undefined;
     const sandboxRoot = context2?.sandboxRoot;
-    const osSandbox = context2?.bashPolicy?.osSandbox ?? false;
+    const osSandbox = context2?.bashPolicy?.osSandbox ?? true;
     const allowNetwork = context2?.bashPolicy?.allowNetwork ?? false;
 
     let spawnCmd = "bash";
