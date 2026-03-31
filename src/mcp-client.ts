@@ -246,13 +246,17 @@ class ReconnectableMcpClient {
   }
 
   private async _reconnect(): Promise<void> {
+    // Close old client+transport before creating replacements (audit P-8)
     await this.client.close().catch(() => {});
-    const transport = buildHttpTransport(this.config, this.serverName);
-    this.client = new Client({ name: "orager", version: "1.0.0" });
+    let transport: StreamableHTTPClientTransport | undefined;
     try {
+      transport = buildHttpTransport(this.config, this.serverName);
+      this.client = new Client({ name: "orager", version: "1.0.0" });
       await this.client.connect(transport);
       process.stderr.write(`[orager] MCP server '${this.serverName}' reconnected successfully\n`);
     } catch (err) {
+      // Clean up the new transport if connect failed to prevent resource leak
+      if (transport) await transport.close?.().catch(() => {});
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(`MCP server '${this.serverName}' failed to reconnect: ${msg}`);
     }

@@ -413,8 +413,12 @@ export async function startDaemon(
   startKeepAlive(ctx);
 
   Promise.all([
-    fetchModelContextLengths(apiKey).catch(() => {}),
-    fetchLiveModelMeta(apiKey).catch(() => {}),
+    fetchModelContextLengths(apiKey).catch((err: unknown) => {
+      process.stderr.write(`[orager daemon] model context length fetch failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    }),
+    fetchLiveModelMeta(apiKey).catch((err: unknown) => {
+      process.stderr.write(`[orager daemon] live model meta fetch failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    }),
   ]).catch(() => {});
 
   // Embedding cache prewarm
@@ -470,7 +474,9 @@ export async function startDaemon(
             } catch { /* best-effort */ }
           }),
         );
-      } catch { /* best-effort */ }
+      } catch (err) {
+        process.stderr.write(`[orager daemon] embedding prewarm failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
     })();
   }
 
