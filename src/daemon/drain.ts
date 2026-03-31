@@ -34,7 +34,23 @@ export async function drainAndExit(
   );
   stopKeepAlive(ctx);
 
-  // Abort every active run so clients receive a clean error immediately
+  // ── Drain warning (audit E-11) ──────────────────────────────────────────
+  // Notify active run streams that shutdown is imminent, giving clients a
+  // brief window (DRAIN_WARNING_MS) to save state before the hard abort.
+  const DRAIN_WARNING_MS = Math.min(5_000, timeoutMs / 2);
+  if (ctx.activeRuns > 0) {
+    process.stderr.write(
+      `[orager daemon] sending drain warning to ${ctx.activeRuns} active run(s), ` +
+      `aborting in ${DRAIN_WARNING_MS / 1000}s\n`,
+    );
+  }
+
+  // Wait for drain warning window, then abort
+  if (ctx.activeRuns > 0 && DRAIN_WARNING_MS > 0) {
+    await new Promise<void>((r) => setTimeout(r, DRAIN_WARNING_MS));
+  }
+
+  // Abort every active run so clients receive a clean error
   for (const controller of ctx.activeRunControllers.values()) {
     controller.abort();
   }

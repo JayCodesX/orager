@@ -38,6 +38,12 @@ export interface DaemonContext {
   keepAliveTimer: ReturnType<typeof setInterval> | null;
   usedModels: Set<string>;
   modelLastUsedAt: Map<string, number>;
+
+  // ── Per-agent cost tracking (audit E-12) ─────────────────────────────────
+  /** Cumulative cost in USD per agentId. */
+  costByAgent: Map<string, number>;
+  /** Max cost per agent in USD. 0 = unlimited. Configurable via ORAGER_MAX_COST_PER_AGENT. */
+  readonly maxCostPerAgent: number;
 }
 
 /**

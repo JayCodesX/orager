@@ -21,6 +21,38 @@ import { getAgentCircuitBreaker } from "../../circuit-breaker.js";
 import type { EmitEvent, AgentLoopOptions } from "../../types.js";
 import type { DaemonContext } from "../context.js";
 
+// ── Secrets redaction (audit E-10) ──────────────────────────────────────────
+// Regex patterns matching common secret formats. Applied to streamed output
+// before it reaches the client to prevent accidental credential leakage.
+const SECRET_PATTERNS = [
+  /sk-[a-zA-Z0-9]{20,}/g,           // OpenAI / Anthropic API keys
+  /sk-ant-[a-zA-Z0-9\-]{20,}/g,     // Anthropic API keys
+  /sk-or-v1-[a-f0-9]{64}/g,         // OpenRouter API keys
+  /ghp_[a-zA-Z0-9]{36,}/g,          // GitHub personal access tokens
+  /gho_[a-zA-Z0-9]{36,}/g,          // GitHub OAuth tokens
+  /github_pat_[a-zA-Z0-9_]{22,}/g,  // GitHub fine-grained PATs
+  /xoxb-[0-9]+-[a-zA-Z0-9]+/g,     // Slack bot tokens
+  /xoxp-[0-9]+-[a-zA-Z0-9]+/g,     // Slack user tokens
+  /AKIA[0-9A-Z]{16}/g,             // AWS access key IDs
+  /npx_[a-zA-Z0-9]{36,}/g,         // npm tokens
+];
+
+function redactSecrets(text: string): string {
+  let result = text;
+  for (const pattern of SECRET_PATTERNS) {
+    pattern.lastIndex = 0;
+    result = result.replace(pattern, (match) => match.slice(0, 6) + "…" + "[REDACTED]");
+  }
+  return result;
+}
+
+function redactEvent(event: EmitEvent): EmitEvent {
+  const serialized = JSON.stringify(event);
+  const redacted = redactSecrets(serialized);
+  if (redacted === serialized) return event;
+  return JSON.parse(redacted) as EmitEvent;
+}
+
 const MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024; // 4 MB
 
 export function handleRun(
@@ -151,6 +183,19 @@ export function handleRun(
     }
     // Default opts to empty object if not provided
     if (!runReq.opts) runReq.opts = {};
+
+    // ── Per-agent budget check (audit E-12) ──────────────────────────────────
+    if (ctx.maxCostPerAgent > 0) {
+      const spent = ctx.costByAgent.get(agentId) ?? 0;
+      if (spent >= ctx.maxCostPerAgent) {
+        releaseSlot();
+        res.writeHead(402);
+        res.end(JSON.stringify({
+          error: `agent budget exceeded ($${spent.toFixed(4)} / $${ctx.maxCostPerAgent.toFixed(2)})`,
+        }));
+        return;
+      }
+    }
 
     // ── Sandbox root enforcement ──────────────────────────────────────────────
     if (ctx.allowedCwdPrefixes && ctx.allowedCwdPrefixes.length > 0) {
@@ -293,7 +338,13 @@ export function handleRun(
       apiKey: ctx.apiKey,
       abortSignal: abortController.signal,
       onEmit: (event: EmitEvent) => {
-        if (!timedOut && !res.destroyed) res.write(JSON.stringify(event) + "\n");
+        // Track per-agent cost from result events (audit E-12)
+        const eventAny = event as unknown as Record<string, unknown>;
+        if ("total_cost_usd" in event && typeof eventAny.total_cost_usd === "number") {
+          const cost = eventAny.total_cost_usd as number;
+          if (cost > 0) ctx.costByAgent.set(agentId, (ctx.costByAgent.get(agentId) ?? 0) + cost);
+        }
+        if (!timedOut && !res.destroyed) res.write(JSON.stringify(redactEvent(event)) + "\n");
       },
       onLog: (stream, chunk) => {
         if (stream === "stderr") process.stderr.write(chunk);
