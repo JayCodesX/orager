@@ -124,7 +124,6 @@ describe("loadOrCreateSigningKey", () => {
   it("generates a 64-char hex key and writes it to disk when key file is absent", async () => {
     let writtenKey = "";
     const realReadFile = fs.readFile.bind(fs);
-    const realWriteFile = fs.writeFile.bind(fs);
 
     vi.spyOn(fs, "readFile").mockImplementation((...args: Parameters<typeof fs.readFile>) => {
       if (String(args[0]) === KEY_PATH) {
@@ -133,12 +132,15 @@ describe("loadOrCreateSigningKey", () => {
       return (realReadFile as typeof fs.readFile)(...args);
     });
     vi.spyOn(fs, "mkdir").mockResolvedValue(undefined);
-    vi.spyOn(fs, "writeFile").mockImplementation((...args: Parameters<typeof fs.writeFile>) => {
+    // Mock fs.open to return a fake file handle that captures the written key
+    vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
       if (String(args[0]) === KEY_PATH) {
-        writtenKey = String(args[1]);
-        return Promise.resolve() as ReturnType<typeof fs.writeFile>;
+        return {
+          writeFile(data: string) { writtenKey = data; return Promise.resolve(); },
+          close() { return Promise.resolve(); },
+        } as unknown as Awaited<ReturnType<typeof fs.open>>;
       }
-      return (realWriteFile as typeof fs.writeFile)(...args);
+      return fs.open(...args);
     });
 
     const key = await loadOrCreateSigningKey();
@@ -155,7 +157,15 @@ describe("loadOrCreateSigningKey", () => {
       return (realReadFile as typeof fs.readFile)(...args);
     });
     vi.spyOn(fs, "mkdir").mockResolvedValue(undefined);
-    vi.spyOn(fs, "writeFile").mockResolvedValue(undefined);
+    vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+      if (String(args[0]) === KEY_PATH) {
+        return {
+          writeFile() { return Promise.resolve(); },
+          close() { return Promise.resolve(); },
+        } as unknown as Awaited<ReturnType<typeof fs.open>>;
+      }
+      return fs.open(...args);
+    });
 
     const key1 = await loadOrCreateSigningKey();
     const key2 = await loadOrCreateSigningKey();

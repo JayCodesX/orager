@@ -286,7 +286,14 @@ export function retrieveEntriesWithEmbeddings(
 
 // ── Writes ────────────────────────────────────────────────────────────────────
 
-/** Adds an entry. Returns a new store — original is unchanged. */
+/** Hard cap on memory entries per agent to prevent unbounded growth. */
+const MAX_MEMORY_ENTRIES = 1000;
+
+/** Adds an entry. Returns a new store — original is unchanged.
+ *
+ * When the store exceeds MAX_MEMORY_ENTRIES, the lowest-importance (then
+ * oldest) entry is evicted to make room. (audit E-16)
+ */
 export function addMemoryEntry(
   store: MemoryStore,
   entry: Omit<MemoryEntry, "id" | "createdAt">,
@@ -298,9 +305,22 @@ export function addMemoryEntry(
     id: crypto.randomUUID(),
     createdAt: now,
   };
+  let entries = [...store.entries, newEntry];
+  // Evict lowest-importance, oldest entries when over cap.
+  while (entries.length > MAX_MEMORY_ENTRIES) {
+    let victimIdx = 0;
+    for (let i = 1; i < entries.length; i++) {
+      const v = entries[victimIdx]!;
+      const c = entries[i]!;
+      if (c.importance < v.importance || (c.importance === v.importance && c.createdAt < v.createdAt)) {
+        victimIdx = i;
+      }
+    }
+    entries.splice(victimIdx, 1);
+  }
   return {
     ...store,
-    entries: [...store.entries, newEntry],
+    entries,
     updatedAt: now,
   };
 }
