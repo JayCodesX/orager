@@ -3,6 +3,7 @@ import fsSync from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import type { ToolExecutor, ToolParameterSchema, ToolResult } from "./types.js";
+import { containsBlockedCommand } from "./tools/bash.js";
 
 // ── Skills cache ──────────────────────────────────────────────────────────────
 // Cache skill entries per directory to avoid re-reading from disk on every
@@ -353,10 +354,34 @@ function validateSkillInput(
 /**
  * Returns `ToolExecutor` instances for skills that have an `exec` field.
  * Tool names are normalised: dashes are replaced with underscores.
+ *
+ * @param blockedCommands — optional set of blocked command names from bash policy.
+ *   When provided, skill exec templates are checked against the blocklist
+ *   both at build time (the template itself) and at execution time (after
+ *   parameter interpolation). This prevents malicious SKILL.md files from
+ *   bypassing the bash tool's security controls (H-04).
  */
-export function buildSkillTools(skills: SkillEntry[]): ToolExecutor[] {
+export function buildSkillTools(
+  skills: SkillEntry[],
+  blockedCommands?: Set<string>,
+): ToolExecutor[] {
   return skills
     .filter((s) => s.exec != null)
+    .filter((skill) => {
+      // H-04: Check the exec template itself against the blocklist at build time.
+      // This catches obviously blocked commands in the template before any
+      // parameters are interpolated.
+      if (blockedCommands && blockedCommands.size > 0) {
+        const blocked = containsBlockedCommand(skill.exec!, blockedCommands);
+        if (blocked) {
+          process.stderr.write(
+            `[orager] Skill '${skill.name}' blocked: exec template contains blocked command '${blocked}'\n`,
+          );
+          return false;
+        }
+      }
+      return true;
+    })
     .map((skill): ToolExecutor => ({
       definition: {
         type: "function",
@@ -381,6 +406,19 @@ export function buildSkillTools(skills: SkillEntry[]): ToolExecutor[] {
             content: `Skill '${skill.name}': unreplaced placeholder(s) in exec template: ${unreplaced.map((p) => `{{${p}}}`).join(", ")}. Check that all required parameters are provided.`,
             isError: true,
           };
+        }
+
+        // H-04: Check the interpolated command against the blocklist at runtime.
+        // Parameters could inject blocked command names even if the template was clean.
+        if (blockedCommands && blockedCommands.size > 0) {
+          const blocked = containsBlockedCommand(cmd, blockedCommands);
+          if (blocked) {
+            return {
+              toolCallId: "",
+              content: `Skill '${skill.name}': blocked command '${blocked}' detected in interpolated exec command`,
+              isError: true,
+            };
+          }
         }
 
         const { stdout, stderr, exitCode } = await runShell(cmd, cwd);

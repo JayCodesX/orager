@@ -70,10 +70,53 @@ const BLOCKED_IPV6 = [
   /^fe[89ab]/i,                          // link-local
 ];
 
+/**
+ * Convert a 16-bit hex value to a decimal number.
+ */
+function hex16(s: string): number {
+  return parseInt(s, 16);
+}
+
+/**
+ * Try to extract an embedded IPv4 address from an IPv4-mapped or
+ * IPv4-compatible IPv6 address. Handles both dotted-decimal form
+ * (::ffff:127.0.0.1) and hex-normalized form (::ffff:7f00:1).
+ * Returns the IPv4 string or null if not applicable.
+ */
+function extractMappedIPv4(ipv6Lower: string): string | null {
+  // Dotted-decimal form: ::ffff:127.0.0.1 or ::127.0.0.1
+  const dottedMatch = ipv6Lower.match(/^::(?:ffff:)?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (dottedMatch) return dottedMatch[1];
+
+  // Hex-normalized form: ::ffff:7f00:1 (URL parser normalizes to this)
+  // The last two groups encode the IPv4 as two 16-bit hex values.
+  const hexMatch = ipv6Lower.match(/^::(?:ffff:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (hexMatch) {
+    const hi = hex16(hexMatch[1]);
+    const lo = hex16(hexMatch[2]);
+    if (hi <= 0xffff && lo <= 0xffff) {
+      return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+    }
+  }
+
+  return null;
+}
+
 function isPrivateIp(ip: string): boolean {
   const v = isIP(ip);
   if (v === 4) return BLOCKED_IPV4.some(r => r.test(ip));
-  if (v === 6) return BLOCKED_IPV6.some(r => r.test(ip.toLowerCase()));
+  if (v === 6) {
+    const lower = ip.toLowerCase();
+    // H-02: Handle IPv4-mapped IPv6 addresses in both dotted-decimal
+    // (::ffff:127.0.0.1) and hex-normalized (::ffff:7f00:1) forms.
+    // The URL constructor normalizes to hex form, while dns.resolve6
+    // may return dotted-decimal form. Both must be caught.
+    const mapped = extractMappedIPv4(lower);
+    if (mapped) {
+      return BLOCKED_IPV4.some(r => r.test(mapped));
+    }
+    return BLOCKED_IPV6.some(r => r.test(lower));
+  }
   return false;
 }
 
@@ -89,8 +132,13 @@ function isPrivateIp(ip: string): boolean {
  * Returns false (not blocked) on NXDOMAIN/other DNS errors — letting fetch()
  * surface the network error naturally.
  */
-async function isBlockedHost(hostname: string): Promise<boolean> {
-  if (isIP(hostname)) return isPrivateIp(hostname);
+export async function isBlockedHost(hostname: string): Promise<boolean> {
+  // URL.hostname wraps IPv6 addresses in brackets (e.g. "[::1]") which
+  // isIP() does not recognise. Strip them so the check works correctly.
+  const bare = hostname.startsWith("[") && hostname.endsWith("]")
+    ? hostname.slice(1, -1)
+    : hostname;
+  if (isIP(bare)) return isPrivateIp(bare);
   try {
     const DNS_TIMEOUT_MS = 5_000;
     function withDnsTimeout<T>(p: Promise<T>): Promise<T> {
@@ -238,11 +286,13 @@ export const webFetchTool: ToolExecutor = {
             description:
               "When true, return the raw response body without HTML-to-text conversion. Useful for JSON APIs or source files.",
           },
-          allow_private_urls: {
-            type: "boolean",
-            description:
-              "When true, allow requests to private/internal IP ranges. Use only in sandboxed or trusted environments.",
-          },
+          // H-01: allow_private_urls removed from tool schema.
+          // It was LLM-controllable, meaning a prompt-injected instruction
+          // could disable SSRF protection. Now only controllable via
+          // ToolExecuteOptions context (server-side).
+          //
+          // To allow private URLs, pass allowPrivateUrls: true in the
+          // tool execution context (e.g., from daemon config or CLI flag).
         },
         required: ["url"],
       },
@@ -252,6 +302,8 @@ export const webFetchTool: ToolExecutor = {
   async execute(
     input: Record<string, unknown>,
     _cwd: string,
+    _opts?: unknown,
+    context?: Record<string, unknown>,
   ): Promise<ToolResult> {
     if (typeof input["url"] !== "string" || !input["url"]) {
       return {
@@ -314,15 +366,19 @@ export const webFetchTool: ToolExecutor = {
       };
     }
 
+    // H-01: allow_private_urls is now server-side only (context),
+    // not controllable by the LLM via tool input.
+    const allowPrivate = context?.["allowPrivateUrls"] === true;
+
     // Log a warning audit trail when private URL override is used
-    if (input["allow_private_urls"] === true) {
+    if (allowPrivate) {
       process.stderr.write(
-        `[orager] WARNING: allow_private_urls=true for '${parsedUrl.hostname}' — SSRF protection bypassed\n`
+        `[orager] WARNING: allowPrivateUrls=true for '${parsedUrl.hostname}' — SSRF protection bypassed\n`
       );
     }
 
     // SSRF guard — block requests that resolve to private/internal IPs
-    if (input["allow_private_urls"] !== true) {
+    if (!allowPrivate) {
       let blocked = false;
       try {
         blocked = await isBlockedHost(parsedUrl.hostname);
@@ -333,8 +389,7 @@ export const webFetchTool: ToolExecutor = {
         return {
           toolCallId: "",
           content:
-            `SSRF blocked: '${parsedUrl.hostname}' resolves to a private or internal IP address. ` +
-            `Pass allow_private_urls: true to override (only in trusted environments).`,
+            `SSRF blocked: '${parsedUrl.hostname}' resolves to a private or internal IP address.`,
           isError: true,
         };
       }
@@ -362,7 +417,7 @@ export const webFetchTool: ToolExecutor = {
         body,
         fetchHeaders,
         controller.signal,
-        input["allow_private_urls"] === true,
+        allowPrivate,
       );
     } catch (err) {
       clearTimeout(timeoutHandle);
