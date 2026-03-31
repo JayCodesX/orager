@@ -229,7 +229,7 @@ describe("SQLite prune: compacted sessions use 3× retention", () => {
     // Import SessionSqliteStore directly to test its prune() method
     const { SqliteSessionStore } = await import("../src/session-sqlite.js");
     const dbPath = path.join(tmpDir, "test.db");
-    const store = new SqliteSessionStore(dbPath);
+    const store = await SqliteSessionStore.create(dbPath);
 
     const TTL = 30 * 24 * 60 * 60 * 1000; // 30 days in ms
 

@@ -2,9 +2,9 @@
  * WASM SQLite compatibility shim.
  *
  * Provides a synchronous API identical to better-sqlite3 backed by
- * @sqlite.org/sqlite-wasm. The WASM module is initialised once via a
- * top-level await so all subsequent calls remain synchronous from the
- * caller's perspective.
+ * @sqlite.org/sqlite-wasm. The WASM module is initialised lazily on the
+ * first call to openWasmDb(); all subsequent calls remain synchronous
+ * from the caller's perspective.
  *
  * Persistence: each database lives in WASM memory and is serialised to
  * disk after every top-level write (i.e. any write that is not nested
@@ -20,23 +20,38 @@ import { dirname, join } from "node:path";
 // We cast to bypass the strict type, then use Sqlite3Static for all usage.
 import type { Sqlite3Static, Database as OO1Db, PreparedStatement } from "@sqlite.org/sqlite-wasm";
 
-// ── WASM module initialisation (runs once, top-level await) ──────────────────
+// ── WASM module initialisation (lazy, runs once on first use) ────────────────
 
-const _require = createRequire(import.meta.url);
-// Resolve the WASM binary relative to the package's installed location.
-const _wasmPkgMain = _require.resolve("@sqlite.org/sqlite-wasm");
-const _wasmBinary = readFileSync(join(dirname(_wasmPkgMain), "sqlite3.wasm"));
+let _sqlite3: Sqlite3Static | null = null;
+let _initPromise: Promise<Sqlite3Static> | null = null;
 
-// Use a dynamic import + cast so we can pass the wasmBinary init option, which
-// the @sqlite.org/sqlite-wasm typings don't include but the runtime accepts.
-const { default: _initFn } = await import("@sqlite.org/sqlite-wasm") as unknown as {
-  default: (opts: { wasmBinary: Uint8Array; print: () => void; printErr: () => void }) => Promise<Sqlite3Static>;
-};
-const _sqlite3 = await _initFn({
-  print: () => {},
-  printErr: () => {},
-  wasmBinary: _wasmBinary,
-});
+async function _doInit(): Promise<Sqlite3Static> {
+  const _require = createRequire(import.meta.url);
+  const _wasmPkgMain = _require.resolve("@sqlite.org/sqlite-wasm");
+  const _wasmBinary = readFileSync(join(dirname(_wasmPkgMain), "sqlite3.wasm"));
+
+  const { default: _initFn } = await import("@sqlite.org/sqlite-wasm") as unknown as {
+    default: (opts: { wasmBinary: Uint8Array; print: () => void; printErr: () => void }) => Promise<Sqlite3Static>;
+  };
+  return _initFn({
+    print: () => {},
+    printErr: () => {},
+    wasmBinary: _wasmBinary,
+  });
+}
+
+async function ensureInit(): Promise<Sqlite3Static> {
+  if (_sqlite3) return _sqlite3;
+  if (!_initPromise) _initPromise = _doInit();
+  _sqlite3 = await _initPromise;
+  _initPromise = null;
+  return _sqlite3;
+}
+
+function _getSqlite3(): Sqlite3Static {
+  if (!_sqlite3) throw new Error("[wasm-sqlite] not initialised — call openWasmDb() first");
+  return _sqlite3;
+}
 
 // ── Internal types ────────────────────────────────────────────────────────────
 
@@ -228,7 +243,7 @@ export class WasmCompatDb {
     const ptr = this._db.pointer;
     if (!ptr) return;
     // Snapshot is synchronous (WASM memory copy) — fast.
-    const data = _sqlite3.capi.sqlite3_js_db_export(ptr);
+    const data = _getSqlite3().capi.sqlite3_js_db_export(ptr);
     const tmpPath = this._filePath + `.tmp.${process.pid}`;
     this._saving = writeFile(tmpPath, data)
       .then(() => rename(tmpPath, this._filePath!))
@@ -245,7 +260,7 @@ export class WasmCompatDb {
     if (!this._filePath) return;
     const ptr = this._db.pointer;
     if (!ptr) return;
-    const data = _sqlite3.capi.sqlite3_js_db_export(ptr);
+    const data = _getSqlite3().capi.sqlite3_js_db_export(ptr);
     const tmpPath = this._filePath + `.tmp.${process.pid}`;
     writeFileSync(tmpPath, data);
     renameSync(tmpPath, this._filePath);
@@ -263,20 +278,21 @@ export class WasmCompatDb {
  *
  * Pass `{ readonly: true }` for health-check reads — no writes to disk occur.
  */
-export function openWasmDb(filePath: string, opts?: { readonly?: boolean }): WasmCompatDb {
-  const db = new _sqlite3.oo1.DB(":memory:", "c");
+export async function openWasmDb(filePath: string, opts?: { readonly?: boolean }): Promise<WasmCompatDb> {
+  const sqlite3 = await ensureInit();
+  const db = new sqlite3.oo1.DB(":memory:", "c");
 
   if (existsSync(filePath)) {
     const raw = readFileSync(filePath);
     if (raw.length > 0) {
       const fileData = new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
-      const pData = _sqlite3.wasm.allocFromTypedArray(fileData);
+      const pData = sqlite3.wasm.allocFromTypedArray(fileData);
       const dbPtr = db.pointer;
       if (!dbPtr) throw new Error("[wasm-sqlite] DB pointer is null after open");
-      const rc = _sqlite3.capi.sqlite3_deserialize(
+      const rc = sqlite3.capi.sqlite3_deserialize(
         dbPtr, "main", pData,
         fileData.length, fileData.length,
-        _sqlite3.capi.SQLITE_DESERIALIZE_FREEONCLOSE,
+        sqlite3.capi.SQLITE_DESERIALIZE_FREEONCLOSE,
       );
       if (rc !== 0) {
         try { db.close(); } catch { /* ignore */ }

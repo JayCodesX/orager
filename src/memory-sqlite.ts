@@ -13,13 +13,13 @@ import type { MemoryStore, MemoryEntry } from "./memory.js";
 
 let _db: WasmDatabase | null = null;
 
-function getDb(): WasmDatabase {
+async function getDb(): Promise<WasmDatabase> {
   if (_db) return _db;
   const dbPath = process.env["ORAGER_DB_PATH"];
   if (!dbPath) {
     throw new Error("ORAGER_DB_PATH is not set — SQLite memory is not available");
   }
-  _db = openWasmDb(dbPath);
+  _db = await openWasmDb(dbPath);
   _db.pragma("journal_mode = WAL");
   _db.pragma("foreign_keys = ON");
   _db.pragma("synchronous = NORMAL");
@@ -154,8 +154,8 @@ function rowToEntry(row: MemoryRow): MemoryEntry {
  * Load all non-expired entries for a given memoryKey.
  * Prunes expired entries in the same transaction.
  */
-export function loadMemoryStoreSqlite(memoryKey: string): MemoryStore {
-  const db = getDb();
+export async function loadMemoryStoreSqlite(memoryKey: string): Promise<MemoryStore> {
+  const db = await getDb();
   const now = new Date().toISOString();
 
   const doLoad = db.transaction((key: string, nowIso: string) => {
@@ -188,8 +188,8 @@ export function loadMemoryStoreSqlite(memoryKey: string): MemoryStore {
  * Without the delete pass, entries removed via removeMemoryEntry() + saveMemoryStoreAny()
  * would silently persist in the DB and reappear on next loadMemoryStoreSqlite call.
  */
-export function saveMemoryStoreSqlite(memoryKey: string, store: MemoryStore): void {
-  const db = getDb();
+export async function saveMemoryStoreSqlite(memoryKey: string, store: MemoryStore): Promise<void> {
+  const db = await getDb();
   const upsert = db.prepare(`
     INSERT OR REPLACE INTO memory_entries
       (id, memory_key, content, tags, created_at, expires_at, run_id, importance, embedding, embedding_model)
@@ -235,11 +235,11 @@ export function saveMemoryStoreSqlite(memoryKey: string, store: MemoryStore): vo
 /**
  * Insert a single entry, returning the full MemoryEntry with generated id + createdAt.
  */
-export function addMemoryEntrySqlite(
+export async function addMemoryEntrySqlite(
   memoryKey: string,
   entry: Omit<MemoryEntry, "id" | "createdAt">,
-): MemoryEntry {
-  const db = getDb();
+): Promise<MemoryEntry> {
+  const db = await getDb();
   const id = crypto.randomUUID();
   const createdAt = new Date().toISOString();
 
@@ -274,8 +274,8 @@ export function addMemoryEntrySqlite(
 /**
  * Delete an entry by id + memoryKey. Returns true if a row was deleted.
  */
-export function removeMemoryEntrySqlite(memoryKey: string, id: string): boolean {
-  const db = getDb();
+export async function removeMemoryEntrySqlite(memoryKey: string, id: string): Promise<boolean> {
+  const db = await getDb();
   const result = db.prepare(
     "DELETE FROM memory_entries WHERE id = ? AND memory_key = ?"
   ).run(id, memoryKey);
@@ -286,12 +286,12 @@ export function removeMemoryEntrySqlite(memoryKey: string, id: string): boolean 
  * FTS5 full-text search over memory_entries for a given memoryKey.
  * Returns non-expired entries matching the query, up to `limit`.
  */
-export function searchMemoryFts(
+export async function searchMemoryFts(
   memoryKey: string,
   query: string,
   limit = 20,
-): MemoryEntry[] {
-  const db = getDb();
+): Promise<MemoryEntry[]> {
+  const db = await getDb();
   const now = new Date().toISOString();
 
   // Sanitize query for FTS5: strip special operator characters
@@ -317,8 +317,8 @@ export function searchMemoryFts(
 /**
  * Returns all distinct memory_key values in the database.
  */
-export function listMemoryKeysSqlite(): string[] {
-  const db = getDb();
+export async function listMemoryKeysSqlite(): Promise<string[]> {
+  const db = await getDb();
   const rows = db.prepare("SELECT DISTINCT memory_key FROM memory_entries ORDER BY memory_key").all() as { memory_key: string }[];
   return rows.map((r) => r.memory_key);
 }
@@ -330,8 +330,8 @@ export function listMemoryKeysSqlite(): string[] {
  * index in sync. An explicit rebuild is issued afterwards to guarantee
  * consistency even if trigger execution had any edge cases.
  */
-export function clearMemoryStoreSqlite(memoryKey: string): number {
-  const db = getDb();
+export async function clearMemoryStoreSqlite(memoryKey: string): Promise<number> {
+  const db = await getDb();
   const result = db.prepare("DELETE FROM memory_entries WHERE memory_key = ?").run(memoryKey);
   if (result.changes > 0) {
     // Force a full FTS rebuild to guarantee index consistency after bulk removal.
