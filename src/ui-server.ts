@@ -715,6 +715,15 @@ async function handleRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<void> {
+  // ── Security headers (audit E-09) ─────────────────────────────────────────
+  res.setHeader("Content-Security-Policy",
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data:; font-src 'self'; connect-src 'self'; " +
+    "frame-ancestors 'none'; form-action 'self'; base-uri 'self'");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+
   // CORS: only allow cross-origin requests in development (vite dev server)
   if (process.env.NODE_ENV === "development" || process.env.ORAGER_UI_DEV === "1") {
     res.setHeader("Access-Control-Allow-Origin", "http://localhost:5173");

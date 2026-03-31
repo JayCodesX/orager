@@ -122,12 +122,35 @@ export function handleRun(
       return;
     }
 
-    if (!runReq.prompt?.trim()) {
+    // ── Schema validation (audit E-07) ────────────────────────────────────────
+    // Validate shape before trusting any fields — rejects malformed payloads
+    // early rather than letting them cause obscure failures deeper in the loop.
+    if (typeof runReq !== "object" || runReq === null || Array.isArray(runReq)) {
       releaseSlot();
       res.writeHead(400);
-      res.end(JSON.stringify({ error: "prompt is required" }));
+      res.end(JSON.stringify({ error: "body must be a JSON object" }));
       return;
     }
+    if (typeof runReq.prompt !== "string" || !runReq.prompt.trim()) {
+      releaseSlot();
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "prompt must be a non-empty string" }));
+      return;
+    }
+    if (runReq.opts !== undefined && (typeof runReq.opts !== "object" || runReq.opts === null || Array.isArray(runReq.opts))) {
+      releaseSlot();
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "opts must be a JSON object" }));
+      return;
+    }
+    if (runReq.promptContent !== undefined && !Array.isArray(runReq.promptContent)) {
+      releaseSlot();
+      res.writeHead(400);
+      res.end(JSON.stringify({ error: "promptContent must be an array" }));
+      return;
+    }
+    // Default opts to empty object if not provided
+    if (!runReq.opts) runReq.opts = {};
 
     // ── Sandbox root enforcement ──────────────────────────────────────────────
     if (ctx.allowedCwdPrefixes && ctx.allowedCwdPrefixes.length > 0) {
