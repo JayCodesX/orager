@@ -1181,6 +1181,13 @@ export interface AgentLoopOptions {
   memoryKey?: string;
 
   /**
+   * Repository URL — used to derive memory key when memoryKey is not explicit.
+   * Produces a stable key based on agent ID + repo slug, which survives workspace
+   * path changes (unlike CWD-based keying). Ignored when memoryKey is set.
+   */
+  repoUrl?: string;
+
+  /**
    * Maximum characters injected into the system prompt from the memory store.
    * Entries are sorted by importance (high first) and truncated at this limit
    * to avoid crowding out the task context. Default: 6000 (~1500 tokens).

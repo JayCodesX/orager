@@ -354,6 +354,32 @@ export function memoryKeyFromCwd(cwd: string): string {
   return `${label}_${hash}`;
 }
 
+/**
+ * Convert a repo URL into a short filesystem-safe slug.
+ * Strips the scheme, replaces non-alphanumeric chars with underscores,
+ * collapses runs, trims edges, and truncates to 64 chars.
+ */
+export function repoSlug(repoUrl: string): string {
+  return repoUrl
+    .replace(/^[a-zA-Z][a-zA-Z0-9+\-.]*:\/\//, "")
+    .replace(/[^a-zA-Z0-9_]/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 64);
+}
+
+/**
+ * Build a memory key from an agent ID and optional repository URL.
+ * Falls back to agentId alone when repoUrl is null or empty.
+ * Otherwise returns `${agentId}_${repoSlug(repoUrl)}` truncated to 128 chars.
+ */
+export function buildMemoryKeyFromRepo(agentId: string, repoUrl: string | null): string {
+  if (!repoUrl) return agentId;
+  const slug = repoSlug(repoUrl);
+  if (!slug) return agentId;
+  return `${agentId}_${slug}`.slice(0, 128);
+}
+
 // ── Per-key write lock ────────────────────────────────────────────────────────
 //
 // Prevents concurrent writes from silently dropping entries via last-write-wins.
