@@ -62,6 +62,84 @@ const _ORAGER_VERSION: string = (() => {
 // parseArgs and readStdin are imported at the top of this file.
 
 
+// ── Global CLI instance lock ────────────────────────────────────────────────
+// Prevents multiple orager CLI processes from running simultaneously.
+// Skipped when spawned by the adapter (--config-file) or the daemon,
+// or when ORAGER_SKIP_PID_LOCK=1 (testing).
+
+const CLI_PID_FILE = path.join(os.homedir(), ".orager", "orager.pid");
+let _cliLockHeld = false;
+
+async function acquireCliPidLock(): Promise<void> {
+  const pidData = JSON.stringify({ pid: process.pid, startedAt: Date.now() });
+  await fs.mkdir(path.dirname(CLI_PID_FILE), { recursive: true });
+
+  // Try exclusive create
+  try {
+    await fs.writeFile(CLI_PID_FILE, pidData, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    _cliLockHeld = true;
+    return;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+  }
+
+  // File exists — check if the holding process is still alive
+  try {
+    const existing = await fs.readFile(CLI_PID_FILE, "utf8");
+    const parsed = JSON.parse(existing) as { pid: number };
+    try {
+      process.kill(parsed.pid, 0);
+      // Process is alive — reject
+      process.stderr.write(
+        `[orager] another instance is already running (PID ${parsed.pid}).\n` +
+        `Stop it first with: kill ${parsed.pid}\n`,
+      );
+      process.exit(1);
+    } catch (killErr) {
+      if ((killErr as NodeJS.ErrnoException).code === "EPERM") {
+        process.stderr.write(
+          `[orager] another instance appears to be running (PID ${parsed.pid}).\n`,
+        );
+        process.exit(1);
+      }
+      // ESRCH — process is dead, reclaim the lock
+    }
+  } catch {
+    // Can't read/parse — treat as stale
+  }
+
+  // Stale lock — unlink and retry (narrow TOCTOU with exclusive create)
+  for (let retry = 0; retry < 3; retry++) {
+    await fs.unlink(CLI_PID_FILE).catch(() => {});
+    try {
+      await fs.writeFile(CLI_PID_FILE, pidData, { encoding: "utf8", mode: 0o600, flag: "wx" });
+      _cliLockHeld = true;
+      return;
+    } catch {
+      // Another process won the race — check if alive
+      const raw = await fs.readFile(CLI_PID_FILE, "utf8").catch(() => "{}");
+      const p = JSON.parse(raw) as { pid?: number };
+      if (p.pid && p.pid !== process.pid) {
+        try {
+          process.kill(p.pid, 0);
+          process.stderr.write(
+            `[orager] another instance just started (PID ${p.pid}).\n`,
+          );
+          process.exit(1);
+        } catch {
+          // Dead — retry
+        }
+      }
+    }
+  }
+}
+
+async function releaseCliPidLock(): Promise<void> {
+  if (!_cliLockHeld) return;
+  _cliLockHeld = false;
+  await fs.unlink(CLI_PID_FILE).catch(() => {});
+}
+
 // ── Signal handling ──────────────────────────────────────────────────────────
 
 let interruptSessionId = "";
@@ -69,6 +147,7 @@ let interruptUsage = { input_tokens: 0, output_tokens: 0, cache_read_input_token
 
 function handleInterrupt(signal: string): void {
   process.stderr.write(`\n[orager] received ${signal}, shutting down\n`);
+  void releaseCliPidLock();
 
   const resultEvent: EmitResultEvent = {
     type: "result",
@@ -1079,6 +1158,16 @@ async function main(): Promise<void> {
     }
   }
 
+  // ── Acquire global CLI instance lock ──────────────────────────────────────
+  // Skip when spawned by the adapter (--config-file), when running under the
+  // daemon (ORAGER_DAEMON_MODE=1), or when testing (ORAGER_SKIP_PID_LOCK=1).
+  const _skipPidLock = cfIdx !== -1
+    || process.env["ORAGER_DAEMON_MODE"] === "1"
+    || process.env["ORAGER_SKIP_PID_LOCK"] === "1";
+  if (!_skipPidLock) {
+    await acquireCliPidLock();
+  }
+
   // Resolve API key
   const apiKey =
     process.env["OPENROUTER_API_KEY"] ?? process.env["ORAGER_API_KEY"] ?? "";
@@ -1295,12 +1384,17 @@ async function main(): Promise<void> {
     loopOpts = await applyProfileAsync(opts.profile, loopOpts);
   }
 
-  await runAgentLoop(loopOpts);
+  try {
+    await runAgentLoop(loopOpts);
+  } finally {
+    await releaseCliPidLock();
+  }
 }
 
 // Guard so the module can be imported for testing without triggering the CLI.
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  main().catch((err: unknown) => {
+  main().catch(async (err: unknown) => {
+    await releaseCliPidLock();
     const message = err instanceof Error ? err.message : String(err);
     process.stderr.write(`orager: fatal error: ${message}\n`);
     process.exit(1);
