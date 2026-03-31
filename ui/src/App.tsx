@@ -7,10 +7,10 @@ import Logs from "./tabs/Logs.tsx";
 import Telemetry from "./tabs/Telemetry.tsx";
 
 const TABS = [
-  { to: "/",             label: "Configuration" },
-  { to: "/dashboard",   label: "Dashboard"      },
-  { to: "/logs",        label: "Logs"           },
-  { to: "/telemetry",   label: "Telemetry"      },
+  { to: "/",              label: "Dashboard"     },
+  { to: "/configuration", label: "Configuration" },
+  { to: "/logs",          label: "Logs"          },
+  { to: "/telemetry",     label: "Telemetry"     },
 ];
 
 export default function App() {
@@ -36,10 +36,10 @@ export default function App() {
         </header>
         <main className="app-content">
           <Routes>
-            <Route path="/"           element={<Configuration />} />
-            <Route path="/dashboard"  element={<Dashboard />} />
-            <Route path="/logs"       element={<Logs />} />
-            <Route path="/telemetry"  element={<Telemetry />} />
+            <Route path="/"              element={<Dashboard />} />
+            <Route path="/configuration" element={<Configuration />} />
+            <Route path="/logs"          element={<Logs />} />
+            <Route path="/telemetry"     element={<Telemetry />} />
           </Routes>
         </main>
       </div>

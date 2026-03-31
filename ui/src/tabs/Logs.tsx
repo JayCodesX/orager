@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { authHeaders } from "../api";
+import { type DateRangePreset, presetToFromIso, DATE_RANGE_OPTIONS } from "../dateRange";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -66,7 +68,7 @@ function LogRow({ entry, expanded, onToggle }: {
         borderBottom: "1px solid var(--border)",
         padding: "6px 12px",
         cursor: extra.length > 0 ? "pointer" : "default",
-        background: expanded ? "rgba(108,123,255,0.04)" : undefined,
+        background: expanded ? "var(--accent-subtle)" : undefined,
       }}
       onClick={extra.length > 0 ? onToggle : undefined}
     >
@@ -119,6 +121,7 @@ export default function Logs() {
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState("");
   const [level, setLevel] = useState("");
+  const [dateRange, setDateRange] = useState<DateRangePreset>("today");
   const [liveMode, setLiveMode] = useState(false);
   const [paused, setPaused] = useState(false);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
@@ -129,13 +132,15 @@ export default function Logs() {
   const parentRef    = useRef<HTMLDivElement>(null);
 
   // ── Fetch (non-live) ──────────────────────────────────────────────────────
-  const fetchLogs = useCallback(async (q: string, lvl: string) => {
+  const fetchLogs = useCallback(async (q: string, lvl: string, range?: DateRangePreset) => {
     setLoading(true);
     try {
       const params = new URLSearchParams({ limit: "200", offset: "0" });
       if (q)   params.set("q", q);
       if (lvl) params.set("level", lvl);
-      const r = await fetch(`/api/logs?${params}`);
+      const fromIso = presetToFromIso(range ?? "today");
+      if (fromIso) params.set("from", fromIso);
+      const r = await fetch(`/api/logs?${params}`, { headers: authHeaders() });
       const data = await r.json() as LogsResponse;
       setConfigured(data.configured);
       setEntries(data.entries ?? []);
@@ -146,19 +151,24 @@ export default function Logs() {
   }, []);
 
   useEffect(() => {
-    void fetchLogs(query, level);
+    void fetchLogs(query, level, dateRange);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Debounce query changes
   const handleQueryChange = (v: string) => {
     setQuery(v);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => { void fetchLogs(v, level); }, 300);
+    debounceRef.current = setTimeout(() => { void fetchLogs(v, level, dateRange); }, 300);
   };
 
   const handleLevelChange = (v: string) => {
     setLevel(v);
-    void fetchLogs(query, v);
+    void fetchLogs(query, v, dateRange);
+  };
+
+  const handleDateRangeChange = (v: DateRangePreset) => {
+    setDateRange(v);
+    void fetchLogs(query, level, v);
   };
 
   // ── Live mode ─────────────────────────────────────────────────────────────
@@ -208,13 +218,13 @@ export default function Logs() {
   if (!configured) {
     return (
       <div className="placeholder">
-        <h2>Logs not configured</h2>
+        <h2>No logs yet</h2>
         <p>
-          Set the <code style={{ background: "var(--bg-input)", padding: "2px 6px", borderRadius: 4 }}>ORAGER_LOG_FILE</code> environment
-          variable to a file path before starting <code style={{ background: "var(--bg-input)", padding: "2px 6px", borderRadius: 4 }}>orager ui</code>.
+          Logs are written to <code style={{ background: "var(--bg-input)", padding: "2px 6px", borderRadius: 4 }}>~/.orager/orager.log</code> automatically.
+          Run an agent to generate log entries.
         </p>
         <p style={{ marginTop: 8, fontSize: 12 }}>
-          Example: <code style={{ background: "var(--bg-input)", padding: "2px 6px", borderRadius: 4 }}>ORAGER_LOG_FILE=~/.orager/orager.log orager ui</code>
+          Override with: <code style={{ background: "var(--bg-input)", padding: "2px 6px", borderRadius: 4 }}>ORAGER_LOG_FILE=/path/to/file orager ui</code>
         </p>
       </div>
     );
@@ -238,6 +248,9 @@ export default function Logs() {
           <option value="error">error</option>
           <option value="debug">debug</option>
         </select>
+        <select value={dateRange} onChange={(e) => handleDateRangeChange(e.target.value as DateRangePreset)} disabled={liveMode} style={{ width: 130 }}>
+          {DATE_RANGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
         <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-muted)", cursor: "pointer", whiteSpace: "nowrap" }}>
           <input type="checkbox" checked={liveMode} onChange={(e) => setLiveMode(e.target.checked)} style={{ accentColor: "var(--accent)" }} />
           Live
@@ -253,7 +266,7 @@ export default function Logs() {
           </button>
         )}
         {!liveMode && (
-          <button className="btn-ghost" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => fetchLogs(query, level)}>
+          <button className="btn-ghost" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => fetchLogs(query, level, dateRange)}>
             Refresh
           </button>
         )}

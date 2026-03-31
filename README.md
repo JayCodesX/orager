@@ -140,7 +140,7 @@ Connects to external MCP servers (Streamable HTTP transport). Handles reconnecti
 
 ```bash
 npm install -g @paperclipai/orager
-export OPENROUTER_API_KEY=sk-or-...
+export PROTOCOL_API_KEY=sk-or-...
 ```
 
 ## Quick start
