@@ -319,6 +319,10 @@ export function parseArgs(argv: string[]): CliOptions {
         opts.agentId = argv[++i];
         break;
       }
+      case "--repo-url": {
+        opts.repoUrl = argv[++i];
+        break;
+      }
       case "--inject-context": {
         opts.injectContext = true;
         break;
