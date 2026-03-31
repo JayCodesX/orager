@@ -448,6 +448,6 @@ export async function loadMemoryStoreAny(memoryKey: string): Promise<MemoryStore
  * Save memory store to SQLite when ORAGER_DB_PATH is set, otherwise to JSON file.
  */
 export async function saveMemoryStoreAny(memoryKey: string, store: MemoryStore): Promise<void> {
-  if (isSqliteMemoryEnabled()) { saveMemoryStoreSqlite(memoryKey, store); return; }
+  if (isSqliteMemoryEnabled()) { await saveMemoryStoreSqlite(memoryKey, store); return; }
   await saveMemoryStore(memoryKey, store);
 }

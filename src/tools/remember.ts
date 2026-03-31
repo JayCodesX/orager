@@ -136,7 +136,7 @@ export function makeRememberTool(
             ...(expiresAt ? { expiresAt } : {}),
             importance,
           };
-          const saved = await withSpan("memory.save", { memoryKey, action: "add" }, async () =>
+          const saved = await withSpan("memory.save", { memoryKey, action: "add" }, () =>
             addMemoryEntrySqlite(memoryKey, entryData)
           );
           return {
@@ -198,7 +198,7 @@ export function makeRememberTool(
 
         if (isSqliteMemoryEnabled()) {
           // Fast path: direct DELETE
-          const deleted = removeMemoryEntrySqlite(memoryKey, id);
+          const deleted = await removeMemoryEntrySqlite(memoryKey, id);
           if (!deleted) {
             return { toolCallId: "", content: `No memory entry found with id: ${id}`, isError: false };
           }
