@@ -220,7 +220,13 @@ async function walkForGlob(
   let entries;
   try {
     entries = await readdir(currentDir, { withFileTypes: true });
-  } catch {
+  } catch (err) {
+    // L-06: Log non-ENOENT readdir failures for debugging; ENOENT is expected
+    // for directories that disappear during traversal.
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") {
+      process.stderr.write(`[orager] glob: cannot read directory ${currentDir}: ${code ?? err}\n`);
+    }
     return;
   }
 

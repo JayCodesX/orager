@@ -65,6 +65,7 @@ interface BrowserState {
 
 const _sessions = new Map<string, BrowserState>();
 
+// Synchronous fallback — cannot await; see M-12 beforeExit handler for async cleanup.
 process.on("exit", () => {
   for (const state of _sessions.values()) {
     try { void state.browser.close(); } catch { /* ok */ }
@@ -81,6 +82,16 @@ process.on("SIGTERM", () => {
     clearTimeout(forceExit);
     process.exit(0);
   });
+});
+
+let _beforeExitCalled = false;
+process.on("beforeExit", () => {
+  if (_beforeExitCalled || _sessions.size === 0) return;
+  _beforeExitCalled = true;
+  // M-12: beforeExit allows async cleanup unlike the synchronous "exit" event.
+  void Promise.all(
+    Array.from(_sessions.keys()).map((sid) => closeSession(sid).catch(() => {}))
+  );
 });
 
 async function getPlaywright(): Promise<{ chromium: { launch(opts: Record<string, unknown>): Promise<PBrowser> } }> {

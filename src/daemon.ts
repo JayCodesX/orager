@@ -151,6 +151,7 @@ interface RateLimitEntry {
   windowStart: number;
 }
 
+const RATE_LIMIT_MAP_HARD_CAP = 10_000;
 const _rateLimitMap = new Map<string, RateLimitEntry>();
 let _rateLimitCleanupTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -181,6 +182,15 @@ export function checkRateLimit(
   const entry = _rateLimitMap.get(ip);
 
   if (!entry || now - entry.windowStart >= RATE_LIMIT_WINDOW_MS) {
+    // L-01: Hard cap on _rateLimitMap to prevent unbounded memory growth.
+    if (_rateLimitMap.size >= RATE_LIMIT_MAP_HARD_CAP) {
+      let deleted = 0;
+      for (const key of _rateLimitMap.keys()) {
+        if (deleted >= 1000) break;
+        _rateLimitMap.delete(key);
+        deleted++;
+      }
+    }
     _rateLimitMap.set(ip, { count: 1, windowStart: now });
     return { allowed: true };
   }

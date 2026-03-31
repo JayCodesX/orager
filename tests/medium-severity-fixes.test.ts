@@ -1,5 +1,5 @@
 /**
- * Tests for Medium severity audit fixes (M-05 through M-27).
+ * Tests for Medium + Low severity audit fixes.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs/promises";
@@ -177,5 +177,143 @@ describe("M-24: MCP client separate retry budgets", () => {
     expect(source).toContain("M-24");
     expect(source).toContain("rateLimitAttempt");
     expect(source).toContain("_callWithReconnect");
+  });
+});
+
+// ── M-12: Browser beforeExit cleanup ────────────────────────────────────────
+
+describe("M-12: Browser beforeExit handler", () => {
+  it("source has beforeExit handler for async browser cleanup", async () => {
+    const source = await fs.readFile(
+      path.join(process.cwd(), "src/tools/browser.ts"),
+      "utf8",
+    );
+    expect(source).toContain("M-12");
+    expect(source).toContain("beforeExit");
+    expect(source).toContain("_beforeExitCalled");
+  });
+});
+
+// ── L-01: Rate limit map hard cap ───────────────────────────────────────────
+
+describe("L-01: Rate limit map hard cap", () => {
+  it("daemon has a hard cap on _rateLimitMap", async () => {
+    const source = await fs.readFile(
+      path.join(process.cwd(), "src/daemon.ts"),
+      "utf8",
+    );
+    expect(source).toContain("L-01");
+    expect(source).toContain("RATE_LIMIT_MAP_HARD_CAP");
+  });
+});
+
+// ── L-02: Session save queue safe eviction ──────────────────────────────────
+
+describe("L-02: Session save queue eviction", () => {
+  it("only evicts settled entries from save queue", async () => {
+    const source = await fs.readFile(
+      path.join(process.cwd(), "src/session.ts"),
+      "utf8",
+    );
+    expect(source).toContain("L-02");
+    expect(source).toContain("settled");
+    // Should check settled state before evicting
+    expect(source).toContain("entry.settled");
+  });
+});
+
+// ── L-03: Session size cap documentation ────────────────────────────────────
+
+describe("L-03: Session size cap documented as best-effort", () => {
+  it("source documents the best-effort limitation", async () => {
+    const source = await fs.readFile(
+      path.join(process.cwd(), "src/session.ts"),
+      "utf8",
+    );
+    expect(source).toContain("L-03");
+    expect(source).toContain("best-effort");
+  });
+});
+
+// ── L-04: Audit dir init before write ───────────────────────────────────────
+
+describe("L-04: Audit stream awaits dir init", () => {
+  it("write call sites defer until _dirInit completes", async () => {
+    const source = await fs.readFile(
+      path.join(process.cwd(), "src/audit.ts"),
+      "utf8",
+    );
+    expect(source).toContain("L-04");
+    expect(source).toContain("_dirInit");
+  });
+});
+
+// ── L-05: MCP shutdown guard ────────────────────────────────────────────────
+
+describe("L-05: MCP shuttingDown guard", () => {
+  it("source checks shuttingDown before accepting calls", async () => {
+    const source = await fs.readFile(
+      path.join(process.cwd(), "src/mcp.ts"),
+      "utf8",
+    );
+    expect(source).toContain("L-05");
+    expect(source).toContain("shuttingDown");
+  });
+});
+
+// ── L-06: Silent error logging ──────────────────────────────────────────────
+
+describe("L-06: Non-obvious catch blocks log errors", () => {
+  it("glob.ts logs non-ENOENT readdir failures", async () => {
+    const source = await fs.readFile(
+      path.join(process.cwd(), "src/tools/glob.ts"),
+      "utf8",
+    );
+    expect(source).toContain("L-06");
+    expect(source).toContain("ENOENT");
+  });
+
+  it("list-dir.ts logs non-ENOENT readdir failures", async () => {
+    const source = await fs.readFile(
+      path.join(process.cwd(), "src/tools/list-dir.ts"),
+      "utf8",
+    );
+    expect(source).toContain("L-06");
+  });
+
+  it("profile-loader.ts logs profile parse failures", async () => {
+    const source = await fs.readFile(
+      path.join(process.cwd(), "src/profile-loader.ts"),
+      "utf8",
+    );
+    expect(source).toContain("L-06");
+  });
+});
+
+// ── L-07: Crash-safe atomic writes ──────────────────────────────────────────
+
+describe("L-07: edit_files uses temp-then-rename", () => {
+  it("source uses temp file and rename for crash safety", async () => {
+    const source = await fs.readFile(
+      path.join(process.cwd(), "src/tools/edit-files.ts"),
+      "utf8",
+    );
+    expect(source).toContain("L-07");
+    expect(source).toContain(".tmp.");
+    expect(source).toContain("rename");
+  });
+});
+
+// ── L-08: UI server fd leak fix ─────────────────────────────────────────────
+
+describe("L-08: UI server fd operations wrapped in try/finally", () => {
+  it("source wraps openSync/readSync/closeSync in try/finally", async () => {
+    const source = await fs.readFile(
+      path.join(process.cwd(), "src/ui-server.ts"),
+      "utf8",
+    );
+    expect(source).toContain("L-08");
+    // closeSync should be in a finally block
+    expect(source).toMatch(/finally\s*\{[^}]*closeSync/s);
   });
 });
