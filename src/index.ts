@@ -17,6 +17,7 @@ import {
   rollbackSession,
   searchSessions,
   compactSession,
+  forkSession,
 } from "./session.js";
 import type { CliOptions, EmitResultEvent, TurnModelRule, UserMessageContentBlock, AgentLoopOptions } from "./types.js";
 import { startDaemon, readDaemonPort } from "./daemon.js";
@@ -129,6 +130,9 @@ SESSIONS
   --delete-session <id>     Permanently delete a session
   --delete-trashed          Delete all trashed sessions
   --rollback-session <id>   Roll back a session to previous turn
+  --fork-session <id>       Create a branch of a session (like --fork-session in Claude Code)
+                              --at-turn <n>   Fork at a specific turn (default: latest)
+                              --resume        Immediately resume the forked session
   --compact-session <id>    Summarize a session in-place (like /compact in Claude Code)
   --prune-sessions          Delete sessions older than 30 days (default)
                               --older-than <value>  Override age threshold, e.g. 7d, 24h, 1h
@@ -432,6 +436,42 @@ async function handleRollbackSession(argv: string[]): Promise<void> {
     );
   }
   process.exit(0);
+}
+
+// P-09: Fork a session — creates a new session branched from an existing one.
+async function handleForkSession(argv: string[]): Promise<{ sessionId: string; resume: boolean } | never> {
+  const idx = argv.indexOf("--fork-session");
+  const sourceId = argv[idx + 1] ?? "";
+  if (!sourceId) {
+    process.stderr.write("orager: --fork-session requires a session ID.\n");
+    process.exit(1);
+  }
+
+  const atTurnIdx = argv.indexOf("--at-turn");
+  const atTurn = atTurnIdx !== -1
+    ? parseInt(argv[atTurnIdx + 1] ?? "", 10)
+    : undefined;
+  if (atTurn !== undefined && (isNaN(atTurn) || atTurn < 0)) {
+    process.stderr.write("orager: --at-turn must be a non-negative integer.\n");
+    process.exit(1);
+  }
+
+  const shouldResume = argv.includes("--resume");
+
+  try {
+    const result = await forkSession(sourceId, atTurn !== undefined ? { atTurn } : undefined);
+    process.stdout.write(
+      `Forked session ${result.forkedFrom} → ${result.sessionId} (at turn ${result.atTurn}).\n`,
+    );
+    if (shouldResume) {
+      // Return the new session ID so the caller can resume it
+      return { sessionId: result.sessionId, resume: true };
+    }
+    process.exit(0);
+  } catch (err) {
+    process.stderr.write(`orager: fork failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  }
 }
 
 async function handleSearchSessions(argv: string[]): Promise<void> {
@@ -863,6 +903,22 @@ async function main(): Promise<void> {
   if (argv.includes("--delete-session"))   { await handleDeleteSession(argv);   return; }
   if (argv.includes("--delete-trashed"))   { await handleDeleteTrashed();       return; }
   if (argv.includes("--rollback-session")) { await handleRollbackSession(argv); return; }
+  // P-09: --fork-session forks a session. With --resume, it continues to the agent loop.
+  if (argv.includes("--fork-session")) {
+    const forkResult = await handleForkSession(argv);
+    if (forkResult.resume) {
+      // Strip fork-related flags and inject --resume with the new session ID
+      const cleaned: string[] = [];
+      for (let fi = 0; fi < argv.length; fi++) {
+        if (argv[fi] === "--fork-session" || argv[fi] === "--at-turn") { fi++; continue; } // skip flag + value
+        if (argv[fi] === "--resume") continue; // remove bare --resume (fork already handled it)
+        cleaned.push(argv[fi]!);
+      }
+      cleaned.push("--resume", forkResult.sessionId, "--force-resume");
+      argv = cleaned;
+    }
+    // If handleForkSession called process.exit (no --resume), we won't reach here.
+  }
   if (argv.includes("--compact-session"))  { await handleCompactSession(argv);  return; }
   if (argv.includes("--prune-sessions"))   { await handlePrune(argv);           return; }
   if (argv.includes("--abandoned-sessions")) { await handleAbandonedSessions(); return; }
