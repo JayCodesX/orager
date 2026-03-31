@@ -28,33 +28,41 @@ export function handleMetrics(
   }
 
   void (async () => {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({
-      activeRuns: ctx.activeRuns,
-      maxConcurrent: ctx.maxConcurrent,
-      completedRuns: ctx.completedRuns,
-      errorRuns: ctx.errorRuns,
-      draining: ctx.draining,
-      uptimeMs: Date.now() - ctx.daemonStartedAt,
-      model: ctx.model,
-      usedModels: Array.from(ctx.usedModels),
-      recentModels: (() => {
-        const cutoff = Date.now() - 60 * 60 * 1000; // 1 hour
-        return Array.from(ctx.modelLastUsedAt.entries())
-          .filter(([, ts]) => ts >= cutoff)
-          .map(([m]) => m);
-      })(),
-      modelUsageTimestamps: Object.fromEntries(ctx.modelLastUsedAt),
-      activeRunsByAgent: Object.fromEntries(ctx.activeRunsByAgent),
-      providerHealth: getAllProviderStats(),
-      degradedProviders: getDegradedProviders(),
-      dbBackend: process.env["ORAGER_DB_PATH"] ? "sqlite" : "filesystem",
-      dbPath: process.env["ORAGER_DB_PATH"] ?? null,
-      rateLimit: getRateLimitState(),
-      keyInfo: await getCachedKeyInfo(ctx.apiKey),
-      circuitBreakersByAgent: getAllAgentCircuitBreakerStates(),
-      costByAgent: Object.fromEntries(ctx.costByAgent),
-    }));
+    try {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        activeRuns: ctx.activeRuns,
+        maxConcurrent: ctx.maxConcurrent,
+        completedRuns: ctx.completedRuns,
+        errorRuns: ctx.errorRuns,
+        draining: ctx.draining,
+        uptimeMs: Date.now() - ctx.daemonStartedAt,
+        model: ctx.model,
+        usedModels: Array.from(ctx.usedModels),
+        recentModels: (() => {
+          const cutoff = Date.now() - 60 * 60 * 1000; // 1 hour
+          return Array.from(ctx.modelLastUsedAt.entries())
+            .filter(([, ts]) => ts >= cutoff)
+            .map(([m]) => m);
+        })(),
+        modelUsageTimestamps: Object.fromEntries(ctx.modelLastUsedAt),
+        activeRunsByAgent: Object.fromEntries(ctx.activeRunsByAgent),
+        providerHealth: getAllProviderStats(),
+        degradedProviders: getDegradedProviders(),
+        dbBackend: process.env["ORAGER_DB_PATH"] ? "sqlite" : "filesystem",
+        dbPath: process.env["ORAGER_DB_PATH"] ?? null,
+        rateLimit: getRateLimitState(),
+        keyInfo: await getCachedKeyInfo(ctx.apiKey),
+        circuitBreakersByAgent: getAllAgentCircuitBreakerStates(),
+        costByAgent: Object.fromEntries(ctx.costByAgent),
+      }));
+    } catch (err) {
+      process.stderr.write(`[orager daemon] metrics error: ${err instanceof Error ? err.message : String(err)}\n`);
+      if (!res.headersSent) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "internal error" }));
+      }
+    }
   })();
 }
 
