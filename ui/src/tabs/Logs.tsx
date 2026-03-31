@@ -209,13 +209,13 @@ export default function Logs() {
   if (!configured) {
     return (
       <div className="placeholder">
-        <h2>Logs not configured</h2>
+        <h2>No logs yet</h2>
         <p>
-          Set the <code style={{ background: "var(--bg-input)", padding: "2px 6px", borderRadius: 4 }}>ORAGER_LOG_FILE</code> environment
-          variable to a file path before starting <code style={{ background: "var(--bg-input)", padding: "2px 6px", borderRadius: 4 }}>orager ui</code>.
+          Logs are written to <code style={{ background: "var(--bg-input)", padding: "2px 6px", borderRadius: 4 }}>~/.orager/orager.log</code> automatically.
+          Run an agent to generate log entries.
         </p>
         <p style={{ marginTop: 8, fontSize: 12 }}>
-          Example: <code style={{ background: "var(--bg-input)", padding: "2px 6px", borderRadius: 4 }}>ORAGER_LOG_FILE=~/.orager/orager.log orager ui</code>
+          Override with: <code style={{ background: "var(--bg-input)", padding: "2px 6px", borderRadius: 4 }}>ORAGER_LOG_FILE=/path/to/file orager ui</code>
         </p>
       </div>
     );
