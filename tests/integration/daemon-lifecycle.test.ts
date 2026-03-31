@@ -36,17 +36,56 @@ const { TEST_SIGNING_KEY } = vi.hoisted(() => ({
 
 // ── Mocks (must be declared before dynamic imports) ───────────────────────────
 
-vi.mock("../../src/jwt.js", async (importOriginal) => {
-  // importOriginal is vitest-specific; bun passes undefined so we fall back to
-  // a direct import() which gives the real module under bun's mock system.
-  const orig: typeof import("../../src/jwt.js") =
-    typeof importOriginal === "function"
-      ? await importOriginal()
-      : await import("../../src/jwt.js");
+// Inline the JWT functions to avoid importOriginal which hangs under bun.
+// mintJwt and verifyJwt are pure crypto — the only function we need to mock
+// is loadOrCreateSigningKey (to return a deterministic test key).
+vi.mock("../../src/jwt.js", () => {
+  const crypto = require("node:crypto");
+  const path = require("node:path");
+  const os = require("node:os");
+
+  const TOKEN_TTL_SECONDS = 900;
+  function base64url(input: string): string {
+    return Buffer.from(input, "utf8").toString("base64url");
+  }
+  function parseBase64url(input: string): string {
+    return Buffer.from(input, "base64url").toString("utf8");
+  }
+
   return {
-    ...orig,
-    // Return a fixed key so the test can mint/verify JWTs deterministically
+    mintJwt(signingKey: string, agentId: string): string {
+      const now = Math.floor(Date.now() / 1000);
+      const header = base64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+      const payload = base64url(
+        JSON.stringify({ agentId, scope: "run", iat: now, exp: now + TOKEN_TTL_SECONDS }),
+      );
+      const data = `${header}.${payload}`;
+      const sig = crypto.createHmac("sha256", signingKey).update(data).digest("base64url");
+      return `${data}.${sig}`;
+    },
+    verifyJwt(token: string, signingKey: string) {
+      const parts = token.split(".");
+      if (parts.length !== 3) throw new Error("Malformed JWT");
+      const [header, payload, sig] = parts;
+      const data = `${header}.${payload}`;
+      const expected = crypto.createHmac("sha256", signingKey).update(data).digest("base64url");
+      const sigBuf = Buffer.from(sig!, "base64url");
+      const expectedBuf = Buffer.from(expected, "base64url");
+      if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+        throw new Error("Invalid JWT signature");
+      }
+      let claims: Record<string, unknown>;
+      try { claims = JSON.parse(parseBase64url(payload!)); } catch { throw new Error("JWT payload is not valid JSON"); }
+      if (typeof claims.exp !== "number" || !Number.isFinite(claims.exp) || (claims.exp as number) < Math.floor(Date.now() / 1000)) {
+        throw new Error("JWT has expired or has invalid exp claim");
+      }
+      if (typeof claims.iat !== "number" || !Number.isFinite(claims.iat)) throw new Error("JWT has invalid iat claim");
+      if ((claims.iat as number) > Math.floor(Date.now() / 1000) + 30) throw new Error("JWT iat is too far in the future");
+      if (claims.scope !== "run") throw new Error("JWT scope must be 'run'");
+      return claims;
+    },
     loadOrCreateSigningKey: vi.fn().mockResolvedValue(TEST_SIGNING_KEY),
+    KEY_PATH: path.join(os.homedir(), ".orager", "daemon.key"),
   };
 });
 
@@ -101,17 +140,38 @@ vi.mock("../../src/embedding-cache.js", () => ({
   setCachedQueryEmbedding: vi.fn(),
 }));
 
-vi.mock("../../src/session.js", async (importOriginal) => {
-  // importOriginal is vitest-specific; bun passes undefined so we fall back to
-  // a direct import() which gives the real module under bun's mock system.
-  const orig: typeof import("../../src/session.js") =
-    typeof importOriginal === "function"
-      ? await importOriginal()
-      : await import("../../src/session.js");
+// Provide explicit session.js mock — avoid importOriginal which hangs under bun.
+// The daemon uses getSessionsDir, ensureSessionsDirPermissions, pruneOldSessions,
+// and the session routes use listSessions, searchSessions, loadSessionRaw, etc.
+vi.mock("../../src/session.js", () => {
+  const os = require("node:os");
+  const path = require("node:path");
   return {
-    ...orig,
+    CURRENT_SESSION_SCHEMA_VERSION: 1,
+    SESSION_MAX_SIZE_BYTES: 5 * 1024 * 1024,
+    _refreshSessionMaxSize: vi.fn(),
+    migrateSession: vi.fn((d: unknown) => d),
+    getSessionsDir: vi.fn(() => {
+      const dir = path.join(os.tmpdir(), "orager-test-daemon");
+      try { require("node:fs").mkdirSync(dir, { recursive: true }); } catch {}
+      return dir;
+    }),
     ensureSessionsDirPermissions: vi.fn().mockResolvedValue(undefined),
     pruneOldSessions: vi.fn().mockResolvedValue({ deleted: 0, kept: 0 }),
+    saveSession: vi.fn().mockResolvedValue(undefined),
+    loadSession: vi.fn().mockResolvedValue(null),
+    loadSessionRaw: vi.fn().mockResolvedValue(null),
+    deleteSession: vi.fn().mockResolvedValue(undefined),
+    listSessions: vi.fn().mockResolvedValue([]),
+    searchSessions: vi.fn().mockResolvedValue([]),
+    deleteTrashedSessions: vi.fn().mockResolvedValue({ deleted: 0, kept: 0 }),
+    forkSession: vi.fn().mockResolvedValue("forked-id"),
+    compactSession: vi.fn().mockResolvedValue(undefined),
+    acquireSessionLock: vi.fn().mockResolvedValue({ release: vi.fn() }),
+    trashSession: vi.fn().mockResolvedValue(true),
+    restoreSession: vi.fn().mockResolvedValue(true),
+    newSessionId: vi.fn(() => "test-new-session-id"),
+    rollbackSession: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -152,7 +212,7 @@ beforeAll(async () => {
 afterAll(async () => {
   // shutdown() closes the server without calling process.exit — safe in vitest
   try { await shutdownFn(5_000); } catch { /* ignore if already shut down */ }
-});
+}, 15_000);
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
