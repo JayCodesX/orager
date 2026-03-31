@@ -713,7 +713,7 @@ async function handleMemorySubcommand(argv: string[]): Promise<void> {
 
   if (sub === "list") {
     if (isSqliteMemoryEnabled()) {
-      const keys = listMemoryKeysSqlite();
+      const keys = await listMemoryKeysSqlite();
       for (const k of keys) process.stdout.write(k + "\n");
     } else {
       // List files in MEMORY_DIR, strip .json suffix
@@ -752,7 +752,7 @@ async function handleMemorySubcommand(argv: string[]): Promise<void> {
       }
     }
     if (isSqliteMemoryEnabled()) {
-      const deleted = clearMemoryStoreSqlite(memoryKey);
+      const deleted = await clearMemoryStoreSqlite(memoryKey);
       process.stdout.write(`Cleared ${deleted} entry/entries for key "${memoryKey}".\n`);
     } else {
       const { MEMORY_DIR: memDir } = await import("./memory.js");

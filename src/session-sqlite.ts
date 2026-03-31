@@ -16,12 +16,17 @@ const LOCK_STALE_MS = 5 * 60 * 1000;
 export class SqliteSessionStore implements SessionStore {
   private readonly db: WasmDatabase;
 
-  constructor(dbPath: string) {
-    this.db = openWasmDb(dbPath);
+  private constructor(db: WasmDatabase) {
+    this.db = db;
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.db.pragma("synchronous = NORMAL");
     this._migrate();
+  }
+
+  static async create(dbPath: string): Promise<SqliteSessionStore> {
+    const db = await openWasmDb(dbPath);
+    return new SqliteSessionStore(db);
   }
 
   private _migrate(): void {

@@ -17,7 +17,7 @@ describe("file-based session store", () => {
 
   it("saves and loads a session", async () => {
     const dbPath = path.join(tmpDir, "test.db");
-    const store = new SqliteSessionStore(dbPath);
+    const store = await SqliteSessionStore.create(dbPath);
 
     const data = {
       sessionId: "test-123",
@@ -37,13 +37,13 @@ describe("file-based session store", () => {
   });
 
   it("returns null for non-existent session", async () => {
-    const store = new SqliteSessionStore(path.join(tmpDir, "test2.db"));
+    const store = await SqliteSessionStore.create(path.join(tmpDir, "test2.db"));
     const result = await store.load("does-not-exist");
     expect(result).toBeNull();
   });
 
   it("trashed sessions are hidden from load but visible to loadRaw", async () => {
-    const store = new SqliteSessionStore(path.join(tmpDir, "test3.db"));
+    const store = await SqliteSessionStore.create(path.join(tmpDir, "test3.db"));
 
     const data = {
       sessionId: "trashed-456",
@@ -62,7 +62,7 @@ describe("file-based session store", () => {
   });
 
   it("lists sessions sorted by updatedAt desc", async () => {
-    const store = new SqliteSessionStore(path.join(tmpDir, "test4.db"));
+    const store = await SqliteSessionStore.create(path.join(tmpDir, "test4.db"));
 
     const base = { messages: [], turnCount: 0, cwd: "/tmp" };
     await store.save({ ...base, sessionId: "a", model: "m", createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z" });
@@ -75,7 +75,7 @@ describe("file-based session store", () => {
   });
 
   it("advisory lock prevents concurrent resume", async () => {
-    const store = new SqliteSessionStore(path.join(tmpDir, "test5.db"));
+    const store = await SqliteSessionStore.create(path.join(tmpDir, "test5.db"));
 
     const release = await store.acquireLock("lock-test");
     await expect(store.acquireLock("lock-test")).rejects.toThrow(/already being resumed/);
@@ -86,7 +86,7 @@ describe("file-based session store", () => {
   });
 
   it("prunes sessions older than threshold", async () => {
-    const store = new SqliteSessionStore(path.join(tmpDir, "test6.db"));
+    const store = await SqliteSessionStore.create(path.join(tmpDir, "test6.db"));
 
     const old = new Date(Date.now() - 10000).toISOString();
     const recent = new Date().toISOString();
