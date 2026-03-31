@@ -1474,6 +1474,10 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           preset: opts.preset,
           siteUrl: opts.siteUrl,
           siteName: opts.siteName,
+          // N-01: Forward the abort signal to the API call so in-flight
+          // requests are cancelled immediately when the daemon timeout fires,
+          // rather than waiting for the call to complete naturally.
+          signal: _effectiveAbortSignal,
           response_format: opts.response_format,
           disableContextCompression: summarizeAt > 0,
           rateLimitTracker: rlTracker,
