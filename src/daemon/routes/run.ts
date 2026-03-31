@@ -328,7 +328,9 @@ export function handleRun(
       prompt: runReq.prompt,
       promptContent: (() => {
         if (!Array.isArray(runReq.promptContent)) return undefined;
-        const validated = (runReq.promptContent as unknown[]).filter((item): item is { type: string } => {
+        // Cap at 100 items to prevent memory exhaustion (audit P-7)
+        const capped = (runReq.promptContent as unknown[]).slice(0, 100);
+        const validated = capped.filter((item): item is { type: string } => {
           if (!item || typeof item !== "object") return false;
           const t = (item as Record<string, unknown>).type;
           return t === "text" || t === "image_url";

@@ -1274,8 +1274,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         cumulativeCostUsd: totalCostUsd,
       }).catch((err: unknown) => {
         const errMsg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[orager] WARNING: session save failed for ${sessionId}: ${errMsg}\n`);
-        onEmit({ type: "warn", message: "session_save_failed: " + errMsg });
+        process.stderr.write(`[orager] WARNING: session save failed (approval-pending) for ${sessionId}: ${errMsg}\n`);
+        onEmit({ type: "warn", message: "session_save_failed_approval_pending: " + errMsg });
       });
 
       const elapsedMs = pendingApproval.questionedAt
@@ -1314,8 +1314,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           cumulativeCostUsd: totalCostUsd,
         }).catch((err: unknown) => {
         const errMsg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[orager] WARNING: session save failed for ${sessionId}: ${errMsg}\n`);
-        onEmit({ type: "warn", message: "session_save_failed: " + errMsg });
+        process.stderr.write(`[orager] WARNING: session save failed (approval-answer) for ${sessionId}: ${errMsg}\n`);
+        onEmit({ type: "warn", message: "session_save_failed_approval_answer: " + errMsg });
       });
         {
           const resultEvent = {
@@ -1592,8 +1592,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           });
         }).catch((err: unknown) => {
         const errMsg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[orager] WARNING: session save failed for ${sessionId}: ${errMsg}\n`);
-        onEmit({ type: "warn", message: "session_save_failed: " + errMsg });
+        process.stderr.write(`[orager] WARNING: generation metadata fetch failed for ${sessionId}: ${errMsg}\n`);
       });
       }
 
@@ -1778,8 +1777,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           cumulativeCostUsd: totalCostUsd,
         }).catch((err: unknown) => {
         const errMsg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[orager] WARNING: session save failed for ${sessionId}: ${errMsg}\n`);
-        onEmit({ type: "warn", message: "session_save_failed: " + errMsg });
+        process.stderr.write(`[orager] WARNING: session save failed (budget-exceeded) for ${sessionId}: ${errMsg}\n`);
+        onEmit({ type: "warn", message: "session_save_failed_budget_exceeded: " + errMsg });
       });
         await emitResult(budgetResultEvent);
         return;
@@ -1873,8 +1872,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           },
         }).catch((err: unknown) => {
         const errMsg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[orager] WARNING: session save failed for ${sessionId}: ${errMsg}\n`);
-        onEmit({ type: "warn", message: "session_save_failed: " + errMsg });
+        process.stderr.write(`[orager] WARNING: session save failed (tool-approval) for ${sessionId}: ${errMsg}\n`);
+        onEmit({ type: "warn", message: "session_save_failed_tool_approval: " + errMsg });
       });
 
         // End the run — emit result with success subtype so session is preserved
@@ -1976,8 +1975,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             cumulativeCostUsd: totalCostUsd,
           }).catch((err: unknown) => {
         const errMsg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[orager] WARNING: session save failed for ${sessionId}: ${errMsg}\n`);
-        onEmit({ type: "warn", message: "session_save_failed: " + errMsg });
+        process.stderr.write(`[orager] WARNING: session save failed (post-summarize) for ${sessionId}: ${errMsg}\n`);
+        onEmit({ type: "warn", message: "session_save_failed_post_summarize: " + errMsg });
       });
         } catch (summarizeErr) {
           const msg = summarizeErr instanceof Error ? summarizeErr.message : String(summarizeErr);
@@ -2030,8 +2029,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           cumulativeCostUsd: totalCostUsd,
         }).catch((err: unknown) => {
         const errMsg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[orager] WARNING: session save failed for ${sessionId}: ${errMsg}\n`);
-        onEmit({ type: "warn", message: "session_save_failed: " + errMsg });
+        process.stderr.write(`[orager] WARNING: session save failed (turn-end) for ${sessionId}: ${errMsg}\n`);
+        onEmit({ type: "warn", message: "session_save_failed_turn_end: " + errMsg });
       });
 
         {
