@@ -247,7 +247,15 @@ export async function fireHooks(
         ORAGER_SESSION_ID: payload.sessionId,
       };
       if (payload.toolName !== undefined) env["ORAGER_TOOL_NAME"] = payload.toolName;
-      if (payload.toolInput !== undefined) env["ORAGER_TOOL_INPUT"] = JSON.stringify(payload.toolInput);
+      // M-16: Pass tool input via stdin instead of env var to avoid shell
+      // metacharacter injection when user-authored hook scripts reference
+      // $ORAGER_TOOL_INPUT without proper quoting. Stdin is inherently safe
+      // from shell interpretation. The env var is still set for backward
+      // compatibility but scripts should prefer reading stdin.
+      const toolInputJson = payload.toolInput !== undefined
+        ? JSON.stringify(payload.toolInput)
+        : undefined;
+      if (toolInputJson !== undefined) env["ORAGER_TOOL_INPUT"] = toolInputJson;
       if (payload.isError !== undefined) env["ORAGER_IS_ERROR"] = payload.isError ? "true" : "false";
       if (payload.turn !== undefined) env["ORAGER_TURN"] = String(payload.turn);
       if (payload.model !== undefined) env["ORAGER_MODEL"] = payload.model;
@@ -255,7 +263,12 @@ export async function fireHooks(
       if (payload.totalCostUsd !== undefined) env["ORAGER_TOTAL_COST"] = String(payload.totalCostUsd);
 
       try {
-        await execAsync("bash", ["-c", t], { env, timeout: timeoutMs });
+        await execAsync("bash", ["-c", t], {
+          env,
+          timeout: timeoutMs,
+          // M-16: Pipe tool input JSON on stdin for safe consumption
+          ...(toolInputJson ? { input: toolInputJson } : {}),
+        });
         result = { ok: true };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

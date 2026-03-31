@@ -191,6 +191,21 @@ export class WasmCompatDb {
   }
 
   /**
+   * M-05: Flush any pending debounced write immediately.
+   * Returns a promise that resolves when the write completes.
+   * Use before critical checkpoints where data loss is unacceptable.
+   */
+  async flush(): Promise<void> {
+    if (this._saveTimer) {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = null;
+      this._persistToFileAsync();
+    }
+    // Wait for any in-flight write to complete
+    if (this._saving) await this._saving;
+  }
+
+  /**
    * Debounced async persistence (audit E-15/B-13).
    * Serialises the DB to a byte array synchronously (cheap — WASM memcpy),
    * then writes to disk asynchronously so the event loop isn't blocked.
