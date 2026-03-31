@@ -19,11 +19,19 @@ export const CURRENT_SESSION_SCHEMA_VERSION = 1;
 // cannot be trimmed further (minimum retention: 1 system + 1 non-system
 // message). Callers should not assume sessions are strictly below this size.
 
-/** Default per-session file size cap (5 MB). Override via ORAGER_SESSION_MAX_SIZE_BYTES. */
-export const SESSION_MAX_SIZE_BYTES = (() => {
+/** Read the session size cap from env (re-reads on each call for testability). */
+function _getSessionMaxSizeBytes(): number {
   const v = parseInt(process.env["ORAGER_SESSION_MAX_SIZE_BYTES"] ?? "", 10);
   return Number.isFinite(v) && v > 0 ? v : 5 * 1024 * 1024; // 5 MB
-})();
+}
+
+/** Default per-session file size cap (5 MB). Override via ORAGER_SESSION_MAX_SIZE_BYTES. */
+export let SESSION_MAX_SIZE_BYTES = _getSessionMaxSizeBytes();
+
+/** Re-read SESSION_MAX_SIZE_BYTES from env — for testing only. */
+export function _refreshSessionMaxSize(): void {
+  SESSION_MAX_SIZE_BYTES = _getSessionMaxSizeBytes();
+}
 
 /** Apply any pending schema migrations to a loaded session. Returns the (possibly mutated) data. */
 export function migrateSession(data: SessionData): SessionData {

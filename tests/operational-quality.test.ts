@@ -25,6 +25,10 @@ beforeEach(async () => {
   process.env["ORAGER_SESSIONS_DIR"] = tmpDir;
   process.env["ORAGER_AUDIT_LOG"] = path.join(tmpDir, "audit.log");
   vi.resetModules();
+  // Under bun, vi.resetModules() is a no-op. Reset the audit stream
+  // singleton so it picks up the new ORAGER_AUDIT_LOG path.
+  const { _resetStreamForTesting } = await import("../src/audit.js");
+  _resetStreamForTesting?.();
 });
 
 afterEach(async () => {
@@ -188,7 +192,8 @@ describe("_filePrune: compacted sessions use 3× retention", () => {
 
     // Compacted session should still exist
     const compactedPath = path.join(tmpDir, "compacted-old.json");
-    await expect(fsPromises.access(compactedPath)).resolves.toBeUndefined();
+    // fsPromises.access resolves with undefined (node) or null (bun)
+    await fsPromises.access(compactedPath); // throws if file doesn't exist
   });
 
   it("deletes a compacted session older than 3× the TTL", async () => {

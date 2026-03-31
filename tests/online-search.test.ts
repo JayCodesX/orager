@@ -13,8 +13,12 @@ import type { EmitEvent, OpenRouterCallResult } from "../src/types.js";
 
 vi.mock("../src/openrouter.js", () => ({
   callOpenRouter: vi.fn(),
+  callDirect: vi.fn(),
   shouldUseDirect: vi.fn().mockReturnValue(false),
+  fetchGenerationMeta: vi.fn().mockResolvedValue(null),
+  callEmbeddings: vi.fn().mockResolvedValue([[]]),
 }));
+
 vi.mock("../src/session.js", () => ({
   loadSession: vi.fn().mockResolvedValue(null),
   saveSession: vi.fn().mockResolvedValue(undefined),
