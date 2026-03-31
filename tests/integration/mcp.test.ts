@@ -115,16 +115,14 @@ function createTestMcpServer(): Server {
 
     if (name === "run_agent") {
       const apiKey =
-        process.env["OPENROUTER_API_KEY"] ??
-        process.env["ORAGER_API_KEY"] ??
-        "";
+        process.env["PROTOCOL_API_KEY"] ?? "";
 
       if (!apiKey) {
         return {
           content: [
             {
               type: "text",
-              text: "Error: OPENROUTER_API_KEY is not set in the orager MCP server environment.",
+              text: "Error: PROTOCOL_API_KEY is not set in the orager MCP server environment.",
             },
           ],
           isError: true,
@@ -214,7 +212,7 @@ describe("orager MCP server — handler logic", () => {
 
   beforeEach(async () => {
     vi.resetAllMocks();
-    process.env["OPENROUTER_API_KEY"] = "test-key";
+    process.env["PROTOCOL_API_KEY"] = "test-key";
 
     mcpServer = createTestMcpServer();
     mcpClient = new Client({ name: "test-client", version: "1.0.0" });
@@ -225,7 +223,7 @@ describe("orager MCP server — handler logic", () => {
   });
 
   afterEach(async () => {
-    delete process.env["OPENROUTER_API_KEY"];
+    delete process.env["PROTOCOL_API_KEY"];
     await mcpClient.close().catch(() => {});
     await mcpServer.close().catch(() => {});
   });
@@ -318,9 +316,8 @@ describe("orager MCP server — handler logic", () => {
     expect(callArgs.forceResume).toBe(true);
   });
 
-  it("run_agent without OPENROUTER_API_KEY returns isError=true with key error message", async () => {
-    delete process.env["OPENROUTER_API_KEY"];
-    delete process.env["ORAGER_API_KEY"];
+  it("run_agent without PROTOCOL_API_KEY returns isError=true with key error message", async () => {
+    delete process.env["PROTOCOL_API_KEY"];
 
     const result = await mcpClient.callTool({
       name: "run_agent",
@@ -332,7 +329,7 @@ describe("orager MCP server — handler logic", () => {
       .filter((c) => c.type === "text")
       .map((c) => c.text ?? "")
       .join("");
-    expect(text).toMatch(/OPENROUTER_API_KEY/);
+    expect(text).toMatch(/PROTOCOL_API_KEY/);
   });
 });
 
