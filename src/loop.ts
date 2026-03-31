@@ -581,7 +581,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         }
       } else if (shouldUseFtsRetrieval(opts.memoryRetrieval)) {
         // SQLite + local retrieval: use FTS5 for efficient full-text search
-        const ftsResults = searchMemoryFts(effectiveMemoryKey, prompt, 12);
+        const ftsResults = await searchMemoryFts(effectiveMemoryKey, prompt, 12);
         // Deduplicate by id and render
         const seen = new Set<string>();
         const deduped = ftsResults.filter((e) => {

@@ -92,8 +92,8 @@ async function getStore(): Promise<SessionStore> {
   const dbPath = process.env["ORAGER_DB_PATH"];
   if (dbPath) {
     _storeCachePromise = import("./session-sqlite.js")
-      .then((m) => {
-        _storeCache = new m.SqliteSessionStore(dbPath);
+      .then(async (m) => {
+        _storeCache = await m.SqliteSessionStore.create(dbPath);
         return _storeCache as SessionStore;
       })
       .catch((err: unknown) => {
