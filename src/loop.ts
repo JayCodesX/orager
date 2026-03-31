@@ -29,7 +29,7 @@ import path from "node:path";
 import { loadSession, saveSession, newSessionId, acquireSessionLock } from "./session.js";
 import { callWithRetry } from "./retry.js";
 import { fetchGenerationMeta, shouldUseDirect, callEmbeddings } from "./openrouter.js";
-import { fetchLiveModelMeta, getLiveModelPricing, isLiveModelMetaCacheWarm, liveModelSupportsTools } from "./openrouter-model-meta.js";
+import { fetchLiveModelMeta, getLiveModelPricing, isLiveModelMetaCacheWarm, liveModelSupportsTools, liveModelSupportsVision } from "./openrouter-model-meta.js";
 import { recordProviderSuccess } from "./provider-health.js";
 import { loadSkillsFromDirs, buildSkillsSystemPrompt, buildSkillTools } from "./skills.js";
 import { ALL_TOOLS, finishTool, BROWSER_TOOLS } from "./tools/index.js";
@@ -144,7 +144,7 @@ function isWebhookUrlSafe(raw: string | undefined): boolean {
 export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   const {
     prompt,
-    model,
+    model: _modelOpt,
     addDirs,
     maxTurns,
     cwd,
@@ -152,6 +152,9 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     onEmit: _rawOnEmit,
     onLog,
   } = opts;
+  // Declared as `let` so vision routing can swap it to opts.visionModel when
+  // the primary model does not support image inputs.
+  let model = _modelOpt;
 
   // Track whether a result event has been emitted so the finally block knows
   // whether it needs to emit one (e.g. when the loop is aborted mid-execution).
@@ -299,6 +302,50 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         missing,
       });
     }
+  }
+
+  // ── Vision model routing ─────────────────────────────────────────────────
+  // If the prompt contains image_url blocks and the primary model does not
+  // support vision, swap to opts.visionModel for this run.  The model meta
+  // cache is warm at this point (fetched above), so liveModelSupportsVision is
+  // a cheap synchronous lookup — no extra network call.
+  const hasImages = (opts.promptContent ?? []).some((b) => b.type === "image_url");
+  if (hasImages) {
+    const visionOk = liveModelSupportsVision(model);
+    if (visionOk === false) {
+      if (opts.visionModel) {
+        onLog?.(
+          "stderr",
+          `[orager] model '${model}' does not support vision — switching to visionModel '${opts.visionModel}' for this run.\n`,
+        );
+        log.warn("vision_model_swap", {
+          sessionId: opts.sessionId ?? "(new)",
+          originalModel: model,
+          visionModel: opts.visionModel,
+        });
+        model = opts.visionModel;
+      } else {
+        onLog?.(
+          "stderr",
+          `[orager] WARNING: model '${model}' does not support vision and no visionModel is configured. ` +
+          `Images may be silently stripped or cause an API error. ` +
+          `Set visionModel in ~/.orager/config.json or pass --vision-model.\n`,
+        );
+        log.warn("vision_not_supported", {
+          sessionId: opts.sessionId ?? "(new)",
+          model,
+          message: "no visionModel configured",
+        });
+      }
+    } else if (visionOk === null) {
+      // Could not verify from cache — soft warning only, proceed as-is.
+      onLog?.(
+        "stderr",
+        `[orager] WARNING: could not verify vision support for '${model}' — proceeding. ` +
+        `If the run fails, set visionModel in config.\n`,
+      );
+    }
+    // visionOk === true: confirmed, no action needed.
   }
 
   // Log if direct Anthropic mode is active (bypasses OpenRouter)
