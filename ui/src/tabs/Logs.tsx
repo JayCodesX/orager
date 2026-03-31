@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { authHeaders } from "../api";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -135,7 +136,7 @@ export default function Logs() {
       const params = new URLSearchParams({ limit: "200", offset: "0" });
       if (q)   params.set("q", q);
       if (lvl) params.set("level", lvl);
-      const r = await fetch(`/api/logs?${params}`);
+      const r = await fetch(`/api/logs?${params}`, { headers: authHeaders() });
       const data = await r.json() as LogsResponse;
       setConfigured(data.configured);
       setEntries(data.entries ?? []);
