@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import type { ToolExecutor, ToolParameterSchema, ToolResult } from "../types.js";
+import { containsBlockedCommand } from "./bash.js";
 
 // ── JSON schema for a tool spec file entry ─────────────────────────────────
 
@@ -19,8 +20,18 @@ const DEFAULT_EXEC_TIMEOUT_MS = 30_000;
 function runShell(
   cmd: string,
   cwd: string,
-  timeoutMs = DEFAULT_EXEC_TIMEOUT_MS
+  timeoutMs = DEFAULT_EXEC_TIMEOUT_MS,
+  blockedCommands?: string[]
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  // ── Bash policy: command blocklist (mirrors bash.ts checks) ──────────
+  if (blockedCommands && blockedCommands.length > 0) {
+    const blockedSet = new Set(blockedCommands.map((b) => b.toLowerCase()));
+    const blocked = containsBlockedCommand(cmd, blockedSet);
+    if (blocked) {
+      return Promise.resolve({ stdout: "", stderr: `Command blocked by bash policy: ${blocked}`, exitCode: 1 });
+    }
+  }
+
   return new Promise((resolve) => {
     let settled = false;
     const settle = (result: { stdout: string; stderr: string; exitCode: number }) => {
@@ -88,9 +99,10 @@ function specToExecutor(spec: ToolSpec): ToolExecutor {
         parameters: spec.parameters ?? { type: "object", properties: {} },
       },
     },
-    async execute(input: Record<string, unknown>, cwd: string): Promise<ToolResult> {
+    async execute(input: Record<string, unknown>, cwd: string, opts?: Record<string, unknown>): Promise<ToolResult> {
       const cmd = interpolate(spec.exec, input);
-      const { stdout, stderr, exitCode } = await runShell(cmd, cwd);
+      const bashPolicy = (opts as { bashPolicy?: { blockedCommands?: string[] } } | undefined)?.bashPolicy;
+      const { stdout, stderr, exitCode } = await runShell(cmd, cwd, DEFAULT_EXEC_TIMEOUT_MS, bashPolicy?.blockedCommands);
       let content = stdout;
       if (stderr) content += (content ? "\n" : "") + `[stderr] ${stderr}`;
       if (!content) content = exitCode === 0 ? "(no output)" : `exited with code ${exitCode}`;

@@ -517,12 +517,23 @@ describe("ALLOWED_DAEMON_OPTS completeness", () => {
     ];
 
     // Fields that are intentionally security-stripped (not in ALLOWED but stripped post-allow)
+    // hooks/mcpServers enable RCE, apiKeys/webhookUrl enable exfiltration,
+    // approvalMode can bypass approval mechanism. (audit B-01)
     const securityStripped = new Set([
       "sandboxRoot",
       "requireApproval",
       "bashPolicy",
       "dangerouslySkipPermissions",
       "settingsFile", // daemon resolves its own settings
+      "hooks",
+      "hookTimeoutMs",
+      "hookErrorMode",
+      "mcpServers",
+      "requireMcpServers",
+      "webhookUrl",
+      "apiKeys",
+      "approvalMode",
+      "approvalAnswer",
     ]);
 
     // Fields excluded by DaemonRunRequest type (apiKey comes from daemon's own env, not POST body)
@@ -545,12 +556,22 @@ describe("ALLOWED_DAEMON_OPTS completeness", () => {
     expect(rejected, `These fields are sent by execute-cli but not in ALLOWED_DAEMON_OPTS: ${rejected.join(", ")}`).toEqual([]);
 
     // Security fields should be stripped even if in ALLOWED
-    const securityTest = { sandboxRoot: "/", requireApproval: "all", bashPolicy: {}, dangerouslySkipPermissions: true };
+    const securityTest = {
+      sandboxRoot: "/", requireApproval: "all", bashPolicy: {}, dangerouslySkipPermissions: true,
+      hooks: { Stop: "echo pwned" }, mcpServers: {}, apiKeys: ["sk-test"],
+      webhookUrl: "http://evil.com", approvalMode: "auto", approvalAnswer: "yes",
+    };
     const { safe: safeSecure } = sanitizeDaemonRunOpts(securityTest);
     expect(safeSecure.sandboxRoot).toBeUndefined();
     expect(safeSecure.requireApproval).toBeUndefined();
     expect(safeSecure.bashPolicy).toBeUndefined();
     expect(safeSecure.dangerouslySkipPermissions).toBeUndefined();
+    expect(safeSecure.hooks).toBeUndefined();
+    expect(safeSecure.mcpServers).toBeUndefined();
+    expect(safeSecure.apiKeys).toBeUndefined();
+    expect(safeSecure.webhookUrl).toBeUndefined();
+    expect(safeSecure.approvalMode).toBeUndefined();
+    expect(safeSecure.approvalAnswer).toBeUndefined();
   });
 });
 
