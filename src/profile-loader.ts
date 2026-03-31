@@ -223,8 +223,9 @@ export async function loadCustomProfiles(): Promise<CustomProfiles> {
       if (typeof parsed["extends"] === "string" && parsed["extends"]) profile.extends = parsed["extends"] as string;
 
       profiles[name] = profile;
-    } catch {
-      // Skip malformed profile files
+    } catch (err) {
+      // L-06: Log profile parse failures so operators can fix malformed files.
+      process.stderr.write(`[orager] profile-loader: failed to load profile "${name}": ${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
 

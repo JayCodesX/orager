@@ -131,6 +131,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === "run_agent") {
+    // L-05: shuttingDown guard prevents new calls during drain
     if (shuttingDown) {
       return {
         content: [{ type: "text", text: "The orager MCP server is shutting down. Please try again shortly." }],

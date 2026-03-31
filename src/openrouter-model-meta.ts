@@ -121,8 +121,9 @@ export async function fetchLiveModelMeta(apiKey: string): Promise<void> {
       }
       _metaCachedAt = Date.now();
       void saveToDiskCache(); // persist to disk for next daemon restart
-    } catch {
-      // Network failure — silently fall back to static table
+    } catch (err) {
+      // L-06: Log model metadata fetch failures for observability.
+      process.stderr.write(`[orager] model-meta: failed to fetch model metadata: ${err instanceof Error ? err.message : String(err)}\n`);
     } finally {
       _metaFetchInFlight = null;
     }

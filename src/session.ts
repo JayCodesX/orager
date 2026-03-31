@@ -15,6 +15,10 @@ export const CURRENT_SESSION_SCHEMA_VERSION = 1;
 // exceeds this limit after marshalling, the oldest messages are trimmed (keeping
 // the system message + the N most recent) until it fits.
 
+// L-03: This cap is best-effort. A single message larger than the limit
+// cannot be trimmed further (minimum retention: 1 system + 1 non-system
+// message). Callers should not assume sessions are strictly below this size.
+
 /** Default per-session file size cap (5 MB). Override via ORAGER_SESSION_MAX_SIZE_BYTES. */
 export const SESSION_MAX_SIZE_BYTES = (() => {
   const v = parseInt(process.env["ORAGER_SESSION_MAX_SIZE_BYTES"] ?? "", 10);
@@ -119,7 +123,7 @@ async function getStore(): Promise<SessionStore> {
 // The queue stores a "settled" promise (i.e. one that has already had .catch()
 // applied) so a failed save never blocks subsequent ones.
 
-const _saveQueues = new Map<string, Promise<void>>();
+const _saveQueues = new Map<string, { promise: Promise<void>; settled: boolean }>();
 
 async function _fileSave(data: SessionData): Promise<void> {
   const { sessionId } = data;
@@ -170,7 +174,7 @@ async function _fileSave(data: SessionData): Promise<void> {
   };
 
   // Run after any in-flight save for this session, regardless of its outcome.
-  const prev = _saveQueues.get(sessionId) ?? Promise.resolve();
+  const prev = _saveQueues.get(sessionId)?.promise ?? Promise.resolve();
   const next = prev.then(doSave, doSave);
 
   // Store a non-rejecting version in the queue so failures don't block future saves.
@@ -178,17 +182,24 @@ async function _fileSave(data: SessionData): Promise<void> {
     const msg = err instanceof Error ? err.message : String(err);
     process.stderr.write(`[orager] WARNING: session save failed for ${sessionId}: ${msg}\n`);
   });
-  _saveQueues.set(sessionId, settled);
+  const entry = { promise: settled, settled: false };
+  _saveQueues.set(sessionId, entry);
   // Clean up the Map entry once this save completes, only if no newer save
   // has been queued for this session in the meantime.
   void settled.then(() => {
-    if (_saveQueues.get(sessionId) === settled) _saveQueues.delete(sessionId);
+    const current = _saveQueues.get(sessionId);
+    if (current && current.promise === settled) {
+      current.settled = true;
+    }
   });
   // Hard cap: if the queue grows beyond 1000 entries (shouldn't happen in normal use),
   // evict the oldest 200 to prevent unbounded growth.
   if (_saveQueues.size > 1000) {
+    // L-02: Only evict entries whose save promises have settled to avoid
+    // breaking the serialization chain for in-flight writes.
     let evicted = 0;
-    for (const key of _saveQueues.keys()) {
+    for (const [key, entry] of _saveQueues) {
+      if (!entry.settled) continue;
       _saveQueues.delete(key);
       if (++evicted >= 200) break;
     }
