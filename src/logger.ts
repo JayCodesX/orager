@@ -11,6 +11,8 @@
  */
 
 import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 
 export interface LogEvent {
   ts: string;           // ISO timestamp
@@ -22,7 +24,7 @@ export interface LogEvent {
   [key: string]: unknown;
 }
 
-const LOG_FILE = process.env["ORAGER_LOG_FILE"];
+const LOG_FILE = process.env["ORAGER_LOG_FILE"] ?? path.join(os.homedir(), ".orager", "orager.log");
 const LOG_STRUCTURED = process.env["ORAGER_LOG_STRUCTURED"] === "true";
 
 /** Default max log file size in bytes (100 MB). Overridable via ORAGER_LOG_MAX_SIZE_MB. */

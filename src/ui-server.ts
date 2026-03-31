@@ -34,6 +34,7 @@ const UI_PORT_PATH = path.join(ORAGER_DIR, "ui.port");
 const UI_PID_PATH = path.join(ORAGER_DIR, "ui.pid");
 const DAEMON_PORT_PATH = path.join(ORAGER_DIR, "daemon.port");
 const DAEMON_PID_PATH = path.join(ORAGER_DIR, "daemon.pid");
+const DEFAULT_LOG_PATH = path.join(ORAGER_DIR, "orager.log");
 
 /** Random bearer token generated at startup — printed to stdout for the user. */
 const UI_AUTH_TOKEN = crypto.randomBytes(24).toString("hex");
@@ -401,9 +402,9 @@ async function handleGetLogs(
   req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<void> {
-  const logFile = process.env["ORAGER_LOG_FILE"];
-  if (!logFile) {
-    jsonResponse(res, 200, { entries: [], total: 0, configured: false });
+  const logFile = process.env["ORAGER_LOG_FILE"] ?? DEFAULT_LOG_PATH;
+  if (!fsSync.existsSync(logFile)) {
+    jsonResponse(res, 200, { entries: [], total: 0, configured: true, logFile });
     return;
   }
 
@@ -464,14 +465,14 @@ async function handleLogStream(
   _req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<void> {
-  const logFile = process.env["ORAGER_LOG_FILE"];
-  if (!logFile) {
+  const logFile = process.env["ORAGER_LOG_FILE"] ?? DEFAULT_LOG_PATH;
+  if (!fsSync.existsSync(logFile)) {
     res.writeHead(200, {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
     });
-    res.write("data: " + JSON.stringify({ configured: false }) + "\n\n");
+    res.write("data: " + JSON.stringify({ configured: true, entries: [] }) + "\n\n");
     res.end();
     return;
   }
