@@ -1215,8 +1215,8 @@ export interface AgentLoopOptions {
   memoryEmbeddingModel?: string;
 
   /**
-   * Per-agent OpenRouter API key override. When set, this agent uses its own
-   * key instead of the global OPENROUTER_API_KEY. Isolates rate limits so one
+   * Per-agent API key override. When set, this agent uses its own
+   * key instead of the global PROTOCOL_API_KEY. Isolates rate limits so one
    * agent's 429 cannot starve others.
    */
   agentApiKey?: string;

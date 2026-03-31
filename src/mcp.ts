@@ -12,7 +12,7 @@
  *       "orager": {
  *         "command": "node",
  *         "args": ["/path/to/orager/dist/mcp.js"],
- *         "env": { "OPENROUTER_API_KEY": "sk-or-..." }
+ *         "env": { "PROTOCOL_API_KEY": "sk-or-..." }
  *       }
  *     }
  *   }
@@ -140,16 +140,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     const apiKey =
-      process.env["OPENROUTER_API_KEY"] ??
-      process.env["ORAGER_API_KEY"] ??
-      "";
+      process.env["PROTOCOL_API_KEY"] ?? "";
 
     if (!apiKey) {
       return {
         content: [
           {
             type: "text",
-            text: "Error: OPENROUTER_API_KEY is not set in the orager MCP server environment.",
+            text: "Error: PROTOCOL_API_KEY is not set in the orager MCP server environment.",
           },
         ],
         isError: true,

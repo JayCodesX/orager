@@ -53,7 +53,7 @@ export function handleSessions(
             return;
           }
         }
-        const apiKey = (process.env["OPENROUTER_API_KEY"] ?? process.env["ORAGER_API_KEY"] ?? "").trim();
+        const apiKey = (process.env["PROTOCOL_API_KEY"] ?? "").trim();
         if (!apiKey) {
           res.writeHead(500, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "no API key configured" }));

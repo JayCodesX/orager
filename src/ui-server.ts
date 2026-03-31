@@ -34,6 +34,7 @@ const UI_PORT_PATH = path.join(ORAGER_DIR, "ui.port");
 const UI_PID_PATH = path.join(ORAGER_DIR, "ui.pid");
 const DAEMON_PORT_PATH = path.join(ORAGER_DIR, "daemon.port");
 const DAEMON_PID_PATH = path.join(ORAGER_DIR, "daemon.pid");
+const DEFAULT_LOG_PATH = path.join(ORAGER_DIR, "orager.log");
 
 /** Random bearer token generated at startup — printed to stdout for the user. */
 const UI_AUTH_TOKEN = crypto.randomBytes(24).toString("hex");
@@ -173,9 +174,9 @@ function stripSecrets<T extends object>(obj: T, keys: string[]): T {
 async function loadConfig(): Promise<OragerUserConfig> {
   try {
     const raw = await fs.readFile(CONFIG_PATH, "utf8");
-    return JSON.parse(raw) as OragerUserConfig;
+    return { ...DEFAULT_CONFIG, ...JSON.parse(raw) as OragerUserConfig };
   } catch {
-    return {};
+    return { ...DEFAULT_CONFIG };
   }
 }
 
@@ -401,9 +402,9 @@ async function handleGetLogs(
   req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<void> {
-  const logFile = process.env["ORAGER_LOG_FILE"];
-  if (!logFile) {
-    jsonResponse(res, 200, { entries: [], total: 0, configured: false });
+  const logFile = process.env["ORAGER_LOG_FILE"] ?? DEFAULT_LOG_PATH;
+  if (!fsSync.existsSync(logFile)) {
+    jsonResponse(res, 200, { entries: [], total: 0, configured: true, logFile });
     return;
   }
 
@@ -464,14 +465,14 @@ async function handleLogStream(
   _req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<void> {
-  const logFile = process.env["ORAGER_LOG_FILE"];
-  if (!logFile) {
+  const logFile = process.env["ORAGER_LOG_FILE"] ?? DEFAULT_LOG_PATH;
+  if (!fsSync.existsSync(logFile)) {
     res.writeHead(200, {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
     });
-    res.write("data: " + JSON.stringify({ configured: false }) + "\n\n");
+    res.write("data: " + JSON.stringify({ configured: true, entries: [] }) + "\n\n");
     res.end();
     return;
   }
@@ -589,6 +590,102 @@ async function handleGetTraces(
 
 // ── Webhook test ─────────────────────────────────────────────────────────────
 
+// ── Models proxy (fetches from OpenRouter /models) ──────────────────────────
+
+let modelsCache: { data: unknown; fetchedAt: number } | null = null;
+const MODELS_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
+async function handleGetModels(
+  _req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  // Return cached if fresh
+  if (modelsCache && Date.now() - modelsCache.fetchedAt < MODELS_CACHE_TTL) {
+    jsonResponse(res, 200, modelsCache.data);
+    return;
+  }
+  let apiKey = process.env["PROTOCOL_API_KEY"] ?? "";
+  if (!apiKey) {
+    try {
+      const cfg = await loadConfig();
+      apiKey = (cfg as Record<string, unknown>).agentApiKey as string ?? "";
+    } catch { /* ignore */ }
+  }
+  const baseUrl = (process.env["OPENROUTER_BASE_URL"] ?? "https://openrouter.ai/api/v1").replace(/\/$/, "");
+  try {
+    const upstream = await fetch(`${baseUrl}/models`, {
+      headers: {
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        "HTTP-Referer": "https://paperclip.ai",
+      },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!upstream.ok) {
+      jsonResponse(res, upstream.status, { error: `OpenRouter returned ${upstream.status}` });
+      return;
+    }
+    const json = await upstream.json() as { data?: unknown[] };
+    const models = (json.data ?? []) as Array<{
+      id: string;
+      name?: string;
+      context_length?: number;
+      pricing?: { prompt?: string | number; completion?: string | number };
+      architecture?: { input_modalities?: string[]; output_modalities?: string[] };
+    }>;
+    // Slim down to what the UI needs
+    const slim = models.map((m) => ({
+      id: m.id,
+      name: m.name ?? m.id,
+      context_length: m.context_length ?? 0,
+      prompt_price: m.pricing?.prompt ? Number(m.pricing.prompt) : 0,
+      completion_price: m.pricing?.completion ? Number(m.pricing.completion) : 0,
+      supports_vision: m.architecture?.input_modalities?.includes("image") ?? false,
+    }));
+    // Extract unique providers
+    const providers = [...new Set(slim.map((m) => m.id.split("/")[0]!).filter(Boolean))].sort();
+    const result = { models: slim, providers };
+    modelsCache = { data: result, fetchedAt: Date.now() };
+    jsonResponse(res, 200, result);
+  } catch (err) {
+    jsonResponse(res, 502, { error: `Failed to fetch models: ${(err as Error).message}` });
+  }
+}
+
+// ── Credits proxy (fetches from OpenRouter /auth/key) ────────────────────────
+
+async function handleGetCredits(
+  _req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  let apiKey = process.env["PROTOCOL_API_KEY"] ?? "";
+  if (!apiKey) {
+    // Try reading from config file
+    try {
+      const cfg = await loadConfig();
+      apiKey = (cfg as Record<string, unknown>).agentApiKey as string ?? "";
+    } catch { /* ignore */ }
+  }
+  if (!apiKey) {
+    jsonResponse(res, 200, { configured: false });
+    return;
+  }
+  const baseUrl = (process.env["OPENROUTER_BASE_URL"] ?? "https://openrouter.ai/api/v1").replace(/\/$/, "");
+  try {
+    const upstream = await fetch(`${baseUrl}/auth/key`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!upstream.ok) {
+      jsonResponse(res, upstream.status, { error: `Provider returned ${upstream.status}` });
+      return;
+    }
+    const json = await upstream.json() as { data?: unknown };
+    jsonResponse(res, 200, { configured: true, ...(json.data as Record<string, unknown>) });
+  } catch (err) {
+    jsonResponse(res, 502, { error: `Failed to fetch credits: ${(err as Error).message}` });
+  }
+}
+
 async function handleWebhookTest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -671,12 +768,22 @@ async function serveStatic(
   async function serveIndex(): Promise<void> {
     try {
       const indexPath = path.join(UI_STATIC_DIR, "index.html");
-      const content = await fs.readFile(indexPath);
+      let html = await fs.readFile(indexPath, "utf8");
+      // Inject auth token so the SPA can authenticate API calls.
+      // Use a per-request nonce so the inline script passes CSP.
+      const nonce = crypto.randomBytes(16).toString("base64");
+      const tokenScript = `<script nonce="${nonce}">window.__ORAGER_TOKEN__="${UI_AUTH_TOKEN}";</script>`;
+      html = html.replace("</head>", `${tokenScript}</head>`);
+      const buf = Buffer.from(html, "utf8");
       res.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
-        "Content-Length": content.length,
+        "Content-Length": buf.length,
+        "Content-Security-Policy":
+          `default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; ` +
+          "img-src 'self' data:; font-src 'self'; connect-src 'self'; " +
+          "frame-ancestors 'none'; form-action 'self'; base-uri 'self'",
       });
-      res.end(content);
+      res.end(buf);
     } catch {
       jsonResponse(res, 503, { error: "UI not built. Run: npm run build:ui" });
     }
@@ -785,6 +892,10 @@ async function handleRequest(
       await handleGetSpans(req, res);
     } else if (pathname === "/api/telemetry/traces" && req.method === "GET") {
       await handleGetTraces(req, res);
+    } else if (pathname === "/api/models" && req.method === "GET") {
+      await handleGetModels(req, res);
+    } else if (pathname === "/api/credits" && req.method === "GET") {
+      await handleGetCredits(req, res);
     } else if (pathname === "/api/webhook/test" && req.method === "POST") {
       await handleWebhookTest(req, res);
     } else if (pathname.startsWith("/api/")) {

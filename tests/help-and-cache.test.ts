@@ -25,7 +25,7 @@ describe("--help output structure", () => {
       "--list-sessions",
       "--help",
       "--version",
-      "OPENROUTER_API_KEY",
+      "PROTOCOL_API_KEY",
     ];
     // All sections expected in help output
     for (const keyword of helpText) {

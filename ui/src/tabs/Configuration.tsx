@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { api, OragerSettings, OragerUserConfig } from "../api.ts";
 import { useToast } from "../components/Toast.tsx";
+import { ModelSelect, MultiModelSelect, ProviderMultiSelect, useCachedModels } from "../components/ModelSelect.tsx";
 
 // ── Collapsible section card ──────────────────────────────────────────────────
 
@@ -342,6 +343,42 @@ function formToConfig(f: ConfigForm): OragerUserConfig {
   };
 }
 
+// ── Summarize-at hint (auto-suggest based on model context) ──────────────────
+
+function SummarizeAtHint({
+  model,
+  currentValue,
+  onApply,
+}: {
+  model: string;
+  currentValue: string;
+  onApply: (v: string) => void;
+}) {
+  const { models } = useCachedModels();
+  const match = models.find((m) => m.id === model);
+  if (!match || match.context_length <= 0) return null;
+
+  const suggested = Math.round(match.context_length * 0.8);
+  const current = parseInt(currentValue, 10);
+  if (current === suggested) return null;
+
+  return (
+    <div style={{ fontSize: 11, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6, marginTop: -4 }}>
+      <span>
+        {match.id} has {(match.context_length / 1000).toFixed(0)}k context — suggested summarize at: <strong style={{ color: "var(--text-secondary)" }}>{suggested.toLocaleString()}</strong>
+      </span>
+      <button
+        type="button"
+        className="btn-ghost"
+        style={{ fontSize: 11, padding: "1px 6px" }}
+        onClick={() => onApply(String(suggested))}
+      >
+        Apply
+      </button>
+    </div>
+  );
+}
+
 // ── Validation ────────────────────────────────────────────────────────────────
 
 interface FormErrors {
@@ -469,8 +506,8 @@ export default function Configuration() {
   useEffect(() => {
     Promise.all([api.getConfig(), api.getSettings()])
       .then(([cfg, settings]) => {
-        setCfgForm(configToForm(cfg));
-        setSetForm(settingsToForm(settings));
+        setCfgForm(configToForm(cfg ?? {} as OragerUserConfig));
+        setSetForm(settingsToForm(settings ?? {} as OragerSettings));
       })
       .catch((err: Error) => showToast(`Failed to load config: ${err.message}`, "error"))
       .finally(() => setLoading(false));
@@ -570,9 +607,9 @@ export default function Configuration() {
       {activeTab === "config" && (
         <>
           <Section title="Models">
-            <TextField label="Primary model" value={f.model} onChange={upd("model")} placeholder="deepseek/deepseek-chat-v3-0324" />
-            <TagsField label="Fallback models" value={f.models} onChange={upd("models")} placeholder="model-a, model-b" />
-            <TextField label="Vision model" value={f.visionModel} onChange={upd("visionModel")} placeholder="google/gemini-2.0-flash-001" />
+            <ModelSelect label="Primary model" value={f.model} onChange={upd("model")} placeholder="Search models…" />
+            <MultiModelSelect label="Fallback models" value={f.models} onChange={upd("models")} placeholder="Search to add fallback models…" />
+            <ModelSelect label="Vision model" value={f.visionModel} onChange={upd("visionModel")} placeholder="Search vision models…" visionOnly />
           </Section>
 
           <Section title="Agent Loop">
@@ -616,9 +653,9 @@ export default function Configuration() {
           </Section>
 
           <Section title="Provider Routing" defaultOpen={false}>
-            <TagsField label="Provider order" value={f.providerOrder} onChange={upd("providerOrder")} placeholder="openai, anthropic" />
-            <TagsField label="Provider only" value={f.providerOnly} onChange={upd("providerOnly")} placeholder="restrict to these providers" />
-            <TagsField label="Provider ignore" value={f.providerIgnore} onChange={upd("providerIgnore")} placeholder="skip these providers" />
+            <ProviderMultiSelect label="Provider order" value={f.providerOrder} onChange={upd("providerOrder")} placeholder="Select preferred providers…" />
+            <ProviderMultiSelect label="Provider only" value={f.providerOnly} onChange={upd("providerOnly")} placeholder="Restrict to these providers…" />
+            <ProviderMultiSelect label="Provider ignore" value={f.providerIgnore} onChange={upd("providerIgnore")} placeholder="Skip these providers…" />
             <SelectField
               label="Sort strategy"
               value={f.sort}
@@ -643,7 +680,11 @@ export default function Configuration() {
 
           <Section title="Context & Summarization" defaultOpen={false}>
             <NumberField label="Summarize at (tokens)" value={f.summarizeAt} onChange={upd("summarizeAt")} min={0} />
-            <TextField label="Summarize model" value={f.summarizeModel} onChange={upd("summarizeModel")} />
+            <SummarizeAtHint model={f.model} currentValue={f.summarizeAt} onApply={upd("summarizeAt")} />
+            <ModelSelect label="Summarize model" value={f.summarizeModel} onChange={upd("summarizeModel")} placeholder="Leave blank to use primary model" />
+            <span style={{ fontSize: 11, color: "var(--text-muted)", marginTop: -4, display: "block" }}>
+              A cheaper, fast model (e.g. gemini-flash) is recommended for summarization.
+            </span>
             <NumberField label="Keep recent turns after summarize" value={f.summarizeKeepRecentTurns} onChange={upd("summarizeKeepRecentTurns")} min={0} />
           </Section>
 
@@ -660,7 +701,7 @@ export default function Configuration() {
               ]}
               onChange={upd("memoryRetrieval")}
             />
-            <TextField label="Embedding model" value={f.memoryEmbeddingModel} onChange={upd("memoryEmbeddingModel")} />
+            <ModelSelect label="Embedding model" value={f.memoryEmbeddingModel} onChange={upd("memoryEmbeddingModel")} placeholder="Search embedding models…" />
           </Section>
 
           <Section title="Daemon Defaults" defaultOpen={false}>
