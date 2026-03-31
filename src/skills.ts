@@ -154,7 +154,12 @@ export async function loadSkillsFromDirs(addDirs: string[]): Promise<SkillEntry[
       skillDirs = entries
         .filter((e) => e.isDirectory())
         .map((e) => e.name);
-    } catch {
+    } catch (err) {
+      // L-06: ENOENT is expected when .orager/skills doesn't exist; log others.
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT") {
+        process.stderr.write(`[orager] skills: cannot read ${skillsRoot}: ${code ?? err}\n`);
+      }
       continue;
     }
 

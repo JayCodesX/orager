@@ -501,8 +501,12 @@ async function handleLogStream(
       if (stat.size <= filePos) return; // truncated or unchanged
       const buf = Buffer.alloc(stat.size - filePos);
       const fd  = fsSync.openSync(logFile, "r");
-      fsSync.readSync(fd, buf, 0, buf.length, filePos);
-      fsSync.closeSync(fd);
+      try {
+        fsSync.readSync(fd, buf, 0, buf.length, filePos);
+      } finally {
+        // L-08: Ensure fd is closed even if readSync throws.
+        fsSync.closeSync(fd);
+      }
       filePos = stat.size;
 
       const lines = buf.toString("utf8").split("\n");

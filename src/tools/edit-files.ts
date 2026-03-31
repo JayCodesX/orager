@@ -132,10 +132,15 @@ export const editFilesTool: ToolExecutor = {
     // so the working tree is never left in a partially-edited state.
     const written: string[] = [];
     for (const [abs, content] of pendingWrites) {
+      // L-07: Write to temp file first, then atomically rename. This prevents
+      // leaving partially-written files if the process crashes mid-write.
+      const tmpPath = abs + `.tmp.${process.pid}`;
       try {
-        await fs.writeFile(abs, content, "utf8");
+        await fs.writeFile(tmpPath, content, "utf8");
+        await fs.rename(tmpPath, abs);
         written.push(abs);
       } catch (err) {
+        await fs.unlink(tmpPath).catch(() => {});
         const writeErr = err instanceof Error ? err.message : String(err);
         // Restore all files written so far back to their original content
         const restoreErrors: string[] = [];

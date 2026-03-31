@@ -105,7 +105,14 @@ export function auditApproval(entry: AuditEntry): void {
       ...entry,
       inputSummary: sanitizeInput(entry.inputSummary),
     }) + "\n";
-    getStream().write(line);
+    // L-04: Await directory initialization before first write to prevent
+    // silent loss of early audit entries on fresh installations.
+    const stream = getStream();
+    if (_dirInit) {
+      void _dirInit.then(() => stream.write(line)).catch(() => {});
+    } else {
+      stream.write(line);
+    }
   } catch {
     // Silently discard
   }
@@ -138,7 +145,14 @@ export function logToolCall(entry: ToolCallEntry): void {
       ...entry,
       inputSummary: sanitizeInput(entry.inputSummary),
     }) + "\n";
-    getStream().write(line);
+    // L-04: Await directory initialization before first write to prevent
+    // silent loss of early audit entries on fresh installations.
+    const stream = getStream();
+    if (_dirInit) {
+      void _dirInit.then(() => stream.write(line)).catch(() => {});
+    } else {
+      stream.write(line);
+    }
   } catch {
     // Silently discard
   }
@@ -150,7 +164,14 @@ export function logToolCall(entry: ToolCallEntry): void {
 export function logSandboxViolation(entry: { path: string; sandboxRoot: string; ts: number }): void {
   try {
     const line = JSON.stringify({ event: "sandbox_violation", ...entry }) + "\n";
-    getStream().write(line);
+    // L-04: Await directory initialization before first write to prevent
+    // silent loss of early audit entries on fresh installations.
+    const stream = getStream();
+    if (_dirInit) {
+      void _dirInit.then(() => stream.write(line)).catch(() => {});
+    } else {
+      stream.write(line);
+    }
   } catch {
     // Silently discard
   }
