@@ -84,11 +84,17 @@ function withCacheControl(
  * For Anthropic models, inject cache_control at up to 3 strategic breakpoints:
  * system prompt, last tool definition, and last prior-turn message.
  * For non-Anthropic models returns messages and tools unchanged.
+ *
+ * When `frozenSystemPromptLength` is provided and the system message is a plain
+ * string, the system message is split into two content blocks: the frozen prefix
+ * (characters 0..frozenSystemPromptLength) receives cache_control so it is cached
+ * independently of the dynamic memory suffix that follows it.
  */
-function applyAnthropicCacheControl(
+export function applyAnthropicCacheControl(
   model: string,
   messages: Message[],
   tools: ToolDefinition[] | undefined,
+  frozenSystemPromptLength?: number,
 ): { messages: Message[]; tools: ToolDefinition[] | undefined } {
   if (!model.startsWith("anthropic/")) {
     return { messages, tools };
@@ -103,7 +109,28 @@ function applyAnthropicCacheControl(
   // same instructions.  Caching it here means any subsequent agent sending the
   // same system prompt prefix will get a cache hit from OpenRouter.
   if (outMessages.length > 0 && outMessages[0].role === "system") {
-    outMessages[0] = withCacheControl(outMessages[0], cc) as typeof outMessages[0];
+    const sysContent = typeof outMessages[0].content === "string" ? outMessages[0].content : null;
+    if (
+      sysContent !== null &&
+      frozenSystemPromptLength !== undefined &&
+      frozenSystemPromptLength > 0 &&
+      frozenSystemPromptLength < sysContent.length
+    ) {
+      // Two-block split: frozen prefix gets cache_control, dynamic suffix does not.
+      // This caches the large stable content (base instructions, CLAUDE.md) even
+      // when the per-session memory suffix changes between runs.
+      const frozenText  = sysContent.slice(0, frozenSystemPromptLength);
+      const dynamicText = sysContent.slice(frozenSystemPromptLength);
+      outMessages[0] = {
+        ...outMessages[0],
+        content: [
+          { type: "text", text: frozenText,  cache_control: cc },
+          { type: "text", text: dynamicText },
+        ],
+      } as unknown as typeof outMessages[0];
+    } else {
+      outMessages[0] = withCacheControl(outMessages[0], cc) as typeof outMessages[0];
+    }
   }
 
   // Breakpoint 2: last tool definition
@@ -253,6 +280,7 @@ export async function callOpenRouter(
     model,
     opts.messages,
     opts.tools,
+    opts.frozenSystemPromptLength,
   );
 
   const body: Record<string, unknown> = {
@@ -474,7 +502,7 @@ export async function callDirect(
   const anthropicModel = model.startsWith("anthropic/") ? model.slice("anthropic/".length) : model;
 
   // Apply Anthropic prompt cache breakpoints (same logic as OpenRouter path)
-  const { messages, tools } = applyAnthropicCacheControl(model, opts.messages, opts.tools);
+  const { messages, tools } = applyAnthropicCacheControl(model, opts.messages, opts.tools, opts.frozenSystemPromptLength);
 
   const body: Record<string, unknown> = {
     model: anthropicModel,
