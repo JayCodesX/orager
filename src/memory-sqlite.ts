@@ -463,3 +463,59 @@ export async function upsertMasterContext(contextId: string, content: string): P
     `).run(id, contextId, contextId, trimmed, now);
   })();
 }
+
+// ── Phase 6 — Distillation helpers ───────────────────────────────────────────
+
+/**
+ * Count of non-expired memory entries for a given memoryKey.
+ * Used to decide whether distillation should fire.
+ */
+export async function getMemoryEntryCount(memoryKey: string): Promise<number> {
+  const db = await getDb();
+  const now = new Date().toISOString();
+  const row = db.prepare(
+    `SELECT COUNT(*) AS count FROM memory_entries
+     WHERE memory_key = ?
+       AND (expires_at IS NULL OR expires_at > ?)
+       AND type != 'master_context'`
+  ).get(memoryKey, now) as { count: number } | undefined;
+  return row?.count ?? 0;
+}
+
+/**
+ * Return the oldest, lowest-importance non-expired entries for a memoryKey,
+ * suitable for LLM-based compression. Excludes master_context rows.
+ * Targets importance < 3 so user-pinned (high-importance) entries are never
+ * auto-distilled without explicit action.
+ */
+export async function getEntriesForDistillation(
+  memoryKey: string,
+  limit: number,
+): Promise<MemoryEntry[]> {
+  const db = await getDb();
+  const now = new Date().toISOString();
+  const rows = db.prepare(`
+    SELECT id, memory_key, content, tags, created_at, expires_at, run_id,
+           importance, embedding, embedding_model
+    FROM memory_entries
+    WHERE memory_key = ?
+      AND (expires_at IS NULL OR expires_at > ?)
+      AND importance < 3
+      AND type != 'master_context'
+    ORDER BY importance ASC, created_at ASC
+    LIMIT ?
+  `).all(memoryKey, now, limit) as unknown as MemoryRow[];
+  return rows.map(rowToEntry);
+}
+
+/**
+ * Delete memory entries by ID. Used after distillation to replace the original
+ * batch with the synthesised, denser entries. The FTS5 AFTER DELETE trigger
+ * keeps the index in sync automatically.
+ */
+export async function deleteMemoryEntriesByIds(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const db = await getDb();
+  const placeholders = ids.map(() => "?").join(",");
+  db.prepare(`DELETE FROM memory_entries WHERE id IN (${placeholders})`).run(...ids);
+}

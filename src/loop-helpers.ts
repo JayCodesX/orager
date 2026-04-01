@@ -7,6 +7,7 @@
  */
 
 import type { Message, TurnModelRule, TurnContext, EmitResultEvent } from "./types.js";
+import type { MemoryEntry } from "./memory.js";
 import { callOpenRouter } from "./openrouter.js";
 
 // ── Memory section header constants ──────────────────────────────────────────
@@ -557,6 +558,88 @@ export async function summarizeSession(
   });
 
   return result.content.trim();
+}
+
+// ── Long-term distillation (Phase 6) ─────────────────────────────────────────
+
+/**
+ * Distillation fires when the non-expired entry count for a namespace exceeds
+ * this threshold. Set conservatively so it only triggers on genuinely large stores.
+ */
+export const DISTILL_ENTRY_THRESHOLD = 200;
+
+/**
+ * Number of entries pulled from the store per distillation pass.
+ * Targeting the oldest 30 low-importance entries keeps LLM context manageable.
+ */
+export const DISTILL_BATCH_SIZE = 30;
+
+const DISTILL_SYSTEM_PROMPT =
+  "You are compressing long-term agent memory. " +
+  "Below are memory entries (importance 1=low, 2=normal; no importance-3 entries are included). " +
+  "Synthesize them into at most 5 denser entries that preserve every unique fact. " +
+  "Merge related facts into single entries. Discard redundant or superseded information. " +
+  "Output ONLY a JSON array — no explanation, no markdown fences: " +
+  '[{"content":"...","importance":1|2,"tags":["..."]}]';
+
+/**
+ * Call the LLM to compress `entries` into a smaller set of denser facts.
+ * Returns an array of MemoryUpdatePayload ready to be written to memory_entries.
+ * Returns an empty array on any parse or API error — non-fatal by design.
+ */
+export async function distillMemoryEntries(
+  entries: MemoryEntry[],
+  apiKey: string,
+  model: string,
+  summarizeModel?: string,
+): Promise<MemoryUpdatePayload[]> {
+  if (entries.length === 0) return [];
+
+  const formattedEntries = entries
+    .map((e, i) =>
+      `[${i + 1}] importance=${e.importance} tags=${(e.tags ?? []).join(",")} | ${e.content}`,
+    )
+    .join("\n");
+
+  const result = await callOpenRouter({
+    apiKey,
+    model: summarizeModel || model,
+    messages: [
+      {
+        role: "user",
+        content: `${DISTILL_SYSTEM_PROMPT}\n\nEntries:\n${formattedEntries}`,
+      },
+    ],
+  });
+
+  const text = result.content?.trim() ?? "";
+  if (!text) return [];
+
+  // Strip optional markdown code fences the model may emit despite instructions
+  const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+
+  try {
+    const raw = JSON.parse(cleaned) as unknown;
+    if (!Array.isArray(raw)) return [];
+    const out: MemoryUpdatePayload[] = [];
+    for (const item of raw as Record<string, unknown>[]) {
+      if (typeof item.content !== "string" || !item.content.trim()) continue;
+      const importance = [1, 2, 3].includes(item.importance as number)
+        ? (item.importance as 1 | 2 | 3)
+        : 2;
+      const tags = Array.isArray(item.tags)
+        ? (item.tags as unknown[]).slice(0, 10).map(String)
+        : [];
+      out.push({
+        content: item.content.trim().slice(0, MEMORY_UPDATE_MAX_CHARS),
+        importance,
+        tags,
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
 }
 
 // ── Tool result cache ─────────────────────────────────────────────────────────
