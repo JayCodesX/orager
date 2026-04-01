@@ -69,6 +69,7 @@ import {
   DISTILL_ENTRY_THRESHOLD,
   DISTILL_BATCH_SIZE,
   distillMemoryEntries,
+  MEMORY_DYNAMIC_BUDGET_FRACTION,
 } from "./loop-helpers.js";
 import { recordTokens, recordToolCall, recordSession } from "./metrics.js";
 
@@ -600,6 +601,9 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         : 15;
       const retrieval = opts.memoryRetrieval ?? "local";
       let memBlock: string;
+      // Phase 7: track which retrieval path fired for observability logging.
+      let _retrievalPath = "full_store";
+      let _retrievalCount = 0;
       if (retrieval === "embedding" && opts.memoryEmbeddingModel && apiKey) {
         try {
           // Check in-memory cache before calling the embeddings API
@@ -613,15 +617,15 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             });
             setCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt, queryVec);
           }
-          memBlock = renderRetrievedBlock(
-            retrieveEntriesWithEmbeddings(memStore, queryVec ?? [], { topK: 12 }),
-            memoryMaxChars,
-          );
+          const embEntries = retrieveEntriesWithEmbeddings(memStore, queryVec ?? [], { topK: 12 });
+          memBlock = renderRetrievedBlock(embEntries, memoryMaxChars);
+          _retrievalPath = "embedding"; _retrievalCount = embEntries.length;
         } catch {
           // Fall back to Phase 1 on embedding API failure
           memBlock = memStore.entries.length <= threshold
             ? renderMemoryBlock(memStore, memoryMaxChars)
             : renderRetrievedBlock(retrieveEntries(memStore, prompt, { topK: 12 }), memoryMaxChars);
+          _retrievalPath = "full_store_embedding_err"; _retrievalCount = memStore.entries.length;
         }
       } else if (shouldUseFtsRetrieval(opts.memoryRetrieval)) {
         // SQLite + local retrieval: use FTS5 for efficient full-text search
@@ -635,6 +639,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         });
         if (deduped.length > 0) {
           memBlock = renderRetrievedBlock(deduped, memoryMaxChars);
+          _retrievalPath = "fts"; _retrievalCount = deduped.length;
         } else if (opts.memoryEmbeddingModel && apiKey) {
           // Phase 6A: FTS returned nothing — fall back to embedding-based retrieval.
           // The memStore is already loaded above; retrieveEntriesWithEmbeddings scores
@@ -658,28 +663,41 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             if (embResults.length > 0) {
               onLog?.("stderr", `[orager] FTS miss — embedding fallback retrieved ${embResults.length} entries\n`);
               memBlock = renderRetrievedBlock(embResults, memoryMaxChars);
+              _retrievalPath = "fts_embedding_fallback"; _retrievalCount = embResults.length;
             } else {
               memBlock = renderMemoryBlock(memStore, memoryMaxChars);
+              _retrievalPath = "full_store"; _retrievalCount = memStore.entries.length;
             }
           } catch {
             // Non-fatal — fall through to full store render
             memBlock = renderMemoryBlock(memStore, memoryMaxChars);
+            _retrievalPath = "full_store"; _retrievalCount = memStore.entries.length;
           }
         } else {
           memBlock = renderMemoryBlock(memStore, memoryMaxChars);
+          _retrievalPath = "full_store"; _retrievalCount = memStore.entries.length;
         }
       } else {
         // Phase 1 path (existing logic from Phase 1)
+        const p1entries = memStore.entries.length <= threshold
+          ? memStore.entries
+          : retrieveEntries(memStore, prompt, { topK: 12 });
         memBlock = memStore.entries.length <= threshold
           ? renderMemoryBlock(memStore, memoryMaxChars)
-          : renderRetrievedBlock(
-              retrieveEntries(memStore, prompt, { topK: 12 }),
-              memoryMaxChars,
-            );
+          : renderRetrievedBlock(p1entries, memoryMaxChars);
+        _retrievalPath = "local_scored"; _retrievalCount = p1entries.length;
       }
       if (memBlock) {
         systemPrompt += "\n\n" + MEMORY_HEADER_RETRIEVED + "\n\n" + memBlock;
       }
+      // Phase 7: structured log for retrieval path observability.
+      log.info("memory_retrieval", {
+        sessionId,
+        contextId: effectiveMemoryKey,
+        path: _retrievalPath,
+        count: _retrievalCount,
+        totalEntries: memStore.entries.length,
+      });
     } catch { /* non-fatal — memory load failure must never abort a run */ }
     allTools.push(makeRememberTool(
       effectiveMemoryKey,
@@ -732,6 +750,34 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         });
       }
     } catch { /* non-fatal */ }
+  }
+
+  // ── Phase 7: Dynamic memory token budget ──────────────────────────────────
+  // Cap the combined dynamic section (master context + retrieved memory +
+  // auto-memory + prior session) to MEMORY_DYNAMIC_BUDGET_FRACTION of the
+  // context window. Prevents the memory injection from crowding out the
+  // conversation history on small-context models or large memory stores.
+  // Uses a 4 chars/token heuristic — coarse but allocation-free.
+  if (memoryEnabled) {
+    const dynamicChars = systemPrompt.length - frozenSystemPromptLength;
+    const budgetChars = Math.floor(contextWindow * MEMORY_DYNAMIC_BUDGET_FRACTION * 4);
+    if (dynamicChars > budgetChars && budgetChars > 0) {
+      systemPrompt =
+        systemPrompt.slice(0, frozenSystemPromptLength + budgetChars) +
+        "\n\n[Memory section truncated — exceeded context budget]";
+      onLog?.(
+        "stderr",
+        `[orager] memory budget enforced: dynamic section capped at ${budgetChars} chars (~${Math.round(budgetChars / 4)} tokens)\n`,
+      );
+      log.info("memory_budget_enforced", {
+        sessionId,
+        contextId: effectiveMemoryKey,
+        dynamicCharsBefore: dynamicChars,
+        budgetChars,
+        contextWindow,
+        fraction: MEMORY_DYNAMIC_BUDGET_FRACTION,
+      });
+    }
   }
 
   // Warn about duplicate tool names (first definition wins via find())

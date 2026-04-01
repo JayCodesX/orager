@@ -19,6 +19,17 @@ export const MEMORY_HEADER_RETRIEVED     = "## Your persistent memory";
 export const MEMORY_HEADER_AUTO          = "# Persistent memory";
 export const MEMORY_HEADER_PRIOR_SESSION = "## Prior session context";
 
+/**
+ * Maximum share of the context window (in tokens) that the dynamic memory
+ * section (master context + retrieved memory + auto-memory + prior session)
+ * is allowed to occupy. At 20% a 200k-token model allows ~40k tokens of
+ * injected memory; a 32k model caps at ~6.4k tokens.
+ * Override via ORAGER_MEMORY_BUDGET_FRACTION env var (0 < value ≤ 1).
+ */
+export const MEMORY_DYNAMIC_BUDGET_FRACTION = parseFloat(
+  process.env["ORAGER_MEMORY_BUDGET_FRACTION"] ?? "0.20",
+);
+
 // ── Token estimation ──────────────────────────────────────────────────────────
 
 // Lazy-loaded BPE tokenisers — only imported on first use.
