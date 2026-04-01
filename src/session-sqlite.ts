@@ -378,4 +378,43 @@ export class SqliteSessionStore implements SessionStore {
       fullState,
     };
   }
+
+  /**
+   * Load the most recent synthesised checkpoint for a context namespace across
+   * all session threads. Used for cold-start injection — a brand-new session
+   * can warm up with the prior session's summary without knowing its thread ID.
+   *
+   * Only returns rows where summary IS NOT NULL (i.e. a synthesis has completed).
+   * Returns null if no synthesised checkpoint exists for this context.
+   */
+  loadLatestCheckpointByContextId(contextId: string): {
+    threadId: string;
+    contextId: string;
+    lastTurn: number;
+    summary: string | null;
+    fullState: unknown[];
+  } | null {
+    const row = this.db.prepare(`
+      SELECT thread_id, context_id, last_turn, summary, full_state
+      FROM session_checkpoints
+      WHERE context_id = ? AND summary IS NOT NULL
+      ORDER BY updated_at DESC, rowid DESC LIMIT 1
+    `).get(contextId) as {
+      thread_id: string; context_id: string; last_turn: number;
+      summary: string | null; full_state: string;
+    } | undefined;
+
+    if (!row) return null;
+
+    let fullState: unknown[] = [];
+    try { fullState = JSON.parse(row.full_state) as unknown[]; } catch { /* ignore */ }
+
+    return {
+      threadId: row.thread_id,
+      contextId: row.context_id,
+      lastTurn: row.last_turn,
+      summary: row.summary,
+      fullState,
+    };
+  }
 }

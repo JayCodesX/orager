@@ -13,9 +13,10 @@ import { callOpenRouter } from "./openrouter.js";
 // Canonical headers used when injecting memory blocks into the system prompt.
 // Keeping them as named constants prevents accidental divergence across call sites
 // and ensures the frozen/dynamic boundary split is deterministic.
-export const MEMORY_HEADER_MASTER    = "## Persistent Product Context";
-export const MEMORY_HEADER_RETRIEVED = "## Your persistent memory";
-export const MEMORY_HEADER_AUTO      = "# Persistent memory";
+export const MEMORY_HEADER_MASTER        = "## Persistent Product Context";
+export const MEMORY_HEADER_RETRIEVED     = "## Your persistent memory";
+export const MEMORY_HEADER_AUTO          = "# Persistent memory";
+export const MEMORY_HEADER_PRIOR_SESSION = "## Prior session context";
 
 // ── Token estimation ──────────────────────────────────────────────────────────
 
