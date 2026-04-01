@@ -27,6 +27,7 @@ import {
 } from "../memory-sqlite.js";
 import { callEmbeddings } from "../openrouter.js";
 import { withSpan } from "../telemetry.js";
+import type { MemoryStore } from "../memory.js";
 import type { ToolExecutor, ToolResult } from "../types.js";
 
 const MAX_CONTENT_CHARS = 500;
@@ -37,9 +38,14 @@ export function makeRememberTool(
   maxChars = DEFAULT_MAX_CHARS,
   embeddingOpts?: { apiKey: string; model: string } | null,
   contextId?: string,
+  /** All namespaces the agent may read from or write to. Defaults to [memoryKey]. */
+  allowedNamespaces?: string[],
 ): ToolExecutor {
   // contextId defaults to memoryKey — they share the same namespace.
   const effectiveContextId = contextId ?? memoryKey;
+  // Namespaces the agent is permitted to read or write.
+  const readNamespaces: string[] =
+    allowedNamespaces && allowedNamespaces.length > 0 ? allowedNamespaces : [memoryKey];
 
   return {
     definition: {
@@ -55,9 +61,14 @@ export function makeRememberTool(
           "Actions:\n" +
           "  add          — store a new memory entry\n" +
           "  remove       — delete an entry by its id\n" +
-          "  list         — show all current memory entries\n" +
+          "  list         — show all current memory entries (across all namespaces)\n" +
           "  view_master  — show the persistent product/project context (Layer 1)\n" +
-          "  set_master   — update the persistent product/project context (max ~2k tokens)",
+          "  set_master   — update the persistent product/project context (max ~2k tokens)" +
+          (readNamespaces.length > 1
+            ? `\n\nAvailable namespaces: ${readNamespaces.join(", ")}. ` +
+              `Default write target: ${memoryKey}. ` +
+              `Use target_namespace to write to a specific shared namespace.`
+            : ""),
         parameters: {
           type: "object",
           properties: {
@@ -90,6 +101,14 @@ export function makeRememberTool(
               type: "string",
               description: "Required for action=remove. The memory entry id.",
             },
+            target_namespace: {
+              type: "string",
+              description:
+                readNamespaces.length > 1
+                  ? `Optional. Namespace to write to for action=add or remove. ` +
+                    `Must be one of: ${readNamespaces.join(", ")}. Defaults to ${memoryKey}.`
+                  : "Optional. Namespace to write to. Defaults to the agent's primary namespace.",
+            },
           },
           required: ["action"],
         },
@@ -102,11 +121,38 @@ export function makeRememberTool(
         return { toolCallId: "", content: "action is required", isError: true };
       }
 
-      // Load + prune on every call so the view is always fresh
-      let store = pruneExpired(await loadMemoryStoreAny(memoryKey));
+      // Resolve target namespace for write operations (add / remove).
+      // Validated against the allowedNamespaces list — rejects unknown keys.
+      const rawTarget = typeof input["target_namespace"] === "string" ? input["target_namespace"].trim() : "";
+      const writeTarget: string = (() => {
+        if (!rawTarget) return memoryKey;
+        if (readNamespaces.includes(rawTarget)) return rawTarget;
+        return memoryKey; // silently fall back to primary rather than error
+      })();
+
+      // Load + prune the primary store for operations that need it.
+      // For multi-namespace list we load all stores below.
+      let store = pruneExpired(await loadMemoryStoreAny(writeTarget));
 
       if (action === "list") {
-        const block = renderMemoryBlock(store, maxChars);
+        if (readNamespaces.length === 1) {
+          const block = renderMemoryBlock(store, maxChars);
+          return {
+            toolCallId: "",
+            content: block || "No memories stored yet.",
+            isError: false,
+          };
+        }
+        // Multi-namespace: load all namespaces, merge entries, render.
+        const allStores = await Promise.all(
+          readNamespaces.map((k) => loadMemoryStoreAny(k).then(pruneExpired))
+        );
+        const merged: MemoryStore = {
+          memoryKey: memoryKey,
+          updatedAt: new Date().toISOString(),
+          entries: allStores.flatMap((s) => s.entries),
+        };
+        const block = renderMemoryBlock(merged, maxChars);
         return {
           toolCallId: "",
           content: block || "No memories stored yet.",
@@ -147,12 +193,12 @@ export function makeRememberTool(
             ...(expiresAt ? { expiresAt } : {}),
             importance,
           };
-          const saved = await withSpan("memory.save", { memoryKey, action: "add" }, () =>
-            addMemoryEntrySqlite(memoryKey, entryData)
+          const saved = await withSpan("memory.save", { memoryKey: writeTarget, action: "add" }, () =>
+            addMemoryEntrySqlite(writeTarget, entryData)
           );
           return {
             toolCallId: "",
-            content: `Memory saved (id: ${saved.id}, importance: ${importance}${tags && tags.length > 0 ? `, tags: ${tags.join(", ")}` : ""}): ${content}`,
+            content: `Memory saved (id: ${saved.id}, namespace: ${writeTarget}, importance: ${importance}${tags && tags.length > 0 ? `, tags: ${tags.join(", ")}` : ""}): ${content}`,
             isError: false,
           };
         }
@@ -160,9 +206,9 @@ export function makeRememberTool(
         // Wrap the entire load→mutate→save round-trip in a per-key lock to prevent
         // concurrent adds from silently dropping each other's entries (last-write-wins).
         let savedEntry: { id: string };
-        await withMemoryLock(memoryKey, async () => {
+        await withMemoryLock(writeTarget, async () => {
           // Re-load inside the lock so we start from the latest persisted state
-          let lockedStore = pruneExpired(await loadMemoryStoreAny(memoryKey));
+          let lockedStore = pruneExpired(await loadMemoryStoreAny(writeTarget));
           lockedStore = addMemoryEntry(lockedStore, {
             content,
             ...(tags && tags.length > 0 ? { tags } : {}),
@@ -188,15 +234,15 @@ export function makeRememberTool(
             }
           }
 
-          await withSpan("memory.save", { memoryKey, action: "add" }, async () =>
-            saveMemoryStoreAny(memoryKey, lockedStore)
+          await withSpan("memory.save", { memoryKey: writeTarget, action: "add" }, async () =>
+            saveMemoryStoreAny(writeTarget, lockedStore)
           );
           savedEntry = lockedStore.entries[lockedStore.entries.length - 1];
         });
 
         return {
           toolCallId: "",
-          content: `Memory saved (id: ${savedEntry!.id}, importance: ${importance}${tags && tags.length > 0 ? `, tags: ${tags.join(", ")}` : ""}): ${content}`,
+          content: `Memory saved (id: ${savedEntry!.id}, namespace: ${writeTarget}, importance: ${importance}${tags && tags.length > 0 ? `, tags: ${tags.join(", ")}` : ""}): ${content}`,
           isError: false,
         };
       }
@@ -209,7 +255,7 @@ export function makeRememberTool(
 
         if (isSqliteMemoryEnabled()) {
           // Fast path: direct DELETE
-          const deleted = await removeMemoryEntrySqlite(memoryKey, id);
+          const deleted = await removeMemoryEntrySqlite(writeTarget, id);
           if (!deleted) {
             return { toolCallId: "", content: `No memory entry found with id: ${id}`, isError: false };
           }
@@ -217,12 +263,12 @@ export function makeRememberTool(
         }
 
         let removeResult: { found: boolean } = { found: false };
-        await withMemoryLock(memoryKey, async () => {
-          let lockedStore = pruneExpired(await loadMemoryStoreAny(memoryKey));
+        await withMemoryLock(writeTarget, async () => {
+          let lockedStore = pruneExpired(await loadMemoryStoreAny(writeTarget));
           const before = lockedStore.entries.length;
           lockedStore = removeMemoryEntry(lockedStore, id);
           if (lockedStore.entries.length < before) {
-            await saveMemoryStoreAny(memoryKey, lockedStore);
+            await saveMemoryStoreAny(writeTarget, lockedStore);
             removeResult = { found: true };
           }
         });

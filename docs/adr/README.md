@@ -9,6 +9,7 @@ ADRs document significant architectural choices: the context that drove them, th
 | # | Title | Status | Date |
 |---|---|---|---|
 | [0001](./0001-hierarchical-memory-system.md) | Hierarchical memory system for cross-session context retention | Accepted | 2026-04-01 |
+| [0002](./0002-ann-vector-index.md) | ANN vector index for semantic memory retrieval at scale | Proposed (deferred) | 2026-04-01 |
 
 ## Format
 

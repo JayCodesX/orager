@@ -1203,12 +1203,18 @@ export interface AgentLoopOptions {
   memory?: boolean;
 
   /**
-   * Stable key used to identify the memory store for this agent.
-   * Typically the Paperclip agent ID (passed by the adapter) so memories
-   * persist across session resets. Falls back to a hash of the cwd for
-   * standalone use. Sanitized to [a-zA-Z0-9_-], max 128 chars.
+   * Stable key (or keys) identifying the memory namespace(s) for this agent.
+   *
+   * Single string: the agent reads and writes to one namespace.
+   * Array of strings: the FIRST key is the primary write target; all keys
+   *   (including the primary) are read sources, merged at retrieval time.
+   *   Use an array to give an agent read access to a shared team/project
+   *   namespace while keeping its own writes scoped to its private key.
+   *
+   * Falls back to a repo-URL-derived or CWD-derived key when omitted.
+   * Each key is sanitized to [a-zA-Z0-9_-], max 128 chars.
    */
-  memoryKey?: string;
+  memoryKey?: string | string[];
 
   /**
    * Repository URL — used to derive memory key when memoryKey is not explicit.
