@@ -612,6 +612,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       // Phase 7: track which retrieval path fired for observability logging.
       let _retrievalPath = "full_store";
       let _retrievalCount = 0;
+      const _retrievalStartMs = Date.now();
       if (retrieval === "embedding" && opts.memoryEmbeddingModel && apiKey) {
         try {
           // Check in-memory cache before calling the embeddings API
@@ -625,7 +626,11 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             });
             setCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt, queryVec);
           }
-          const embEntries = retrieveEntriesWithEmbeddings(memStore, queryVec ?? [], { topK: 12 });
+          const embEntries = await withSpan("memory.retrieve_embeddings", {
+            totalEntries: memStore.entries.length,
+            topK: 12,
+            path: "embedding",
+          }, async () => retrieveEntriesWithEmbeddings(memStore, queryVec ?? [], { topK: 12 }));
           memBlock = renderRetrievedBlock(embEntries, memoryMaxChars);
           _retrievalPath = "embedding"; _retrievalCount = embEntries.length;
         } catch {
@@ -667,7 +672,11 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
               }
             }
             const embResults = queryVec && queryVec.length > 0
-              ? retrieveEntriesWithEmbeddings(memStore, queryVec, { topK: 12 })
+              ? await withSpan("memory.retrieve_embeddings", {
+                  totalEntries: memStore.entries.length,
+                  topK: 12,
+                  path: "fts_embedding_fallback",
+                }, async () => retrieveEntriesWithEmbeddings(memStore, queryVec!, { topK: 12 }))
               : [];
             if (embResults.length > 0) {
               onLog?.("stderr", `[orager] FTS miss — embedding fallback retrieved ${embResults.length} entries\n`);
@@ -706,6 +715,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         path: _retrievalPath,
         count: _retrievalCount,
         totalEntries: memStore.entries.length,
+        durationMs: Date.now() - _retrievalStartMs,
       });
     } catch { /* non-fatal — memory load failure must never abort a run */ }
     allTools.push(makeRememberTool(
