@@ -21,6 +21,9 @@ import {
   isSqliteMemoryEnabled,
   addMemoryEntrySqlite,
   removeMemoryEntrySqlite,
+  loadMasterContext,
+  upsertMasterContext,
+  MASTER_CONTEXT_MAX_CHARS,
 } from "../memory-sqlite.js";
 import { callEmbeddings } from "../openrouter.js";
 import { withSpan } from "../telemetry.js";
@@ -33,7 +36,11 @@ export function makeRememberTool(
   memoryKey: string,
   maxChars = DEFAULT_MAX_CHARS,
   embeddingOpts?: { apiKey: string; model: string } | null,
+  contextId?: string,
 ): ToolExecutor {
+  // contextId defaults to memoryKey — they share the same namespace.
+  const effectiveContextId = contextId ?? memoryKey;
+
   return {
     definition: {
       type: "function",
@@ -46,16 +53,20 @@ export function makeRememberTool(
           "worth remembering (user preferences, codebase quirks, recurring bugs, patterns) " +
           "and to recall prior context when starting a new task.\n\n" +
           "Actions:\n" +
-          "  add    — store a new memory entry\n" +
-          "  remove — delete an entry by its id\n" +
-          "  list   — show all current memory entries",
+          "  add          — store a new memory entry\n" +
+          "  remove       — delete an entry by its id\n" +
+          "  list         — show all current memory entries\n" +
+          "  view_master  — show the persistent product/project context (Layer 1)\n" +
+          "  set_master   — update the persistent product/project context (max ~2k tokens)",
         parameters: {
           type: "object",
           properties: {
             action: {
               type: "string",
-              enum: ["add", "remove", "list"],
-              description: "add: store a new memory. remove: delete by id. list: show all current memories.",
+              enum: ["add", "remove", "list", "view_master", "set_master"],
+              description:
+                "add: store a new memory. remove: delete by id. list: show all memories. " +
+                "view_master: show master context. set_master: update master context.",
             },
             content: {
               type: "string",
@@ -219,6 +230,49 @@ export function makeRememberTool(
           return { toolCallId: "", content: `No memory entry found with id: ${id}`, isError: false };
         }
         return { toolCallId: "", content: `Memory removed: ${id}`, isError: false };
+      }
+
+      // ── view_master ────────────────────────────────────────────────────────
+      if (action === "view_master") {
+        if (!isSqliteMemoryEnabled()) {
+          return { toolCallId: "", content: "Master context requires SQLite (ORAGER_DB_PATH must not be 'none').", isError: true };
+        }
+        const ctx = await loadMasterContext(effectiveContextId);
+        if (!ctx) {
+          return { toolCallId: "", content: "No master context set yet. Use action=set_master to define it.", isError: false };
+        }
+        const tokenEstimate = Math.round(ctx.length / 4);
+        return {
+          toolCallId: "",
+          content: `## Master Context (context_id: ${effectiveContextId}, ~${tokenEstimate} tokens)\n\n${ctx}`,
+          isError: false,
+        };
+      }
+
+      // ── set_master ─────────────────────────────────────────────────────────
+      if (action === "set_master") {
+        if (!isSqliteMemoryEnabled()) {
+          return { toolCallId: "", content: "Master context requires SQLite (ORAGER_DB_PATH must not be 'none').", isError: true };
+        }
+        const raw = typeof input["content"] === "string" ? input["content"].trim() : "";
+        if (!raw) {
+          return { toolCallId: "", content: "content is required for action=set_master.", isError: true };
+        }
+        if (raw.length > MASTER_CONTEXT_MAX_CHARS) {
+          return {
+            toolCallId: "",
+            content: `Content exceeds the ${MASTER_CONTEXT_MAX_CHARS}-char (~2k token) budget for master context. ` +
+              `Please shorten it (current: ${raw.length} chars, limit: ${MASTER_CONTEXT_MAX_CHARS} chars).`,
+            isError: true,
+          };
+        }
+        await upsertMasterContext(effectiveContextId, raw);
+        const tokenEstimate = Math.round(raw.length / 4);
+        return {
+          toolCallId: "",
+          content: `Master context saved (~${tokenEstimate} tokens). It will be injected at the start of every future session.`,
+          isError: false,
+        };
       }
 
       return { toolCallId: "", content: `Unknown action: ${action}`, isError: true };
