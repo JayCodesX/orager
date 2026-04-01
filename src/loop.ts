@@ -26,7 +26,7 @@ import type { HookConfig, HookPayload } from "./hooks.js";
 import { loadSettings, mergeSettings, loadClaudeDesktopMcpServers } from "./settings.js";
 import { exitPlanModeTool, PLAN_MODE_TOOL_NAME } from "./tools/plan.js";
 import path from "node:path";
-import { loadSession, saveSession, newSessionId, acquireSessionLock, saveSessionCheckpoint } from "./session.js";
+import { loadSession, saveSession, newSessionId, acquireSessionLock, saveSessionCheckpoint, loadLatestCheckpointByContextId } from "./session.js";
 import { callWithRetry } from "./retry.js";
 import { fetchGenerationMeta, shouldUseDirect, callEmbeddings } from "./openrouter.js";
 import { fetchLiveModelMeta, getLiveModelPricing, isLiveModelMetaCacheWarm, liveModelSupportsTools, liveModelSupportsVision } from "./openrouter-model-meta.js";
@@ -63,6 +63,7 @@ import {
   MEMORY_HEADER_MASTER,
   MEMORY_HEADER_RETRIEVED,
   MEMORY_HEADER_AUTO,
+  MEMORY_HEADER_PRIOR_SESSION,
   MEMORY_UPDATE_INSTRUCTION,
   parseMemoryUpdates,
 } from "./loop-helpers.js";
@@ -674,6 +675,28 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     } catch { /* non-fatal — memory read failure must never abort a run */ }
     allTools.push(makeWriteMemoryTool(cwd));
     allTools.push(makeReadMemoryTool(cwd));
+  }
+
+  // ── Phase 5: Cold-start — inject prior session checkpoint ─────────────────
+  // On a fresh (non-resume) session, load the most recent synthesised checkpoint
+  // for this context namespace and inject its summary. This gives all model
+  // providers the same "warm start" benefit that Claude gets from CLAUDE.md
+  // training — the agent picks up factual continuity without re-reading history.
+  // Non-fatal: failure must never abort a run.
+  if (memoryEnabled && isSqliteMemoryEnabled() && !isResume) {
+    try {
+      const priorCp = await loadLatestCheckpointByContextId(effectiveMemoryKey);
+      if (priorCp?.summary) {
+        systemPrompt += "\n\n" + MEMORY_HEADER_PRIOR_SESSION + "\n\n" + priorCp.summary;
+        log.info("prior_checkpoint_injected", {
+          sessionId,
+          contextId: effectiveMemoryKey,
+          priorThreadId: priorCp.threadId,
+          priorTurn: priorCp.lastTurn,
+          chars: priorCp.summary.length,
+        });
+      }
+    } catch { /* non-fatal */ }
   }
 
   // Warn about duplicate tool names (first definition wins via find())
@@ -2228,6 +2251,56 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       const saveErrMsg = saveErr instanceof Error ? saveErr.message : String(saveErr);
       onLog?.("stderr", `[orager] WARNING: session save failed — session may not be resumable: ${saveErrMsg}\n`);
       log.warn("session_save_failed", { sessionId, error: saveErrMsg });
+    }
+
+    // ── Phase 5: Session-end synthesis ────────────────────────────────────────
+    // After a successful run, synthesise a checkpoint summary so the next
+    // session (which won't know this thread ID) can warm-start with it.
+    // Only fires when:
+    //  - At least SESSION_END_MIN_TURNS turns completed (avoids noise runs)
+    //  - SQLite memory is enabled (checkpoints require SQLite)
+    //  - Memory is not disabled
+    const SESSION_END_MIN_TURNS = 3;
+    if (memoryEnabled && isSqliteMemoryEnabled() && turn >= SESSION_END_MIN_TURNS) {
+      try {
+        const assistantMsgsForSynthesis = messages.filter((m) => m.role === "assistant");
+        if (assistantMsgsForSynthesis.length > 0) {
+          const endSummary = await summarizeSession(
+            assistantMsgsForSynthesis,
+            apiKey,
+            model,
+            summarizeModel,
+            opts.summarizePrompt,
+          );
+          const endValidation = validateSummary(endSummary, assistantMsgsForSynthesis);
+          if (endValidation.valid) {
+            await saveSessionCheckpoint(
+              sessionId,
+              effectiveMemoryKey,
+              turn,
+              endSummary,
+              messages.slice(-20),
+            );
+            onLog?.("stderr", `[orager] session-end checkpoint saved (${endSummary.length} chars)\n`);
+            log.info("session_end_checkpoint_saved", {
+              sessionId,
+              contextId: effectiveMemoryKey,
+              turns: turn,
+              summaryChars: endSummary.length,
+            });
+          } else {
+            log.warn("session_end_checkpoint_invalid", {
+              sessionId,
+              contextId: effectiveMemoryKey,
+              reason: endValidation.reason,
+            });
+          }
+        }
+      } catch (synthErr) {
+        const synthErrMsg = synthErr instanceof Error ? synthErr.message : String(synthErr);
+        onLog?.("stderr", `[orager] WARNING: session-end synthesis failed — ${synthErrMsg}\n`);
+        log.warn("session_end_synthesis_failed", { sessionId, error: synthErrMsg });
+      }
     }
 
     spanSetAttributes({ "orager.turns": turn, "orager.cost_usd": totalCostUsd });

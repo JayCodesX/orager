@@ -175,6 +175,28 @@ export async function loadSessionCheckpoint(
   return null;
 }
 
+/**
+ * Load the most recent synthesised checkpoint for a context namespace, across
+ * all session threads. Used for cold-start injection in new sessions.
+ * Returns null when using the file-based store or when no checkpoint exists.
+ */
+export async function loadLatestCheckpointByContextId(
+  contextId: string,
+): Promise<{
+  threadId: string;
+  contextId: string;
+  lastTurn: number;
+  summary: string | null;
+  fullState: unknown[];
+} | null> {
+  const store = await getStore();
+  const { SqliteSessionStore } = await import("./session-sqlite.js");
+  if (store instanceof SqliteSessionStore) {
+    return store.loadLatestCheckpointByContextId(contextId);
+  }
+  return null;
+}
+
 // ── Per-session write serialisation ──────────────────────────────────────────
 //
 // If the same session is saved concurrently (e.g. summarisation fires while the
