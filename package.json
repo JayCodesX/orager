@@ -1,8 +1,7 @@
 {
   "name": "@paperclipai/orager",
   "version": "0.0.1",
-  "private": true,
-  "description": "OpenRouter agentic CLI for Paperclip agent loops",
+  "description": "Production-grade agent loop engine for multi-turn, tool-calling LLM workflows",
   "license": "MIT",
   "type": "module",
   "files": [
