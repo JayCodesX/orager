@@ -311,4 +311,71 @@ export class SqliteSessionStore implements SessionStore {
       catch { /* ignore */ }
     };
   }
+
+  // ── Session checkpoints (Phase 2) ────────────────────────────────────────────
+
+  /**
+   * Upsert a session checkpoint.
+   * Stores a condensed summary + the serialized recent turns for fast resumption.
+   * summary may be null when writing a raw (pre-synthesis) checkpoint.
+   */
+  saveCheckpoint(
+    threadId: string,
+    contextId: string,
+    lastTurn: number,
+    summary: string | null,
+    recentMessages: unknown[],
+  ): void {
+    this.db.prepare(`
+      INSERT INTO session_checkpoints
+        (thread_id, context_id, last_turn, summary, full_state, updated_at)
+      VALUES (?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(thread_id) DO UPDATE SET
+        context_id = excluded.context_id,
+        last_turn  = excluded.last_turn,
+        summary    = COALESCE(excluded.summary, session_checkpoints.summary),
+        full_state = excluded.full_state,
+        updated_at = excluded.updated_at
+    `).run(
+      threadId,
+      contextId,
+      lastTurn,
+      summary,
+      JSON.stringify(recentMessages),
+    );
+  }
+
+  /**
+   * Load the latest checkpoint for a thread.
+   * Returns null if no checkpoint exists.
+   */
+  loadCheckpoint(threadId: string): {
+    threadId: string;
+    contextId: string;
+    lastTurn: number;
+    summary: string | null;
+    fullState: unknown[];
+  } | null {
+    const row = this.db.prepare(`
+      SELECT thread_id, context_id, last_turn, summary, full_state
+      FROM session_checkpoints
+      WHERE thread_id = ?
+    `).get(threadId) as {
+      thread_id: string; context_id: string; last_turn: number;
+      summary: string | null; full_state: string;
+    } | undefined;
+
+    if (!row) return null;
+
+    let fullState: unknown[] = [];
+    try { fullState = JSON.parse(row.full_state) as unknown[]; } catch { /* ignore */ }
+
+    return {
+      threadId: row.thread_id,
+      contextId: row.context_id,
+      lastTurn: row.last_turn,
+      summary: row.summary,
+      fullState,
+    };
+  }
 }
