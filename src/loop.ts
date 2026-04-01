@@ -20,7 +20,7 @@ import { makeTodoTools } from "./tools/todo.js";
 import { makeRememberTool } from "./tools/remember.js";
 import { makeWriteMemoryTool, makeReadMemoryTool, loadAutoMemory } from "./tools/auto-memory.js";
 import { loadMemoryStoreAny, pruneExpired, renderMemoryBlock, renderRetrievedBlock, retrieveEntries, retrieveEntriesWithEmbeddings, memoryKeyFromCwd, buildMemoryKeyFromRepo, shouldUseFtsRetrieval } from "./memory.js";
-import { isSqliteMemoryEnabled, searchMemoryFts } from "./memory-sqlite.js";
+import { isSqliteMemoryEnabled, searchMemoryFts, loadMasterContext } from "./memory-sqlite.js";
 import { fireHooks } from "./hooks.js";
 import type { HookConfig, HookPayload } from "./hooks.js";
 import { loadSettings, mergeSettings, loadClaudeDesktopMcpServers } from "./settings.js";
@@ -544,6 +544,24 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     : opts.repoUrl
       ? buildMemoryKeyFromRepo(opts.agentId ?? "default", opts.repoUrl)
       : memoryKeyFromCwd(cwd);
+  // ── Layer 1: Master context (always loaded when SQLite is available) ─────────
+  // Injected as the first memory block so it anchors every session with stable
+  // product/project context. Non-fatal — failure must never abort a run.
+  if (memoryEnabled && isSqliteMemoryEnabled()) {
+    try {
+      const masterCtx = await loadMasterContext(effectiveMemoryKey);
+      if (masterCtx) {
+        systemPrompt += "\n\n## Persistent Product Context\n\n" + masterCtx;
+        log.info("master_context_loaded", {
+          sessionId,
+          contextId: effectiveMemoryKey,
+          chars: masterCtx.length,
+          tokenEstimate: Math.round(masterCtx.length / 4),
+        });
+      }
+    } catch { /* non-fatal */ }
+  }
+
   if (memoryEnabled) {
     // Load + prune the store, inject into system prompt, and register the tool
     try {
@@ -611,6 +629,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       opts.memoryRetrieval === "embedding" && opts.memoryEmbeddingModel
         ? { apiKey, model: opts.memoryEmbeddingModel }
         : null,
+      effectiveMemoryKey, // contextId — same namespace as memoryKey
     ));
   }
 
