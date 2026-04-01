@@ -335,3 +335,89 @@ describe("full round-trip", () => {
     }
   });
 });
+
+describe("loadMasterContext + upsertMasterContext", () => {
+  it("returns null when no master context has been set", async () => {
+    const dbPath = makeTempDbPath();
+    process.env["ORAGER_DB_PATH"] = dbPath;
+    const { _resetDbForTesting, loadMasterContext } = await importFresh();
+    _resetDbForTesting();
+
+    try {
+      const ctx = await loadMasterContext("my-project");
+      expect(ctx).toBeNull();
+    } finally {
+      _resetDbForTesting();
+      fs.rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("saves and retrieves master context", async () => {
+    const dbPath = makeTempDbPath();
+    process.env["ORAGER_DB_PATH"] = dbPath;
+    const { _resetDbForTesting, loadMasterContext, upsertMasterContext } = await importFresh();
+    _resetDbForTesting();
+
+    try {
+      await upsertMasterContext("my-project", "B2B analytics SaaS targeting mid-market finance teams.");
+      const ctx = await loadMasterContext("my-project");
+      expect(ctx).toBe("B2B analytics SaaS targeting mid-market finance teams.");
+    } finally {
+      _resetDbForTesting();
+      fs.rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("upsert replaces previous master context — only one row active at a time", async () => {
+    const dbPath = makeTempDbPath();
+    process.env["ORAGER_DB_PATH"] = dbPath;
+    const { _resetDbForTesting, loadMasterContext, upsertMasterContext } = await importFresh();
+    _resetDbForTesting();
+
+    try {
+      await upsertMasterContext("proj", "Version 1");
+      await upsertMasterContext("proj", "Version 2 — updated goals");
+      const ctx = await loadMasterContext("proj");
+      expect(ctx).toBe("Version 2 — updated goals");
+    } finally {
+      _resetDbForTesting();
+      fs.rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("master context is scoped to context_id — different contexts are isolated", async () => {
+    const dbPath = makeTempDbPath();
+    process.env["ORAGER_DB_PATH"] = dbPath;
+    const { _resetDbForTesting, loadMasterContext, upsertMasterContext } = await importFresh();
+    _resetDbForTesting();
+
+    try {
+      await upsertMasterContext("project-a", "Context for project A");
+      await upsertMasterContext("project-b", "Context for project B");
+
+      expect(await loadMasterContext("project-a")).toBe("Context for project A");
+      expect(await loadMasterContext("project-b")).toBe("Context for project B");
+      expect(await loadMasterContext("project-c")).toBeNull();
+    } finally {
+      _resetDbForTesting();
+      fs.rmSync(dbPath, { force: true });
+    }
+  });
+
+  it("truncates content that exceeds MASTER_CONTEXT_MAX_CHARS", async () => {
+    const dbPath = makeTempDbPath();
+    process.env["ORAGER_DB_PATH"] = dbPath;
+    const { _resetDbForTesting, loadMasterContext, upsertMasterContext, MASTER_CONTEXT_MAX_CHARS } = await importFresh();
+    _resetDbForTesting();
+
+    try {
+      const oversized = "x".repeat((MASTER_CONTEXT_MAX_CHARS as number) + 500);
+      await upsertMasterContext("proj", oversized);
+      const ctx = await loadMasterContext("proj");
+      expect(ctx?.length).toBe(MASTER_CONTEXT_MAX_CHARS as number);
+    } finally {
+      _resetDbForTesting();
+      fs.rmSync(dbPath, { force: true });
+    }
+  });
+});

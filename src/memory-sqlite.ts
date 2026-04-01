@@ -416,3 +416,50 @@ export async function clearMemoryStoreSqlite(memoryKey: string): Promise<number>
 export function isSqliteMemoryEnabled(): boolean {
   return resolveDbPath() !== null;
 }
+
+// ── Master context (Layer 1) ──────────────────────────────────────────────────
+
+/**
+ * Hard character cap for master context — keeps injection under ~2k tokens.
+ * (~8k chars ÷ 4 chars/token ≈ 2000 tokens)
+ */
+export const MASTER_CONTEXT_MAX_CHARS = 8_000;
+
+/**
+ * Load the master context for a context_id.
+ * Returns the content string or null if none has been set.
+ */
+export async function loadMasterContext(contextId: string): Promise<string | null> {
+  const db = await getDb();
+  const row = db.prepare(
+    `SELECT content FROM memory_entries
+     WHERE context_id = ? AND type = 'master_context'
+     ORDER BY created_at DESC LIMIT 1`
+  ).get(contextId) as { content: string } | undefined;
+  return row?.content ?? null;
+}
+
+/**
+ * Upsert the master context for a context_id.
+ * Replaces any existing master_context row — only one is active at a time.
+ * Content is silently truncated to MASTER_CONTEXT_MAX_CHARS.
+ */
+export async function upsertMasterContext(contextId: string, content: string): Promise<void> {
+  const db = await getDb();
+  const trimmed = content.slice(0, MASTER_CONTEXT_MAX_CHARS);
+  const now = new Date().toISOString();
+  const id = crypto.randomUUID();
+
+  db.transaction(() => {
+    // Remove previous master_context rows for this context.
+    db.prepare(
+      `DELETE FROM memory_entries WHERE context_id = ? AND type = 'master_context'`
+    ).run(contextId);
+    // Insert new row.
+    db.prepare(`
+      INSERT INTO memory_entries
+        (id, memory_key, context_id, type, content, tags, created_at, importance)
+      VALUES (?, ?, ?, 'master_context', ?, '[]', ?, 3)
+    `).run(id, contextId, contextId, trimmed, now);
+  })();
+}
