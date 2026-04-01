@@ -7,7 +7,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write   # needed for npm provenance attestation
+  id-token: write   # required for OIDC Trusted Publishing + provenance attestation
 
 jobs:
   publish:
@@ -40,5 +40,9 @@ jobs:
 
       - name: Publish to npm
         run: npm publish --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # No NPM_TOKEN needed — authentication uses OIDC Trusted Publishing.
+        # Configure the trusted publisher on npmjs.com before the first release:
+        #   npmjs.com → your profile → Publishing → Trusted Publishers
+        #   Repository owner: JayCodesX
+        #   Repository name:  orager
+        #   Workflow filename: npm-publish.yml
