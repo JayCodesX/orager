@@ -24,16 +24,29 @@ afterEach(async () => {
 });
 
 describe("isSqliteMemoryEnabled", () => {
-  it("returns false when ORAGER_DB_PATH not set", async () => {
+  it("returns true by default (SQLite is now the default backend)", async () => {
+    // SQLite defaults to ~/.orager/orager.db — no ORAGER_DB_PATH needed.
     delete process.env["ORAGER_DB_PATH"];
+    const { isSqliteMemoryEnabled } = await importFresh();
+    expect(isSqliteMemoryEnabled()).toBe(true);
+  });
+
+  it("returns true when ORAGER_DB_PATH is set to an explicit path", async () => {
+    process.env["ORAGER_DB_PATH"] = makeTempDbPath();
+    const { isSqliteMemoryEnabled } = await importFresh();
+    expect(isSqliteMemoryEnabled()).toBe(true);
+  });
+
+  it("returns false when ORAGER_DB_PATH is set to 'none' (explicit opt-out)", async () => {
+    process.env["ORAGER_DB_PATH"] = "none";
     const { isSqliteMemoryEnabled } = await importFresh();
     expect(isSqliteMemoryEnabled()).toBe(false);
   });
 
-  it("returns true when ORAGER_DB_PATH is set", async () => {
-    process.env["ORAGER_DB_PATH"] = makeTempDbPath();
+  it("returns false when ORAGER_DB_PATH is set to empty string (explicit opt-out)", async () => {
+    process.env["ORAGER_DB_PATH"] = "";
     const { isSqliteMemoryEnabled } = await importFresh();
-    expect(isSqliteMemoryEnabled()).toBe(true);
+    expect(isSqliteMemoryEnabled()).toBe(false);
   });
 });
 

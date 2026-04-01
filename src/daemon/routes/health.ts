@@ -13,6 +13,7 @@ import { getSessionsDir } from "../../session.js";
 import { loadClaudeDesktopMcpServers } from "../../settings.js";
 import { verifyJwtDualKey } from "../context.js";
 import type { DaemonContext } from "../context.js";
+import { resolveDbPath } from "../../db.js";
 
 /**
  * GET /health — public, no auth. Returns only status to prevent leaking
@@ -46,7 +47,7 @@ export function handleHealthDetail(
   }
 
   void (async () => {
-    const checks: Record<string, "ok" | "error" | "n/a"> = {};
+    const checks: Record<string, "ok" | "error" | "n/a" | "pending"> = {};
     const failures: string[] = [];
 
     // Check 1: signing key readable
@@ -76,14 +77,15 @@ export function handleHealthDetail(
     // file exists and is readable, which is sufficient for health monitoring.
     // The N-10 lastSaveError field on the singleton instance provides write
     // health visibility separately.
-    const dbPath = process.env["ORAGER_DB_PATH"];
+    const dbPath = resolveDbPath();
     if (dbPath) {
       try {
         fsSync.accessSync(dbPath, fsSync.constants.R_OK);
         checks["db"] = "ok";
       } catch {
-        checks["db"] = "error";
-        failures.push("db");
+        // File may not exist yet on first run — not a failure.
+        checks["db"] = fsSync.existsSync(dbPath) ? "error" : "pending";
+        if (fsSync.existsSync(dbPath)) failures.push("db");
       }
     } else {
       checks["db"] = "n/a";

@@ -8,6 +8,9 @@ import { openWasmDb } from "./wasm-sqlite.js";
 import type { WasmDatabase } from "./wasm-sqlite.js";
 import crypto from "node:crypto";
 import type { MemoryStore, MemoryEntry } from "./memory.js";
+import { resolveDbPath, checkDbSize } from "./db.js";
+import { mkdirSync } from "node:fs";
+import path from "node:path";
 
 // ── Singleton DB ───────────────────────────────────────────────────────────────
 
@@ -15,16 +18,35 @@ let _db: WasmDatabase | null = null;
 
 async function getDb(): Promise<WasmDatabase> {
   if (_db) return _db;
-  const dbPath = process.env["ORAGER_DB_PATH"];
+  const dbPath = resolveDbPath();
   if (!dbPath) {
-    throw new Error("ORAGER_DB_PATH is not set — SQLite memory is not available");
+    throw new Error("SQLite is disabled (ORAGER_DB_PATH=none) — memory store not available");
   }
+  // Ensure the parent directory exists (e.g. ~/.orager/ on first run).
+  mkdirSync(path.dirname(dbPath), { recursive: true });
   _db = await openWasmDb(dbPath);
   _db.pragma("journal_mode = WAL");
   _db.pragma("foreign_keys = ON");
   _db.pragma("synchronous = NORMAL");
+  // auto_vacuum=INCREMENTAL takes effect on new databases; existing DBs need
+  // a one-time VACUUM to change mode — set unconditionally, no-op if already set.
+  _db.pragma("auto_vacuum = INCREMENTAL");
   _migrate(_db);
+  _logDbSize(_db);
   return _db;
+}
+
+function _logDbSize(db: WasmDatabase): void {
+  const status = checkDbSize(db);
+  if (status === "prune") {
+    process.stderr.write(
+      `[orager] WARNING: DB size ≥80 MB — consider running 'remember reset' or enabling memory consolidation.\n`
+    );
+  } else if (status === "warn") {
+    process.stderr.write(
+      `[orager] INFO: DB size ≥50 MB — approaching budget. Summarization will keep this in check.\n`
+    );
+  }
 }
 
 /**
@@ -44,17 +66,18 @@ export function _resetDbForTesting(): void {
 }
 
 function _migrate(db: WasmDatabase): void {
+  // ── Base table ────────────────────────────────────────────────────────────
   db.exec(`
     CREATE TABLE IF NOT EXISTS memory_entries (
-      id          TEXT PRIMARY KEY,
-      memory_key  TEXT NOT NULL,
-      content     TEXT NOT NULL,
-      tags        TEXT,
-      created_at  TEXT NOT NULL,
-      expires_at  TEXT,
-      run_id      TEXT,
-      importance  INTEGER NOT NULL DEFAULT 2,
-      embedding   BLOB,
+      id              TEXT PRIMARY KEY,
+      memory_key      TEXT NOT NULL,
+      content         TEXT NOT NULL,
+      tags            TEXT,
+      created_at      TEXT NOT NULL,
+      expires_at      TEXT,
+      run_id          TEXT,
+      importance      INTEGER NOT NULL DEFAULT 2,
+      embedding       BLOB,
       embedding_model TEXT
     );
 
@@ -78,6 +101,50 @@ function _migrate(db: WasmDatabase): void {
         VALUES ('delete', old.rowid, old.content);
       INSERT INTO memory_entries_fts(rowid, content) VALUES (new.rowid, new.content);
     END;
+  `);
+
+  // ── Phase 0 additive migrations ───────────────────────────────────────────
+  // SQLite does not support IF NOT EXISTS for ALTER TABLE ADD COLUMN, so we
+  // check pragma_table_info() before each ALTER to make _migrate() idempotent.
+
+  const existingCols = new Set(
+    (db.prepare("SELECT name FROM pragma_table_info('memory_entries')").all() as { name: string }[])
+      .map((r) => r.name)
+  );
+
+  // context_id: logical namespace (replaces memory_key scoping for cross-session memory).
+  // Default 'default' preserves behaviour for all existing rows.
+  if (!existingCols.has("context_id")) {
+    db.exec(`ALTER TABLE memory_entries ADD COLUMN context_id TEXT NOT NULL DEFAULT 'default'`);
+  }
+
+  // type: categorises entries — 'master_context' | 'insight' | 'fact' | 'competitor' |
+  //        'decision' | 'risk' | 'open_question' | 'session_summary'
+  // Default 'insight' treats all pre-existing rows as generic insights.
+  if (!existingCols.has("type")) {
+    db.exec(`ALTER TABLE memory_entries ADD COLUMN type TEXT NOT NULL DEFAULT 'insight'`);
+  }
+
+  // metadata: flexible JSON payload — { confidence, tags[], source_model, session_id }
+  // Supersedes the flat 'tags' and 'importance' columns for new rows; old columns kept
+  // for backward compat with existing code paths.
+  if (!existingCols.has("metadata")) {
+    db.exec(`ALTER TABLE memory_entries ADD COLUMN metadata JSON`);
+    // Back-fill metadata from existing tags + importance for all current rows.
+    db.exec(`
+      UPDATE memory_entries
+      SET metadata = json_object(
+        'tags',       COALESCE(tags, '[]'),
+        'importance', importance
+      )
+      WHERE metadata IS NULL
+    `);
+  }
+
+  // Composite index for the primary retrieval pattern in the new memory system:
+  //   WHERE context_id = ? AND type IN (...)
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_context_type ON memory_entries(context_id, type);
   `);
 
   // One-time migration: convert legacy JSON-string embeddings to binary Float32 BLOB.
@@ -341,8 +408,11 @@ export async function clearMemoryStoreSqlite(memoryKey: string): Promise<number>
 }
 
 /**
- * Returns true when ORAGER_DB_PATH is set, indicating SQLite memory is available.
+ * Returns true when SQLite memory is available.
+ *
+ * SQLite is now the default backend — this returns true unless the user
+ * has explicitly opted out with ORAGER_DB_PATH=none or ORAGER_DB_PATH="".
  */
 export function isSqliteMemoryEnabled(): boolean {
-  return Boolean(process.env["ORAGER_DB_PATH"]);
+  return resolveDbPath() !== null;
 }
