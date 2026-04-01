@@ -1,0 +1,68 @@
+/**
+ * Database path resolution and size budget constants.
+ *
+ * Single source of truth for the default SQLite DB path and size thresholds.
+ * Centralises logic that was previously duplicated across memory-sqlite.ts,
+ * session.ts, and daemon health routes.
+ */
+import os from "node:os";
+import path from "node:path";
+
+// ── Default DB path ───────────────────────────────────────────────────────────
+
+/**
+ * Default path for the orager SQLite database.
+ * Used when ORAGER_DB_PATH is not explicitly set.
+ */
+export const DEFAULT_DB_PATH = path.join(os.homedir(), ".orager", "orager.db");
+
+// ── Size budget ───────────────────────────────────────────────────────────────
+
+/** Log a warning when DB exceeds this size. */
+export const DB_WARN_BYTES  = 50  * 1024 * 1024; // 50 MB
+/** Trigger auto-prune of low-importance expired entries at this size. */
+export const DB_PRUNE_BYTES = 80  * 1024 * 1024; // 80 MB
+
+// ── Path resolver ─────────────────────────────────────────────────────────────
+
+/**
+ * Resolve the DB path to use for this process.
+ *
+ * Resolution order:
+ *  1. ORAGER_DB_PATH env var, if set and non-empty and not "none" → use it
+ *  2. Otherwise → DEFAULT_DB_PATH (~/.orager/orager.db)
+ *
+ * To explicitly disable SQLite and force the JSON fallback, set:
+ *   ORAGER_DB_PATH=none
+ * or:
+ *   ORAGER_DB_PATH=""  (empty string)
+ */
+export function resolveDbPath(): string | null {
+  const envVal = process.env["ORAGER_DB_PATH"];
+  if (envVal === "" || envVal === "none") return null; // explicit opt-out → JSON fallback
+  return envVal ?? DEFAULT_DB_PATH;
+}
+
+// ── Size check ────────────────────────────────────────────────────────────────
+
+import type { WasmDatabase } from "./wasm-sqlite.js";
+
+/**
+ * Returns the current on-disk size of the database in bytes.
+ * Uses PRAGMA page_count * page_size for an exact in-process measurement.
+ */
+export function getDbSizeBytes(db: WasmDatabase): number {
+  const row = db.prepare("SELECT page_count * page_size AS sz FROM pragma_page_count(), pragma_page_size()").get() as { sz: number } | undefined;
+  return row?.sz ?? 0;
+}
+
+/**
+ * Check the DB size and log a warning / flag prune if thresholds are exceeded.
+ * Returns: 'ok' | 'warn' | 'prune'
+ */
+export function checkDbSize(db: WasmDatabase): "ok" | "warn" | "prune" {
+  const bytes = getDbSizeBytes(db);
+  if (bytes >= DB_PRUNE_BYTES) return "prune";
+  if (bytes >= DB_WARN_BYTES)  return "warn";
+  return "ok";
+}

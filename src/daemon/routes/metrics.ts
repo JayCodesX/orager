@@ -12,6 +12,7 @@ import { getAllProviderStats, getDegradedProviders } from "../../provider-health
 import { getRateLimitState } from "../../rate-limit-tracker.js";
 import { getAllAgentCircuitBreakerStates } from "../../circuit-breaker.js";
 import type { DaemonContext } from "../context.js";
+import { resolveDbPath } from "../../db.js";
 
 export function handleMetrics(
   ctx: DaemonContext,
@@ -49,8 +50,8 @@ export function handleMetrics(
         activeRunsByAgent: Object.fromEntries(ctx.activeRunsByAgent),
         providerHealth: getAllProviderStats(),
         degradedProviders: getDegradedProviders(),
-        dbBackend: process.env["ORAGER_DB_PATH"] ? "sqlite" : "filesystem",
-        dbPath: process.env["ORAGER_DB_PATH"] ?? null,
+        dbBackend: resolveDbPath() !== null ? "sqlite" : "filesystem",
+        dbPath: resolveDbPath(),
         rateLimit: getRateLimitState(),
         keyInfo: await getCachedKeyInfo(ctx.apiKey),
         circuitBreakersByAgent: getAllAgentCircuitBreakerStates(),
