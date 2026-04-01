@@ -1,0 +1,48 @@
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write   # required for OIDC Trusted Publishing + provenance attestation
+
+jobs:
+  publish:
+    name: Build + publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Build (tsc → dist/)
+        run: bun run build
+
+      - name: Set up Node.js (for npm publish)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Publish to npm
+        run: npm publish --access public --provenance
+        # No NPM_TOKEN needed — authentication uses OIDC Trusted Publishing.
+        # Configure the trusted publisher on npmjs.com before the first release:
+        #   npmjs.com → your profile → Publishing → Trusted Publishers
+        #   Repository owner: JayCodesX
+        #   Repository name:  orager
+        #   Workflow filename: npm-publish.yml
