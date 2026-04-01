@@ -286,7 +286,10 @@ export async function callOpenRouter(
   if (opts.top_logprobs !== undefined) body.top_logprobs = opts.top_logprobs;
   // Tool control
   if (opts.tool_choice !== undefined) body.tool_choice = opts.tool_choice;
-  if (opts.parallel_tool_calls !== undefined) body.parallel_tool_calls = opts.parallel_tool_calls;
+  // Only send parallel_tool_calls when explicitly set to false (opt-out).
+  // Sending true is a no-op default that can cause require_parameters to
+  // filter out providers that don't advertise support for this field.
+  if (opts.parallel_tool_calls === false) body.parallel_tool_calls = false;
   // Reasoning
   if (opts.reasoning !== undefined) body.reasoning = opts.reasoning;
   // Output format
@@ -486,7 +489,7 @@ export async function callDirect(
   if (opts.top_p !== undefined) body.top_p = opts.top_p;
   if (opts.top_k !== undefined) body.top_k = opts.top_k;
   if (opts.tool_choice !== undefined) body.tool_choice = opts.tool_choice;
-  if (opts.parallel_tool_calls !== undefined) body.parallel_tool_calls = opts.parallel_tool_calls;
+  if (opts.parallel_tool_calls === false) body.parallel_tool_calls = false;
   if (opts.response_format !== undefined) body.response_format = opts.response_format;
   if (opts.stop !== undefined && opts.stop.length > 0) body.stop = opts.stop;
   if (opts.seed !== undefined) body.seed = opts.seed;

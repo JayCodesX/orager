@@ -10,6 +10,7 @@ export interface SlimModel {
   prompt_price: number;
   completion_price: number;
   supports_vision: boolean;
+  supports_reasoning: boolean;
 }
 
 interface ModelsResponse {
