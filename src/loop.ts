@@ -19,8 +19,8 @@ import type { McpClientHandle } from "./mcp-client.js";
 import { makeTodoTools } from "./tools/todo.js";
 import { makeRememberTool } from "./tools/remember.js";
 import { makeWriteMemoryTool, makeReadMemoryTool, loadAutoMemory } from "./tools/auto-memory.js";
-import { loadMemoryStoreAny, pruneExpired, renderMemoryBlock, renderRetrievedBlock, retrieveEntries, retrieveEntriesWithEmbeddings, memoryKeyFromCwd, buildMemoryKeyFromRepo, shouldUseFtsRetrieval } from "./memory.js";
-import { isSqliteMemoryEnabled, searchMemoryFts, loadMasterContext } from "./memory-sqlite.js";
+import { loadMemoryStoreAny, saveMemoryStoreAny, addMemoryEntry, pruneExpired, renderMemoryBlock, renderRetrievedBlock, retrieveEntries, retrieveEntriesWithEmbeddings, memoryKeyFromCwd, buildMemoryKeyFromRepo, shouldUseFtsRetrieval } from "./memory.js";
+import { isSqliteMemoryEnabled, searchMemoryFts, loadMasterContext, addMemoryEntrySqlite } from "./memory-sqlite.js";
 import { fireHooks } from "./hooks.js";
 import type { HookConfig, HookPayload } from "./hooks.js";
 import { loadSettings, mergeSettings, loadClaudeDesktopMcpServers } from "./settings.js";
@@ -63,6 +63,8 @@ import {
   MEMORY_HEADER_MASTER,
   MEMORY_HEADER_RETRIEVED,
   MEMORY_HEADER_AUTO,
+  MEMORY_UPDATE_INSTRUCTION,
+  parseMemoryUpdates,
 } from "./loop-helpers.js";
 import { recordTokens, recordToolCall, recordSession } from "./metrics.js";
 
@@ -508,6 +510,14 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   if (projectCommands.size > 0) {
     const commandsSection = buildCommandsSystemPrompt(projectCommands);
     if (commandsSection) systemPrompt += "\n\n" + commandsSection;
+  }
+
+  // Phase 4: inject autonomous memory update instruction into the frozen section
+  // when memory is enabled.  Placed here (before the frozen boundary) so it is
+  // part of the cached stable prefix and does not change between sessions.
+  // opts.memory !== false is the same computation used by memoryEnabled below.
+  if (opts.memory !== false) {
+    systemPrompt += MEMORY_UPDATE_INSTRUCTION;
   }
 
   // Phase 3: record the frozen boundary — everything assembled above this line
@@ -1663,6 +1673,52 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       // Track last assistant text for result summary
       if (response.content) {
         lastAssistantText = response.content;
+      }
+
+      // ── Phase 4: Structured memory update ingestion ──────────────────────
+      // Parse <memory_update> blocks from the assistant response and write each
+      // validated payload to memory_entries.  Non-fatal — a write failure must
+      // never abort the agent run.  Also save a raw checkpoint so the current
+      // turn state is durably recorded whenever the model emits memory updates.
+      if (memoryEnabled && response.content) {
+        const memUpdates = parseMemoryUpdates(response.content);
+        if (memUpdates.length > 0) {
+          let ingested = 0;
+          for (const upd of memUpdates) {
+            try {
+              if (isSqliteMemoryEnabled()) {
+                await addMemoryEntrySqlite(effectiveMemoryKey, {
+                  content: upd.content,
+                  importance: upd.importance,
+                  tags: upd.tags,
+                  runId: sessionId,
+                });
+              } else {
+                // File-store fallback: load → add → save atomically
+                const store = await loadMemoryStoreAny(effectiveMemoryKey);
+                const updated = addMemoryEntry(store, {
+                  content: upd.content,
+                  importance: upd.importance,
+                  tags: upd.tags,
+                  runId: sessionId,
+                });
+                await saveMemoryStoreAny(effectiveMemoryKey, updated);
+              }
+              ingested++;
+            } catch { /* non-fatal */ }
+          }
+          if (ingested > 0) {
+            onLog?.("stderr", `[orager] ingested ${ingested} memory update(s) from assistant response\n`);
+            // Save a raw checkpoint so the turn state is durable after ingestion
+            await saveSessionCheckpoint(
+              sessionId,
+              effectiveMemoryKey,
+              turn,
+              null,
+              messages.slice(-20),
+            );
+          }
+        }
       }
 
       // ── JSON healing ─────────────────────────────────────────────────────
