@@ -20,7 +20,7 @@ import { makeTodoTools } from "./tools/todo.js";
 import { makeRememberTool } from "./tools/remember.js";
 import { makeWriteMemoryTool, makeReadMemoryTool, loadAutoMemory } from "./tools/auto-memory.js";
 import { loadMemoryStoreAny, saveMemoryStoreAny, addMemoryEntry, pruneExpired, renderMemoryBlock, renderRetrievedBlock, retrieveEntries, retrieveEntriesWithEmbeddings, memoryKeyFromCwd, buildMemoryKeyFromRepo, shouldUseFtsRetrieval } from "./memory.js";
-import { isSqliteMemoryEnabled, searchMemoryFts, loadMasterContext, addMemoryEntrySqlite } from "./memory-sqlite.js";
+import { isSqliteMemoryEnabled, searchMemoryFts, loadMasterContext, addMemoryEntrySqlite, getMemoryEntryCount, getEntriesForDistillation, deleteMemoryEntriesByIds } from "./memory-sqlite.js";
 import { fireHooks } from "./hooks.js";
 import type { HookConfig, HookPayload } from "./hooks.js";
 import { loadSettings, mergeSettings, loadClaudeDesktopMcpServers } from "./settings.js";
@@ -66,6 +66,9 @@ import {
   MEMORY_HEADER_PRIOR_SESSION,
   MEMORY_UPDATE_INSTRUCTION,
   parseMemoryUpdates,
+  DISTILL_ENTRY_THRESHOLD,
+  DISTILL_BATCH_SIZE,
+  distillMemoryEntries,
 } from "./loop-helpers.js";
 import { recordTokens, recordToolCall, recordSession } from "./metrics.js";
 
@@ -630,9 +633,41 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           seen.add(e.id);
           return true;
         });
-        memBlock = deduped.length > 0
-          ? renderRetrievedBlock(deduped, memoryMaxChars)
-          : renderMemoryBlock(memStore, memoryMaxChars);
+        if (deduped.length > 0) {
+          memBlock = renderRetrievedBlock(deduped, memoryMaxChars);
+        } else if (opts.memoryEmbeddingModel && apiKey) {
+          // Phase 6A: FTS returned nothing — fall back to embedding-based retrieval.
+          // The memStore is already loaded above; retrieveEntriesWithEmbeddings scores
+          // entries that have a stored _embedding vector by cosine similarity.
+          try {
+            let queryVec = getCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt);
+            if (!queryVec) {
+              queryVec = await withSpan("memory.embed_query_fts_fallback", {
+                model: opts.memoryEmbeddingModel,
+              }, async () => {
+                const vecs = await callEmbeddings(apiKey, opts.memoryEmbeddingModel!, [prompt]);
+                return vecs[0] ?? [];
+              });
+              if (queryVec && queryVec.length > 0) {
+                setCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt, queryVec);
+              }
+            }
+            const embResults = queryVec && queryVec.length > 0
+              ? retrieveEntriesWithEmbeddings(memStore, queryVec, { topK: 12 })
+              : [];
+            if (embResults.length > 0) {
+              onLog?.("stderr", `[orager] FTS miss — embedding fallback retrieved ${embResults.length} entries\n`);
+              memBlock = renderRetrievedBlock(embResults, memoryMaxChars);
+            } else {
+              memBlock = renderMemoryBlock(memStore, memoryMaxChars);
+            }
+          } catch {
+            // Non-fatal — fall through to full store render
+            memBlock = renderMemoryBlock(memStore, memoryMaxChars);
+          }
+        } else {
+          memBlock = renderMemoryBlock(memStore, memoryMaxChars);
+        }
       } else {
         // Phase 1 path (existing logic from Phase 1)
         memBlock = memStore.entries.length <= threshold
@@ -1710,11 +1745,26 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           for (const upd of memUpdates) {
             try {
               if (isSqliteMemoryEnabled()) {
+                // Phase 6B: auto-embed when an embedding model is configured so
+                // FTS → embedding fallback can score these entries semantically.
+                let embeddingVec: number[] | undefined;
+                let embeddingModel: string | undefined;
+                if (opts.memoryEmbeddingModel && apiKey) {
+                  try {
+                    const vecs = await callEmbeddings(apiKey, opts.memoryEmbeddingModel, [upd.content]);
+                    if (vecs[0] && vecs[0].length > 0) {
+                      embeddingVec = vecs[0];
+                      embeddingModel = opts.memoryEmbeddingModel;
+                    }
+                  } catch { /* non-fatal — embed failure must not block ingestion */ }
+                }
                 await addMemoryEntrySqlite(effectiveMemoryKey, {
                   content: upd.content,
                   importance: upd.importance,
                   tags: upd.tags,
                   runId: sessionId,
+                  _embedding: embeddingVec,
+                  _embeddingModel: embeddingModel,
                 });
               } else {
                 // File-store fallback: load → add → save atomically
@@ -2300,6 +2350,52 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         const synthErrMsg = synthErr instanceof Error ? synthErr.message : String(synthErr);
         onLog?.("stderr", `[orager] WARNING: session-end synthesis failed — ${synthErrMsg}\n`);
         log.warn("session_end_synthesis_failed", { sessionId, error: synthErrMsg });
+      }
+    }
+
+    // ── Phase 6C: Long-term distillation ──────────────────────────────────────
+    // When the namespace has accumulated more than DISTILL_ENTRY_THRESHOLD entries,
+    // compress the oldest/lowest-importance batch into denser facts.  Only fires
+    // when there is a meaningful batch to synthesise (≥10 qualifying entries).
+    // Non-fatal: any failure is logged and silently swallowed.
+    if (memoryEnabled && isSqliteMemoryEnabled()) {
+      try {
+        const entryCount = await getMemoryEntryCount(effectiveMemoryKey);
+        if (entryCount > DISTILL_ENTRY_THRESHOLD) {
+          const toDistill = await getEntriesForDistillation(effectiveMemoryKey, DISTILL_BATCH_SIZE);
+          if (toDistill.length >= 10) {
+            const distilled = await distillMemoryEntries(
+              toDistill,
+              apiKey,
+              model,
+              summarizeModel,
+            );
+            if (distilled.length > 0) {
+              await deleteMemoryEntriesByIds(toDistill.map((e) => e.id));
+              for (const d of distilled) {
+                await addMemoryEntrySqlite(effectiveMemoryKey, {
+                  content: d.content,
+                  importance: d.importance,
+                  tags: d.tags,
+                  runId: sessionId,
+                });
+              }
+              const approxAfter = entryCount - toDistill.length + distilled.length;
+              onLog?.("stderr", `[orager] distilled ${toDistill.length} entries → ${distilled.length} (store: ${entryCount} → ~${approxAfter})\n`);
+              log.info("memory_distilled", {
+                sessionId,
+                contextId: effectiveMemoryKey,
+                from: toDistill.length,
+                to: distilled.length,
+                totalBefore: entryCount,
+                totalAfterApprox: approxAfter,
+              });
+            }
+          }
+        }
+      } catch (distillErr) {
+        const distillErrMsg = distillErr instanceof Error ? distillErr.message : String(distillErr);
+        log.warn("memory_distillation_failed", { sessionId, error: distillErrMsg });
       }
     }
 
