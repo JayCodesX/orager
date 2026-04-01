@@ -483,6 +483,15 @@ export interface OpenRouterCallOptions {
   /** Ordered fallback model list; tried in sequence if primary fails. */
   models?: string[];
   messages: Message[];
+  /**
+   * Character offset marking the end of the frozen (stable) portion of the
+   * system prompt. When set, `applyAnthropicCacheControl` splits the system
+   * message into two content blocks — the frozen block (0..frozenSystemPromptLength)
+   * gets `cache_control: { type: "ephemeral" }` so it is cached independently of
+   * the dynamic memory suffix.  Only meaningful for anthropic/* models; ignored
+   * for all other providers.
+   */
+  frozenSystemPromptLength?: number;
   tools?: ToolDefinition[];
 
   // Sampling

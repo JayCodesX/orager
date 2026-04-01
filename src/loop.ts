@@ -60,6 +60,9 @@ import {
   runConcurrent,
   MAX_PARALLEL_TOOLS,
   evaluateTurnModelRules,
+  MEMORY_HEADER_MASTER,
+  MEMORY_HEADER_RETRIEVED,
+  MEMORY_HEADER_AUTO,
 } from "./loop-helpers.js";
 import { recordTokens, recordToolCall, recordSession } from "./metrics.js";
 
@@ -507,6 +510,12 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     if (commandsSection) systemPrompt += "\n\n" + commandsSection;
   }
 
+  // Phase 3: record the frozen boundary — everything assembled above this line
+  // is stable across sessions with the same configuration (base instructions,
+  // skills, project CLAUDE.md, commands).  Dynamic memory blocks appended below
+  // are excluded from the frozen section to keep cache hits high.
+  const frozenSystemPromptLength = systemPrompt.length;
+
   // Validate extraTools names before merging
   for (const tool of opts.extraTools ?? []) {
     const name = tool.definition?.function?.name ?? "";
@@ -554,7 +563,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     try {
       const masterCtx = await loadMasterContext(effectiveMemoryKey);
       if (masterCtx) {
-        systemPrompt += "\n\n## Persistent Product Context\n\n" + masterCtx;
+        systemPrompt += "\n\n" + MEMORY_HEADER_MASTER + "\n\n" + masterCtx;
         log.info("master_context_loaded", {
           sessionId,
           contextId: effectiveMemoryKey,
@@ -623,7 +632,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             );
       }
       if (memBlock) {
-        systemPrompt += "\n\n## Your persistent memory\n\n" + memBlock;
+        systemPrompt += "\n\n" + MEMORY_HEADER_RETRIEVED + "\n\n" + memBlock;
       }
     } catch { /* non-fatal — memory load failure must never abort a run */ }
     allTools.push(makeRememberTool(
@@ -650,7 +659,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         autoMemParts.push("## Global memory (~/.orager/MEMORY.md)\n\n" + autoMem.global.trim());
       }
       if (autoMemParts.length > 0) {
-        systemPrompt += "\n\n# Persistent memory\n\n" + autoMemParts.join("\n\n");
+        systemPrompt += "\n\n" + MEMORY_HEADER_AUTO + "\n\n" + autoMemParts.join("\n\n");
       }
     } catch { /* non-fatal — memory read failure must never abort a run */ }
     allTools.push(makeWriteMemoryTool(cwd));
@@ -1515,6 +1524,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           response_format: opts.response_format,
           disableContextCompression: summarizeAt > 0,
           rateLimitTracker: rlTracker,
+          frozenSystemPromptLength,
           // Per-agent user identifier for OpenRouter attribution/abuse detection.
           // Falls back to sessionId (stable UUID) when no explicit agentId is set.
           user: opts.agentId ?? sessionId,

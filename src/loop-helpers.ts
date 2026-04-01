@@ -9,6 +9,14 @@
 import type { Message, TurnModelRule, TurnContext, EmitResultEvent } from "./types.js";
 import { callOpenRouter } from "./openrouter.js";
 
+// ── Memory section header constants ──────────────────────────────────────────
+// Canonical headers used when injecting memory blocks into the system prompt.
+// Keeping them as named constants prevents accidental divergence across call sites
+// and ensures the frozen/dynamic boundary split is deterministic.
+export const MEMORY_HEADER_MASTER    = "## Persistent Product Context";
+export const MEMORY_HEADER_RETRIEVED = "## Your persistent memory";
+export const MEMORY_HEADER_AUTO      = "# Persistent memory";
+
 // ── Token estimation ──────────────────────────────────────────────────────────
 
 // Lazy-loaded BPE tokenisers — only imported on first use.
