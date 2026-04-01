@@ -1,7 +1,7 @@
 # orager
 
 [![CI](https://github.com/JayCodesX/orager/actions/workflows/ci.yml/badge.svg)](https://github.com/JayCodesX/orager/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/orager)](https://www.npmjs.com/package/orager)
+[![npm](https://img.shields.io/npm/v/@jaycodesx/orager)](https://www.npmjs.com/package/@jaycodesx/orager)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Node ≥20](https://img.shields.io/badge/node-%E2%89%A520-brightgreen)](https://nodejs.org)
 [![Bun](https://img.shields.io/badge/runtime-bun-black)](https://bun.sh)
@@ -154,7 +154,7 @@ Connects to external MCP servers (Streamable HTTP transport) with auto-reconnect
 ## Install
 
 ```bash
-npm install -g orager
+npm install -g @jaycodesx/orager
 ```
 
 **Set your API key:**

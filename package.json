@@ -1,5 +1,5 @@
 {
-  "name": "orager",
+  "name": "@jaycodesx/orager",
   "version": "0.0.1",
   "description": "Production-grade agent loop engine for multi-turn, tool-calling LLM workflows",
   "license": "MIT",
