@@ -10,6 +10,7 @@ import type { WasmDatabase } from "./wasm-sqlite.js";
 import type { SessionData, SessionSummary, PruneResult } from "./types.js";
 import type { SessionStore } from "./session-store.js";
 import { CURRENT_SESSION_SCHEMA_VERSION, migrateSession } from "./session.js";
+import { checkDbSize } from "./db.js";
 
 const LOCK_STALE_MS = 5 * 60 * 1000;
 
@@ -21,7 +22,17 @@ export class SqliteSessionStore implements SessionStore {
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.db.pragma("synchronous = NORMAL");
+    this.db.pragma("auto_vacuum = INCREMENTAL");
     this._migrate();
+    // Log a warning if the DB is approaching the size budget.
+    const sizeStatus = checkDbSize(db);
+    if (sizeStatus !== "ok") {
+      process.stderr.write(
+        sizeStatus === "prune"
+          ? `[orager] WARNING: DB size ≥80 MB — old sessions should be pruned.\n`
+          : `[orager] INFO: DB size ≥50 MB — approaching budget.\n`
+      );
+    }
   }
 
   static async create(dbPath: string): Promise<SqliteSessionStore> {
@@ -90,6 +101,42 @@ export class SqliteSessionStore implements SessionStore {
       INSERT OR IGNORE INTO sessions_fts(session_id, content)
       SELECT session_id, model || ' ' || cwd || ' ' || substr(data, 1, 2000)
       FROM sessions;
+    `);
+
+    // ── Phase 0 additive migrations ─────────────────────────────────────────
+    // Check existing columns before ALTER TABLE (SQLite has no ADD COLUMN IF NOT EXISTS).
+
+    const sessionCols = new Set(
+      (this.db.prepare("SELECT name FROM pragma_table_info('sessions')").all() as { name: string }[])
+        .map((r) => r.name)
+    );
+
+    // summary: standalone queryable condensed summary text for this session.
+    // Previously the summarized flag was a boolean; now the actual text is stored here.
+    if (!sessionCols.has("summary")) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN summary TEXT`);
+    }
+
+    // context_id: logical namespace linking this session to a product/project context.
+    if (!sessionCols.has("context_id")) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN context_id TEXT NOT NULL DEFAULT 'default'`);
+    }
+
+    // ── session_checkpoints table ────────────────────────────────────────────
+    // Stores condensed per-thread summaries for fast cross-session resumption.
+    // thread_id == session_id — kept as a separate name to avoid confusion with
+    // the full sessions table.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS session_checkpoints (
+        thread_id   TEXT PRIMARY KEY,
+        context_id  TEXT NOT NULL DEFAULT 'default',
+        last_turn   INTEGER NOT NULL DEFAULT 0,
+        summary     TEXT,
+        full_state  JSON,
+        updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_checkpoint_context
+        ON session_checkpoints(context_id);
     `);
   }
 

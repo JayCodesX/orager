@@ -9,6 +9,7 @@ import {
   acquireSessionLock,
   getSessionsDir,
   pruneOldSessions,
+  _resetStoreForTesting,
 } from "../src/session.js";
 import type { SessionData } from "../src/types.js";
 
@@ -71,6 +72,11 @@ describe("session persistence", () => {
   });
 
   it("saved session file has restricted 0o600 permissions", async () => {
+    // This test verifies file-store behaviour — opt out of SQLite.
+    const savedDbPath = process.env["ORAGER_DB_PATH"];
+    process.env["ORAGER_DB_PATH"] = "none";
+    _resetStoreForTesting();
+
     const sessionId = `test-${newSessionId()}`;
     createdIds.push(sessionId);
 
@@ -90,6 +96,11 @@ describe("session persistence", () => {
     const stat = await fs.stat(path.join(sessionsDir, `${sessionId}.json`));
     // 0o600 = owner read+write only
     expect(stat.mode & 0o777).toBe(0o600);
+
+    // Restore SQLite default and reset store singleton.
+    if (savedDbPath === undefined) delete process.env["ORAGER_DB_PATH"];
+    else process.env["ORAGER_DB_PATH"] = savedDbPath;
+    _resetStoreForTesting();
   });
 
   it("newSessionId returns a non-empty UUID-like string containing hyphens", () => {
@@ -193,8 +204,14 @@ describe("getSessionsDir()", () => {
 describe("ORAGER_SESSIONS_DIR env override — file I/O", () => {
   let customDir: string;
   let savedDir: string | undefined;
+  let savedDbPath: string | undefined;
 
   beforeEach(async () => {
+    // Force file-based store for these tests (they verify file I/O behaviour).
+    savedDbPath = process.env["ORAGER_DB_PATH"];
+    process.env["ORAGER_DB_PATH"] = "none";
+    _resetStoreForTesting();
+
     savedDir = process.env["ORAGER_SESSIONS_DIR"];
     const raw = await fs.mkdtemp(path.join(os.tmpdir(), "orager-sessdir-"));
     customDir = await fs.realpath(raw);
@@ -204,6 +221,9 @@ describe("ORAGER_SESSIONS_DIR env override — file I/O", () => {
   afterEach(async () => {
     if (savedDir === undefined) delete process.env["ORAGER_SESSIONS_DIR"];
     else process.env["ORAGER_SESSIONS_DIR"] = savedDir;
+    if (savedDbPath === undefined) delete process.env["ORAGER_DB_PATH"];
+    else process.env["ORAGER_DB_PATH"] = savedDbPath;
+    _resetStoreForTesting();
     await fs.rm(customDir, { recursive: true, force: true }).catch(() => {});
   });
 
@@ -265,8 +285,14 @@ describe("ORAGER_SESSIONS_DIR env override — file I/O", () => {
 describe("pruneOldSessions", () => {
   let pruneDir: string;
   let savedDir: string | undefined;
+  let savedDbPath: string | undefined;
 
   beforeEach(async () => {
+    // Force file-based store — pruning tests rely on file mtime manipulation.
+    savedDbPath = process.env["ORAGER_DB_PATH"];
+    process.env["ORAGER_DB_PATH"] = "none";
+    _resetStoreForTesting();
+
     savedDir = process.env["ORAGER_SESSIONS_DIR"];
     const raw = await fs.mkdtemp(path.join(os.tmpdir(), "orager-prune-"));
     pruneDir = await fs.realpath(raw);
@@ -276,6 +302,9 @@ describe("pruneOldSessions", () => {
   afterEach(async () => {
     if (savedDir === undefined) delete process.env["ORAGER_SESSIONS_DIR"];
     else process.env["ORAGER_SESSIONS_DIR"] = savedDir;
+    if (savedDbPath === undefined) delete process.env["ORAGER_DB_PATH"];
+    else process.env["ORAGER_DB_PATH"] = savedDbPath;
+    _resetStoreForTesting();
     await fs.rm(pruneDir, { recursive: true, force: true }).catch(() => {});
   });
 
@@ -341,8 +370,14 @@ describe("pruneOldSessions", () => {
 describe("stale lock detection", () => {
   let lockDir: string;
   let savedDir: string | undefined;
+  let savedDbPath: string | undefined;
 
   beforeEach(async () => {
+    // Force file-based store — these tests verify file-lock mechanics.
+    savedDbPath = process.env["ORAGER_DB_PATH"];
+    process.env["ORAGER_DB_PATH"] = "none";
+    _resetStoreForTesting();
+
     savedDir = process.env["ORAGER_SESSIONS_DIR"];
     const raw = await fs.mkdtemp(path.join(os.tmpdir(), "orager-stalelock-"));
     lockDir = await fs.realpath(raw);
@@ -354,6 +389,9 @@ describe("stale lock detection", () => {
   afterEach(async () => {
     if (savedDir === undefined) delete process.env["ORAGER_SESSIONS_DIR"];
     else process.env["ORAGER_SESSIONS_DIR"] = savedDir;
+    if (savedDbPath === undefined) delete process.env["ORAGER_DB_PATH"];
+    else process.env["ORAGER_DB_PATH"] = savedDbPath;
+    _resetStoreForTesting();
     await fs.rm(lockDir, { recursive: true, force: true }).catch(() => {});
   });
 

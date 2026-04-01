@@ -156,7 +156,7 @@ export class WasmCompatDb {
   /** Tracks in-flight async write so close() can await it. */
   private _saving: Promise<void> | null = null;
   /** Debounce interval in ms — coalesces rapid writes. */
-  private static readonly SAVE_DEBOUNCE_MS = 100;
+  private static readonly SAVE_DEBOUNCE_MS = 50;
 
   constructor(
     private readonly _db:       OO1Db,
@@ -196,6 +196,9 @@ export class WasmCompatDb {
   close(): void {
     // Flush any pending debounced write synchronously on close.
     if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
+    // PRAGMA optimize instructs SQLite to update query-planner statistics as needed.
+    // Must run before close so the updated stat tables are included in the final snapshot.
+    try { this._db.exec("PRAGMA optimize"); } catch { /* ignore — best effort */ }
     this._persistToFileSync();
     this._db.close();
   }

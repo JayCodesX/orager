@@ -6,6 +6,7 @@ import type { SessionData, SessionSummary, PruneResult } from "./types.js";
 import type { SessionStore } from "./session-store.js";
 import { log } from "./logger.js";
 import { callOpenRouter } from "./openrouter.js";
+import { resolveDbPath } from "./db.js";
 
 /** Increment when SessionData structure changes in a breaking way. */
 export const CURRENT_SESSION_SCHEMA_VERSION = 1;
@@ -87,8 +88,8 @@ const LOCK_STALE_MS = (() => {
 
 // ── Store factory ─────────────────────────────────────────────────────────────
 //
-// Returns the SQLite store when ORAGER_DB_PATH is set, otherwise the
-// file-based store. The choice is made once per process and cached.
+// SQLite is now the default backend (~/.orager/orager.db).
+// The file-based store is used only when explicitly disabled via ORAGER_DB_PATH=none.
 
 let _storeCache: SessionStore | null = null;
 let _storeCachePromise: Promise<SessionStore> | null = null;
@@ -97,8 +98,10 @@ async function getStore(): Promise<SessionStore> {
   if (_storeCache) return _storeCache;
   if (_storeCachePromise) return _storeCachePromise;
 
-  const dbPath = process.env["ORAGER_DB_PATH"];
+  const dbPath = resolveDbPath();
   if (dbPath) {
+    // Ensure the parent directory exists (e.g. ~/.orager/ on first run).
+    await fs.mkdir(path.dirname(dbPath), { recursive: true });
     _storeCachePromise = import("./session-sqlite.js")
       .then(async (m) => {
         _storeCache = await m.SqliteSessionStore.create(dbPath);
@@ -109,7 +112,7 @@ async function getStore(): Promise<SessionStore> {
         log.error("session_store_init_failed", { dbPath, message: msg });
         process.stderr.write(
           `[orager] ERROR: failed to open SQLite session store at "${dbPath}": ${msg}\n` +
-          `[orager] Sessions will NOT be persisted. Fix ORAGER_DB_PATH or unset it to use the file store.\n`,
+          `[orager] Sessions will NOT be persisted. Set ORAGER_DB_PATH=none to force the file store.\n`,
         );
         // Re-throw so callers get a clear error rather than silently losing sessions.
         throw err;
@@ -117,8 +120,15 @@ async function getStore(): Promise<SessionStore> {
     return _storeCachePromise;
   }
 
+  // Explicit opt-out (ORAGER_DB_PATH=none) — fall back to JSON file store.
   _storeCache = _makeFileStore();
   return _storeCache;
+}
+
+/** Reset the store singleton — for testing only. */
+export function _resetStoreForTesting(): void {
+  _storeCache = null;
+  _storeCachePromise = null;
 }
 
 // ── Per-session write serialisation ──────────────────────────────────────────
