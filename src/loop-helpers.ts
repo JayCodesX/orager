@@ -454,6 +454,73 @@ export function validateSummary(
   return { valid: true };
 }
 
+// ── Structured memory update parser (Phase 4) ────────────────────────────────
+
+/**
+ * A single memory update emitted by the LLM inside a <memory_update> block.
+ * Validated and normalised before being written to memory_entries.
+ */
+export interface MemoryUpdatePayload {
+  content: string;
+  importance: 1 | 2 | 3;
+  tags: string[];
+}
+
+/** Maximum character length of a single memory update's content. */
+export const MEMORY_UPDATE_MAX_CHARS = 500;
+
+/**
+ * System prompt snippet injected into the frozen section when memory is enabled.
+ * Kept as a named export so tests can assert it appears in the prompt and callers
+ * can opt-out without importing the full loop.
+ */
+export const MEMORY_UPDATE_INSTRUCTION = `\n\n## Autonomous memory updates
+When you discover facts worth preserving across sessions (user preferences, codebase quirks, recurring bugs, key decisions, environment details), output a compact JSON block AFTER your response text:
+
+<memory_update>
+{"content": "concise fact to remember", "importance": 2, "tags": ["tag1", "tag2"]}
+</memory_update>
+
+Rules:
+- importance: 1 = low, 2 = normal (default), 3 = high (use sparingly)
+- content: max 500 chars, one clear fact per block
+- tags: 1–5 lowercase keywords
+- Omit the block entirely when there is nothing new worth storing`;
+
+/**
+ * Extract and validate all <memory_update> blocks from an assistant response.
+ *
+ * - Skips blocks with invalid JSON or missing/empty content
+ * - Clamps importance to {1,2,3}, defaults to 2
+ * - Limits content to MEMORY_UPDATE_MAX_CHARS characters
+ * - Limits tags to 10 items, each coerced to string
+ */
+export function parseMemoryUpdates(text: string): MemoryUpdatePayload[] {
+  const results: MemoryUpdatePayload[] = [];
+  const re = /<memory_update>([\s\S]*?)<\/memory_update>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    try {
+      const raw = JSON.parse(m[1].trim()) as Record<string, unknown>;
+      if (typeof raw.content !== "string" || !raw.content.trim()) continue;
+      const importance = [1, 2, 3].includes(raw.importance as number)
+        ? (raw.importance as 1 | 2 | 3)
+        : 2;
+      const tags = Array.isArray(raw.tags)
+        ? (raw.tags as unknown[]).slice(0, 10).map(String)
+        : [];
+      results.push({
+        content: raw.content.trim().slice(0, MEMORY_UPDATE_MAX_CHARS),
+        importance,
+        tags,
+      });
+    } catch {
+      // Skip malformed blocks — non-fatal
+    }
+  }
+  return results;
+}
+
 export async function summarizeSession(
   messages: Message[],
   apiKey: string,
