@@ -18,6 +18,7 @@ import {
   searchSessions,
   compactSession,
   forkSession,
+  loadLatestCheckpointByContextId,
 } from "./session.js";
 import type { CliOptions, EmitResultEvent, TurnModelRule, UserMessageContentBlock, AgentLoopOptions } from "./types.js";
 import { startDaemon, readDaemonPort } from "./daemon.js";
@@ -34,6 +35,8 @@ import {
   isSqliteMemoryEnabled,
   listMemoryKeysSqlite,
   clearMemoryStoreSqlite,
+  loadMasterContext,
+  getMemoryEntryCount,
 } from "./memory-sqlite.js";
 import readline from "node:readline";
 
@@ -851,7 +854,66 @@ async function handleMemorySubcommand(argv: string[]): Promise<void> {
     process.exit(0);
   }
 
-  process.stderr.write("Usage: orager memory <export|list|clear> [options]\n");
+  if (sub === "inspect") {
+    const keyIdx = subArgs.indexOf("--key");
+    const memoryKey = keyIdx !== -1 ? (subArgs[keyIdx + 1] ?? "") : "";
+    if (!memoryKey) {
+      process.stderr.write("Usage: orager memory inspect --key <memoryKey>\n");
+      process.exit(1);
+    }
+
+    const store = await loadMemoryStoreAny(memoryKey);
+    const sortedEntries = [...store.entries].sort(
+      (a, b) => b.importance - a.importance || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+
+    process.stdout.write(`Memory key:  ${memoryKey}\n`);
+    process.stdout.write(`Entries:     ${store.entries.length}\n`);
+
+    if (isSqliteMemoryEnabled()) {
+      const count = await getMemoryEntryCount(memoryKey);
+      const master = await loadMasterContext(memoryKey);
+      const checkpoint = await loadLatestCheckpointByContextId(memoryKey);
+
+      process.stdout.write(`Non-expired: ${count}\n`);
+      process.stdout.write(`Master ctx:  ${master ? `${master.length} chars` : "none"}\n`);
+      process.stdout.write(
+        `Checkpoint:  ${checkpoint
+          ? `session ${checkpoint.threadId.slice(0, 8)}… turn ${checkpoint.lastTurn}`
+          : "none"}\n`,
+      );
+
+      if (master) {
+        process.stdout.write(`\n── Master context ──────────────────────────────────\n`);
+        process.stdout.write(master.slice(0, 600) + (master.length > 600 ? "\n[...]" : "") + "\n");
+      }
+
+      if (checkpoint?.summary) {
+        process.stdout.write(`\n── Last session summary ────────────────────────────\n`);
+        process.stdout.write(
+          checkpoint.summary.slice(0, 600) + (checkpoint.summary.length > 600 ? "\n[...]" : "") + "\n",
+        );
+      }
+    }
+
+    if (sortedEntries.length > 0) {
+      process.stdout.write(`\n── Top entries (by importance) ─────────────────────\n`);
+      for (const e of sortedEntries.slice(0, 10)) {
+        const tags = e.tags?.length ? ` [${e.tags.join(",")}]` : "";
+        const preview = e.content.length > 100 ? e.content.slice(0, 100) + "…" : e.content;
+        process.stdout.write(`  imp:${e.importance}${tags}  ${preview}\n`);
+      }
+      if (sortedEntries.length > 10) {
+        process.stdout.write(`  … and ${sortedEntries.length - 10} more\n`);
+      }
+    } else {
+      process.stdout.write("No entries found.\n");
+    }
+
+    process.exit(0);
+  }
+
+  process.stderr.write("Usage: orager memory <export|list|clear|inspect> [options]\n");
   process.exit(1);
 }
 
