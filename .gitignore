@@ -7,3 +7,4 @@ bin/
 *.bun-build
 AUDIT_REPORT*.md
 CLAUDE.md
+.claude/
