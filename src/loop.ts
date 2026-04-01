@@ -26,7 +26,7 @@ import type { HookConfig, HookPayload } from "./hooks.js";
 import { loadSettings, mergeSettings, loadClaudeDesktopMcpServers } from "./settings.js";
 import { exitPlanModeTool, PLAN_MODE_TOOL_NAME } from "./tools/plan.js";
 import path from "node:path";
-import { loadSession, saveSession, newSessionId, acquireSessionLock } from "./session.js";
+import { loadSession, saveSession, newSessionId, acquireSessionLock, saveSessionCheckpoint } from "./session.js";
 import { callWithRetry } from "./retry.js";
 import { fetchGenerationMeta, shouldUseDirect, callEmbeddings } from "./openrouter.js";
 import { fetchLiveModelMeta, getLiveModelPricing, isLiveModelMetaCacheWarm, liveModelSupportsTools, liveModelSupportsVision } from "./openrouter-model-meta.js";
@@ -55,6 +55,7 @@ import {
   isModelContextCacheWarm,
   MAX_SESSION_MESSAGES,
   summarizeSession,
+  validateSummary,
   CACHE_TTL_MS,
   runConcurrent,
   MAX_PARALLEL_TOOLS,
@@ -172,6 +173,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   const summarizeAt = opts.summarizeAt ?? 0;
   const summarizeModel = opts.summarizeModel ?? model;
   const summarizeKeepRecentTurns = opts.summarizeKeepRecentTurns ?? 0;
+  // Phase 2: turn-count trigger — 0 means disabled (default).
+  const summarizeTurnInterval = opts.summarizeTurnInterval ?? 0;
   const toolErrorBudgetHardStop = opts.toolErrorBudgetHardStop ?? false;
 
   // ── Profile expansion ─────────────────────────────────────────────────────
@@ -1327,6 +1330,14 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     const SUMMARIZE_COOLDOWN_TURNS = 5;
     let summarizeFailedAtTurn = -SUMMARIZE_COOLDOWN_TURNS - 1; // sentinel: never failed
 
+    // Phase 2: turn-count summarization trigger + checkpoint state
+    let turnsSinceLastSummary = 0;
+    // Last turn's prompt_tokens from API response — used for token-pressure check
+    // instead of the slow estimateTokens() call.
+    let lastTurnPromptTokens = 0;
+    // Retain previous checkpoint's full_state for one cycle as fallback
+    let prevCheckpointFullState: unknown[] | null = null;
+
     // maxTurns <= 0 means unlimited
     while (maxTurns <= 0 || turn < maxTurns) {
       // ── Cancellation check ────────────────────────────────────────────────
@@ -1540,6 +1551,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       lastFinishReason = response.finishReason;
 
       // Accumulate usage
+      lastTurnPromptTokens = response.usage.prompt_tokens;
       cumulativeUsage.prompt_tokens += response.usage.prompt_tokens;
       cumulativeUsage.completion_tokens += response.usage.completion_tokens;
       cumulativeUsage.total_tokens += response.usage.total_tokens;
@@ -1952,18 +1964,24 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       }
 
       // ── Session summarization check ───────────────────────────────────────
-      const tokenCount = await estimateTokens(messages, lastResponseModel);
-      const overTokenThreshold = summarizeAt > 0 && tokenCount > contextWindow * summarizeAt;
+      // Use last turn's prompt_tokens from the API response — this is the
+      // actual token count for the current context and is more accurate and
+      // faster than the local estimateTokens() heuristic.
+      const actualPromptTokens = lastTurnPromptTokens > 0 ? lastTurnPromptTokens : await estimateTokens(messages, lastResponseModel);
+      const overTokenThreshold = summarizeAt > 0 && actualPromptTokens > contextWindow * summarizeAt;
+      const overTurnThreshold = summarizeTurnInterval > 0 && turnsSinceLastSummary >= summarizeTurnInterval;
       const overMessageCap = messages.length > MAX_SESSION_MESSAGES;
 
       // Skip summarization if the last attempt failed within SUMMARIZE_COOLDOWN_TURNS turns.
       // This prevents repeated expensive API calls when the summarize model is unavailable.
       const summarizeCoolingDown = turn - summarizeFailedAtTurn <= SUMMARIZE_COOLDOWN_TURNS;
 
-      if ((overTokenThreshold || overMessageCap) && !summarizeCoolingDown) {
+      if ((overTokenThreshold || overTurnThreshold || overMessageCap) && !summarizeCoolingDown) {
         const reason = overMessageCap
           ? `message count (${messages.length}) exceeded hard cap (${MAX_SESSION_MESSAGES})`
-          : `token estimate (${tokenCount}) exceeds ${Math.round(summarizeAt * 100)}% of context window`;
+          : overTurnThreshold
+          ? `turn interval reached (${turnsSinceLastSummary} turns since last summary)`
+          : `prompt tokens (${actualPromptTokens}) exceeds ${Math.round(summarizeAt * 100)}% of context window`;
         onLog?.("stderr", `[orager] ${reason} — summarizing session...\n`);
         try {
           // Selective summarization: keep the last N assistant turns intact.
@@ -1985,7 +2003,23 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           const messagesToSummarize = keepFromIndex > 0 ? messages.slice(0, keepFromIndex) : messages;
           const messagesToKeep = keepFromIndex > 0 ? messages.slice(keepFromIndex) : [];
 
+          // Phase 2: write a raw (pre-synthesis) checkpoint first so we don't
+          // lose context if the summarization API call crashes mid-flight.
+          const recentMessagesForCheckpoint = messagesToKeep.length > 0 ? messagesToKeep : messages.slice(-20);
+          prevCheckpointFullState = recentMessagesForCheckpoint;
+          await saveSessionCheckpoint(sessionId, effectiveMemoryKey, turn, null, recentMessagesForCheckpoint);
+
           const summary = await summarizeSession(messagesToSummarize, apiKey, model, summarizeModel, opts.summarizePrompt);
+
+          // Phase 2: validate the summary before replacing context.
+          const validation = validateSummary(summary, messagesToSummarize);
+          if (!validation.valid) {
+            onLog?.("stderr", `[orager] WARNING: summary validation failed (${validation.reason}) — using unvalidated summary\n`);
+          }
+
+          // Phase 2: update checkpoint with the validated summary text.
+          await saveSessionCheckpoint(sessionId, effectiveMemoryKey, turn, summary, recentMessagesForCheckpoint);
+
           const systemMsg = messages[0]?.role === "system" ? messages[0] : null;
           const compacted: Message[] = [
             ...(systemMsg ? [systemMsg] : []),
@@ -1997,6 +2031,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             ? `[orager] session summarized (kept last ${summarizeKeepRecentTurns} turns).\n`
             : "[orager] session summarized and compacted.\n"
           );
+          turnsSinceLastSummary = 0;
           await saveSession({
             sessionId,
             model: lastResponseModel,
@@ -2017,7 +2052,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           onLog?.("stderr", `[orager] summarization failed (will retry in ${SUMMARIZE_COOLDOWN_TURNS} turns): ${msg}\n`);
           summarizeFailedAtTurn = turn;
         }
-      } else if ((overTokenThreshold || overMessageCap) && summarizeCoolingDown) {
+      } else if ((overTokenThreshold || overTurnThreshold || overMessageCap) && summarizeCoolingDown) {
         const keepN = opts.summarizeFallbackKeep ?? 40;
         const dropped = messages.length - keepN - (messages[0]?.role === "system" ? 1 : 0);
         onLog?.("stderr", `[orager] WARNING: summarization cooling down — discarding ${dropped > 0 ? dropped : "some"} messages to fit context (keeping last ${keepN}; ${SUMMARIZE_COOLDOWN_TURNS - (turn - summarizeFailedAtTurn)} turns until retry)\n`);
@@ -2101,6 +2136,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         cacheWriteInputTokens: cumulativeCacheWriteTokens || undefined,
         totalCostUsd,
       });
+      // Phase 2: increment turn counter for the turn-based summarization trigger.
+      turnsSinceLastSummary++;
       turn++;
     }
 

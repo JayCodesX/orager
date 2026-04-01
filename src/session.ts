@@ -131,6 +131,50 @@ export function _resetStoreForTesting(): void {
   _storeCachePromise = null;
 }
 
+// ── Session checkpoints (Phase 2) ─────────────────────────────────────────────
+
+/**
+ * Upsert a session checkpoint with an optional summary.
+ * No-op when using the file-based store (SQLite only).
+ * summary=null writes a raw checkpoint (pre-synthesis); subsequent calls
+ * with a non-null summary upgrade it.
+ */
+export async function saveSessionCheckpoint(
+  threadId: string,
+  contextId: string,
+  lastTurn: number,
+  summary: string | null,
+  recentMessages: unknown[],
+): Promise<void> {
+  const store = await getStore();
+  const { SqliteSessionStore } = await import("./session-sqlite.js");
+  if (store instanceof SqliteSessionStore) {
+    store.saveCheckpoint(threadId, contextId, lastTurn, summary, recentMessages);
+  }
+  // File-based store: silently skip — checkpoints require SQLite.
+}
+
+/**
+ * Load the checkpoint for a thread, or null if none exists.
+ * Returns null when using the file-based store.
+ */
+export async function loadSessionCheckpoint(
+  threadId: string,
+): Promise<{
+  threadId: string;
+  contextId: string;
+  lastTurn: number;
+  summary: string | null;
+  fullState: unknown[];
+} | null> {
+  const store = await getStore();
+  const { SqliteSessionStore } = await import("./session-sqlite.js");
+  if (store instanceof SqliteSessionStore) {
+    return store.loadCheckpoint(threadId);
+  }
+  return null;
+}
+
 // ── Per-session write serialisation ──────────────────────────────────────────
 //
 // If the same session is saved concurrently (e.g. summarisation fires while the
