@@ -411,6 +411,7 @@ async function handleGetLogs(
   const url = new URL(req.url ?? "/", "http://localhost");
   const q      = url.searchParams.get("q")?.toLowerCase() ?? "";
   const level  = url.searchParams.get("level") ?? "";
+  const event  = url.searchParams.get("event")?.toLowerCase() ?? "";
   const from   = url.searchParams.get("from") ?? "";
   const to     = url.searchParams.get("to") ?? "";
   const limit  = Math.min(parseInt(url.searchParams.get("limit") ?? "200", 10), 500);
@@ -437,6 +438,7 @@ async function handleGetLogs(
       try { entry = JSON.parse(trimmed) as LogEntry; } catch { return; }
 
       if (level && entry.level !== level) return;
+      if (event && (!entry.event || !entry.event.toLowerCase().includes(event))) return;
       if (from && entry.ts && entry.ts < from) return;
       if (to   && entry.ts && entry.ts > to)   return;
       if (q) {
