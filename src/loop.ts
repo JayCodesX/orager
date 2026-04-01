@@ -2078,6 +2078,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         turn,
         promptTokens: cumulativeUsage.prompt_tokens,
         completionTokens: cumulativeUsage.completion_tokens,
+        cachedInputTokens: cumulativeCachedTokens || undefined,
+        cacheWriteInputTokens: cumulativeCacheWriteTokens || undefined,
         totalCostUsd,
       });
       turn++;
