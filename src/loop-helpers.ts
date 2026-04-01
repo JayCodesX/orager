@@ -385,6 +385,67 @@ export const SUMMARIZE_PROMPT =
  * messages (role: "tool") are intentionally excluded for security reasons —
  * they may contain untrusted external content from Paperclip.
  */
+
+// ── Summary validation (Phase 2) ─────────────────────────────────────────────
+
+/** Minimum character length for a valid summary. */
+const SUMMARY_MIN_CHARS = 100;
+
+/**
+ * Validate a generated summary against the messages it summarises.
+ *
+ * Checks:
+ *  1. Minimum length — reject if shorter than SUMMARY_MIN_CHARS
+ *  2. Entity coverage — extract numbers and capitalised words from the source
+ *     messages; at least 30% must appear in the summary
+ *
+ * Returns { valid: true } when all checks pass, or { valid: false, reason } on failure.
+ */
+export function validateSummary(
+  summary: string,
+  sourceMsgs: Message[],
+): { valid: true } | { valid: false; reason: string } {
+  if (summary.length < SUMMARY_MIN_CHARS) {
+    return {
+      valid: false,
+      reason: `summary too short (${summary.length} chars < ${SUMMARY_MIN_CHARS} minimum)`,
+    };
+  }
+
+  // Build a set of "key tokens" from source messages: numbers and Title-case words.
+  const sourceText = sourceMsgs
+    .map((m) => {
+      if (typeof m.content === "string") return m.content;
+      if (Array.isArray(m.content)) {
+        return (m.content as Array<{ type: string; text?: string }>)
+          .filter((b) => b.type === "text" && b.text)
+          .map((b) => b.text)
+          .join(" ");
+      }
+      return "";
+    })
+    .join(" ");
+
+  // Extract numbers (e.g. "42", "3.14") and capitalised words (e.g. "Pricing", "DeepSeek")
+  const keyTokens = [...sourceText.matchAll(/\b([A-Z][a-z]+|\d+(?:\.\d+)?)\b/g)].map((m) => m[1]);
+  const uniqueTokens = [...new Set(keyTokens)];
+
+  if (uniqueTokens.length === 0) return { valid: true }; // no entities to check
+
+  const summaryLower = summary.toLowerCase();
+  const covered = uniqueTokens.filter((t) => summaryLower.includes(t.toLowerCase()));
+  const coverageRatio = covered.length / uniqueTokens.length;
+
+  if (coverageRatio < 0.30) {
+    return {
+      valid: false,
+      reason: `low entity coverage (${(coverageRatio * 100).toFixed(0)}% < 30% threshold)`,
+    };
+  }
+
+  return { valid: true };
+}
+
 export async function summarizeSession(
   messages: Message[],
   apiKey: string,

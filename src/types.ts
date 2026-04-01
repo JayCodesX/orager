@@ -725,6 +725,12 @@ export interface CliOptions {
    * the older messages. 0 or undefined = summarize everything (default behavior).
    */
   summarizeKeepRecentTurns?: number;
+  /**
+   * Force summarization every N turns regardless of token pressure.
+   * 0 or undefined = disabled (default). Recommended: 5–7.
+   * Works alongside summarizeAt — whichever trigger fires first wins.
+   */
+  summarizeTurnInterval?: number;
   /** Turn model routing rules (from config file). */
   turnModelRules?: TurnModelRule[];
   /** Structured prompt content for multimodal inputs (from config file). */
@@ -932,6 +938,11 @@ export interface AgentLoopOptions {
    * the older messages. 0 or undefined = summarize everything (default behavior).
    */
   summarizeKeepRecentTurns?: number;
+  /**
+   * Force summarization every N turns regardless of token pressure.
+   * 0 or undefined = disabled (default). Recommended: 5–7.
+   */
+  summarizeTurnInterval?: number;
   /**
    * Custom system prompt for the summarization call.
    * Overrides the built-in SUMMARIZE_PROMPT constant.

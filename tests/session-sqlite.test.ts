@@ -102,3 +102,85 @@ describe("file-based session store", () => {
     expect(await store.load("old-1")).toBeNull();
   });
 });
+
+// ── Phase 2: session checkpoint tests ────────────────────────────────────────
+
+describe("SqliteSessionStore — checkpoints", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "orager-ckpt-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns null for non-existent checkpoint", async () => {
+    const store = await SqliteSessionStore.create(path.join(tmpDir, "ckpt1.db"));
+    expect(store.loadCheckpoint("no-such-thread")).toBeNull();
+  });
+
+  it("saves and loads a raw (no-summary) checkpoint", async () => {
+    const store = await SqliteSessionStore.create(path.join(tmpDir, "ckpt2.db"));
+    const msgs = [{ role: "user", content: "hello" }, { role: "assistant", content: "hi" }];
+
+    store.saveCheckpoint("thread-1", "ctx-default", 3, null, msgs);
+    const loaded = store.loadCheckpoint("thread-1");
+
+    expect(loaded).not.toBeNull();
+    expect(loaded!.threadId).toBe("thread-1");
+    expect(loaded!.contextId).toBe("ctx-default");
+    expect(loaded!.lastTurn).toBe(3);
+    expect(loaded!.summary).toBeNull();
+    expect(loaded!.fullState).toEqual(msgs);
+  });
+
+  it("saves and loads a checkpoint with summary", async () => {
+    const store = await SqliteSessionStore.create(path.join(tmpDir, "ckpt3.db"));
+    const msgs = [{ role: "user", content: "hello" }];
+
+    store.saveCheckpoint("thread-2", "ctx-proj", 7, "This is the summary text.", msgs);
+    const loaded = store.loadCheckpoint("thread-2");
+
+    expect(loaded!.summary).toBe("This is the summary text.");
+    expect(loaded!.lastTurn).toBe(7);
+  });
+
+  it("upsert preserves existing summary when new summary is null", async () => {
+    const store = await SqliteSessionStore.create(path.join(tmpDir, "ckpt4.db"));
+    const msgs = [{ role: "user", content: "test" }];
+
+    // Write with a summary first
+    store.saveCheckpoint("thread-3", "ctx-x", 5, "Original summary.", msgs);
+    // Overwrite with null summary (raw checkpoint — should preserve old summary)
+    store.saveCheckpoint("thread-3", "ctx-x", 10, null, msgs);
+
+    const loaded = store.loadCheckpoint("thread-3");
+    expect(loaded!.summary).toBe("Original summary.");
+    expect(loaded!.lastTurn).toBe(10);
+  });
+
+  it("upsert replaces summary when a new non-null summary is provided", async () => {
+    const store = await SqliteSessionStore.create(path.join(tmpDir, "ckpt5.db"));
+    const msgs = [{ role: "user", content: "test" }];
+
+    store.saveCheckpoint("thread-4", "ctx-y", 2, "Old summary.", msgs);
+    store.saveCheckpoint("thread-4", "ctx-y", 4, "New summary.", msgs);
+
+    const loaded = store.loadCheckpoint("thread-4");
+    expect(loaded!.summary).toBe("New summary.");
+    expect(loaded!.lastTurn).toBe(4);
+  });
+
+  it("context_id isolation — different threads do not interfere", async () => {
+    const store = await SqliteSessionStore.create(path.join(tmpDir, "ckpt6.db"));
+    const msgs = [{ role: "user", content: "x" }];
+
+    store.saveCheckpoint("thread-A", "ctx-a", 1, "Summary A.", msgs);
+    store.saveCheckpoint("thread-B", "ctx-b", 2, "Summary B.", msgs);
+
+    expect(store.loadCheckpoint("thread-A")!.summary).toBe("Summary A.");
+    expect(store.loadCheckpoint("thread-B")!.summary).toBe("Summary B.");
+  });
+});
