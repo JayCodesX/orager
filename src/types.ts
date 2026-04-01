@@ -95,6 +95,14 @@ export interface ToolExecuteOptions {
    * multiple concurrent daemon runs maintain independent state.
    */
   sessionId?: string;
+  /**
+   * Per-run environment variables to inject into bash subprocesses.
+   * Merged on top of process.env (or the bash-policy-filtered env).
+   * Used by the daemon path to forward Paperclip context vars
+   * (PAPERCLIP_API_KEY, PAPERCLIP_API_URL, etc.) that were set in the
+   * adapter's spawn-path env but are not present in the daemon process env.
+   */
+  additionalEnv?: Record<string, string>;
   [key: string]: unknown;
 }
 
@@ -1259,6 +1267,16 @@ export interface AgentLoopOptions {
    * Default: false.
    */
   autoMemory?: boolean;
+
+  /**
+   * Per-run environment variables injected into bash subprocesses.
+   * Merged on top of process.env (or the bash-policy-filtered env) so the
+   * agent can access platform context like PAPERCLIP_API_KEY, PAPERCLIP_API_URL,
+   * PAPERCLIP_TASK_ID, etc. when running inside the daemon (which otherwise
+   * only has its own startup env).
+   * These are NOT set on process.env — they are only passed to subprocess spawns.
+   */
+  env?: Record<string, string>;
 }
 
 // ── Permission types ─────────────────────────────────────────────────────────

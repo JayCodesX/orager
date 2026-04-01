@@ -1124,14 +1124,15 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         let metricResultSummary: string | undefined;
         try {
           const toolTimeoutMs = _effectiveToolTimeout(toolName);
+          const toolExecOpts = { sandboxRoot: opts.sandboxRoot, bashPolicy: effectiveOpts.bashPolicy, sessionId, additionalEnv: opts.env };
           const result = toolTimeoutMs != null
             ? await Promise.race([
-                executeFn(parsedInput, cwd, { sandboxRoot: opts.sandboxRoot, bashPolicy: effectiveOpts.bashPolicy, sessionId }),
+                executeFn(parsedInput, cwd, toolExecOpts),
                 new Promise<never>((_, reject) =>
                   setTimeout(() => reject(new Error(`Tool '${toolName}' timed out after ${toolTimeoutMs}ms`)), toolTimeoutMs),
                 ),
               ])
-            : await executeFn(parsedInput, cwd, { sandboxRoot: opts.sandboxRoot, bashPolicy: effectiveOpts.bashPolicy, sessionId });
+            : await executeFn(parsedInput, cwd, toolExecOpts);
           if (readOnly && !result.isError) {
             // Store truncated content in cache — prevents untruncated hits from
             // exceeding context limits when consumed by the message assembly loop

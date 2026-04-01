@@ -631,6 +631,7 @@ async function handleGetModels(
       context_length?: number;
       pricing?: { prompt?: string | number; completion?: string | number };
       architecture?: { input_modalities?: string[]; output_modalities?: string[] };
+      supported_parameters?: string[];
     }>;
     // Slim down to what the UI needs
     const slim = models.map((m) => ({
@@ -640,6 +641,9 @@ async function handleGetModels(
       prompt_price: m.pricing?.prompt ? Number(m.pricing.prompt) : 0,
       completion_price: m.pricing?.completion ? Number(m.pricing.completion) : 0,
       supports_vision: m.architecture?.input_modalities?.includes("image") ?? false,
+      // include_reasoning means the model exposes its thinking process with a
+      // configurable budget (R1, o3, Claude extended thinking, etc.)
+      supports_reasoning: Array.isArray(m.supported_parameters) && m.supported_parameters.includes("include_reasoning"),
     }));
     // Extract unique providers
     const providers = [...new Set(slim.map((m) => m.id.split("/")[0]!).filter(Boolean))].sort();
