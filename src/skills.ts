@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import type { ToolExecutor, ToolParameterSchema, ToolResult } from "./types.js";
+import type { ToolExecutor, ToolExecuteOptions, ToolParameterSchema, ToolResult } from "./types.js";
 import { containsBlockedCommand } from "./tools/bash.js";
 
 // ── Skills cache ──────────────────────────────────────────────────────────────
@@ -265,7 +265,8 @@ const DEFAULT_EXEC_TIMEOUT_MS = 30_000;
 function runShell(
   cmd: string,
   cwd: string,
-  timeoutMs = DEFAULT_EXEC_TIMEOUT_MS
+  timeoutMs = DEFAULT_EXEC_TIMEOUT_MS,
+  additionalEnv?: Record<string, string>,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   return new Promise((resolve) => {
     let settled = false;
@@ -278,8 +279,12 @@ function runShell(
 
     const stdout: string[] = [];
     const stderr: string[] = [];
+    const spawnEnv = additionalEnv && Object.keys(additionalEnv).length > 0
+      ? { ...process.env, ...additionalEnv }
+      : undefined;
     const proc = spawn("bash", ["-c", cmd], {
       cwd,
+      env: spawnEnv,
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -396,7 +401,7 @@ export function buildSkillTools(
           parameters: skill.parameters ?? { type: "object", properties: {} },
         },
       },
-      async execute(input: Record<string, unknown>, cwd: string): Promise<ToolResult> {
+      async execute(input: Record<string, unknown>, cwd: string, opts?: ToolExecuteOptions): Promise<ToolResult> {
         const validationError = validateSkillInput(input, skill.parameters);
         if (validationError) {
           return { toolCallId: "", content: validationError, isError: true };
@@ -426,7 +431,7 @@ export function buildSkillTools(
           }
         }
 
-        const { stdout, stderr, exitCode } = await runShell(cmd, cwd);
+        const { stdout, stderr, exitCode } = await runShell(cmd, cwd, DEFAULT_EXEC_TIMEOUT_MS, opts?.additionalEnv);
         let content = stdout;
         if (stderr) content += (content ? "\n" : "") + `[stderr] ${stderr}`;
         if (!content) content = exitCode === 0 ? "(no output)" : `exited with code ${exitCode}`;

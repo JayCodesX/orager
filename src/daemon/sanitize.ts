@@ -54,6 +54,8 @@ const ALLOWED_DAEMON_OPTS = new Set<keyof AgentLoopOptions>([
   "memoryRetrieval", "memoryEmbeddingModel", "memoryRetrievalThreshold",
   // Session lock
   "sessionLockTimeoutMs",
+  // Per-run env injection (Paperclip context vars for daemon path)
+  "env",
 ]);
 
 export function sanitizeDaemonRunOpts(

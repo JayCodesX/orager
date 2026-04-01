@@ -485,6 +485,7 @@ function formToSettings(f: SettingsForm): OragerSettings {
 
 export default function Configuration() {
   const { showToast } = useToast();
+  const { models: allModels } = useCachedModels();
 
   // Config state
   const [cfgForm, setCfgForm] = useState<ConfigForm | null>(null);
@@ -583,6 +584,9 @@ export default function Configuration() {
   const upd = <K extends keyof ConfigForm>(key: K) =>
     (val: ConfigForm[K]) => setCfgForm((prev) => prev ? { ...prev, [key]: val } : prev);
 
+  const selectedModelSupportsReasoning =
+    allModels.find((m) => m.id === f.model)?.supports_reasoning ?? false;
+
   const sf = setForm!;
   const updS = <K extends keyof SettingsForm>(key: K) =>
     (val: SettingsForm[K]) => setSetForm((prev) => prev ? { ...prev, [key]: val } : prev);
@@ -634,6 +638,7 @@ export default function Configuration() {
             <NumberField label="Seed (blank = random)" value={f.seed} onChange={upd("seed")} min={0} />
           </Section>
 
+          {selectedModelSupportsReasoning && (
           <Section title="Reasoning" defaultOpen={false}>
             <SelectField
               label="Reasoning effort"
@@ -651,6 +656,7 @@ export default function Configuration() {
             <NumberField label="Reasoning max tokens" value={f.reasoningMaxTokens} onChange={upd("reasoningMaxTokens")} min={0} />
             <CheckboxField label="Exclude reasoning from context" checked={f.reasoningExclude} onChange={upd("reasoningExclude")} />
           </Section>
+          )}
 
           <Section title="Provider Routing" defaultOpen={false}>
             <ProviderMultiSelect label="Provider order" value={f.providerOrder} onChange={upd("providerOrder")} placeholder="Select preferred providers…" />

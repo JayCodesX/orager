@@ -374,6 +374,12 @@ export const bashTool: ToolExecutor = {
       }
     }
 
+    // ── Per-run additional env vars (daemon path: Paperclip context vars) ────
+    const additionalEnv = (context as { additionalEnv?: Record<string, string> } | undefined)?.additionalEnv;
+    if (additionalEnv && Object.keys(additionalEnv).length > 0) {
+      spawnEnv = { ...(spawnEnv ?? process.env), ...additionalEnv };
+    }
+
     // ── OS-level sandbox wrapping ─────────────────────────────────────────
     const context2 = context as { sandboxRoot?: string; bashPolicy?: { osSandbox?: boolean; allowNetwork?: boolean } } | undefined;
     const sandboxRoot = context2?.sandboxRoot;
