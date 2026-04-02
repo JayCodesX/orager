@@ -58,7 +58,8 @@ export function parseArgs(argv: string[]): CliOptions {
         opts.model = argv[++i];
         break;
       }
-      case "--resume": {
+      case "--resume":
+      case "--session-id": {
         opts.sessionId = argv[++i] ?? null;
         break;
       }
