@@ -31,6 +31,7 @@ import {
 import { scoreTrajectory } from "./prm-scorer.js";
 import { launchInstance, terminateInstance, scpUpload, scpDownload, sshExec, type VpsInstance } from "./vps-client.js";
 import { uploadAdapter, swapEndpoint, getAdaptersDir } from "./together-hosting.js";
+import { isSupportedBaseModel, DEFAULT_BASE_MODEL_ID } from "./supported-models.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -56,7 +57,7 @@ export interface PipelineOptions {
 
 function generateTrainingScript(cfg: OmlsConfig, batchDir: string): string {
   const training = cfg.rl?.training ?? {};
-  const baseModel = training.baseModel ?? "unsloth/Qwen2.5-7B-Instruct";
+  const baseModel = training.baseModel ?? DEFAULT_BASE_MODEL_ID;
   const method = training.method ?? "auto";
   const loraRank = training.loraRank ?? 16;
   const loraAlpha = training.loraAlpha ?? 32;
@@ -197,6 +198,36 @@ export async function runTrainingPipeline(opts: PipelineOptions): Promise<Pipeli
   const result: PipelineResult = { success: false, steps: [] };
   const startMs = Date.now();
 
+  // ── Base model validation ──────────────────────────────────────────────────
+  // Only one base model is active at a time. All adapters are hard-tied to the
+  // base model they were trained on — switching discards existing adapters.
+  const configuredBaseModel = cfg.rl?.training?.baseModel ?? DEFAULT_BASE_MODEL_ID;
+  if (!isSupportedBaseModel(configuredBaseModel)) {
+    const msg = `[omls] Unsupported base model: "${configuredBaseModel}". ` +
+      `Run \`orager omls models\` to see the supported list.`;
+    process.stderr.write(msg + "\n");
+    result.error = msg;
+    return result;
+  }
+
+  // Warn if the base model changed since the last training run — existing
+  // adapters will be incompatible with the new model.
+  try {
+    const logPath = `${os.homedir()}/.orager/omls.log`;
+    const { readFileSync } = await import("node:fs");
+    if (readFileSync(logPath, "utf8").trim()) {
+      const lines = readFileSync(logPath, "utf8").trim().split("\n");
+      const lastRun = JSON.parse(lines[lines.length - 1]!);
+      const prevModel: string | undefined = lastRun.baseModel;
+      if (prevModel && prevModel !== configuredBaseModel) {
+        process.stderr.write(
+          `[omls] ⚠️  Base model changed: "${prevModel}" → "${configuredBaseModel}". ` +
+          `Existing adapters trained on "${prevModel}" are incompatible and will no longer be loaded.\n`,
+        );
+      }
+    }
+  } catch { /* no prior log — first run, no warning needed */ }
+
   let instance: VpsInstance | null = null;
   let batch: TrainingBatch | null = null;
 
@@ -297,8 +328,7 @@ export async function runTrainingPipeline(opts: PipelineOptions): Promise<Pipeli
     // ── Step 6: Upload to Together AI ────────────────────────────────────────
     const s6 = step("together_upload");
     log("Step 6/8: uploading adapter to Together AI…");
-    const baseModel = cfg.rl?.training?.baseModel ?? "unsloth/Qwen2.5-7B-Instruct";
-    const hosted = await uploadAdapter(localAdapterDir, baseModel, cfg);
+    const hosted = await uploadAdapter(localAdapterDir, configuredBaseModel, cfg);
     ok(s6, `endpoint: ${hosted.endpoint}`);
 
     // ── Step 7: Atomic endpoint swap ──────────────────────────────────────────
@@ -323,6 +353,7 @@ export async function runTrainingPipeline(opts: PipelineOptions): Promise<Pipeli
       timestamp: new Date().toISOString(),
       version: hosted.version,
       endpoint: hosted.endpoint,
+      baseModel: configuredBaseModel,
       batchSize: batch.entries.length,
       durationMs,
       steps: result.steps,

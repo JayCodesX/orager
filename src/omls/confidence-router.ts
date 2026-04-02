@@ -20,6 +20,7 @@
 
 import { callEmbeddings, callOpenRouter } from "../openrouter.js";
 import type { OmlsConfig, RouterSignal, ConfidenceRouterConfig } from "../types.js";
+import { DEFAULT_TEACHER_MODELS } from "./supported-models.js";
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
 
@@ -299,7 +300,11 @@ export function checkConfidenceToken(
 // ── Teacher selection ─────────────────────────────────────────────────────────
 
 /**
- * Select the teacher model to use for this escalation.
+ * Select the teacher model(s) to use for this escalation.
+ *
+ * Teacher models are frontier cloud models (DeepSeek-R1, Qwen3-72B) called via
+ * OpenRouter. They require PROTOCOL_API_KEY to be set — they are NOT the same
+ * as the base model being fine-tuned locally, which requires no API key.
  *
  * In "race" mode: returns all teachers so they can be called in parallel.
  * In "sequential" mode: returns just the first (highest priority) teacher.
@@ -312,10 +317,10 @@ export function selectTeachers(
   winRates?: Record<string, number>,
   escalationCount?: number,
 ): string[] {
-  const DEFAULT_TEACHERS = ["deepseek/deepseek-r1", "qwen/qwen3-72b"];
+  const defaultTeacherIds = DEFAULT_TEACHER_MODELS.map((m) => m.id);
   const teachers = omlsCfg.teacherModels?.length
     ? omlsCfg.teacherModels
-    : DEFAULT_TEACHERS;
+    : defaultTeacherIds;
 
   // Auto-learn routing: if we've accumulated enough escalations and one teacher
   // consistently wins, route exclusively to that teacher.
