@@ -1,5 +1,5 @@
 {
-  "name": "orager",
+  "name": "@orager/core",
   "version": "0.0.2",
   "description": "Production-grade AI agent runtime — multi-turn tool-calling, persistent memory, and multi-model routing",
   "license": "MIT",
