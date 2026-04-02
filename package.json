@@ -1,7 +1,7 @@
 {
-  "name": "@jaycodesx/orager",
-  "version": "0.0.1",
-  "description": "Production-grade agent loop engine for multi-turn, tool-calling LLM workflows",
+  "name": "orager",
+  "version": "0.0.2",
+  "description": "Production-grade AI agent runtime — multi-turn tool-calling, persistent memory, and multi-model routing",
   "license": "MIT",
   "type": "module",
   "files": [
