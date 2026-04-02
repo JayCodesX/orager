@@ -1472,7 +1472,14 @@ export interface OmlsConfig {
   enabled?: boolean;
 
   // ── Teacher model configuration ───────────────────────────────────────────
-  /** Ordered list of distillable teacher models. Default: [deepseek/deepseek-r1, qwen/qwen3-72b]. */
+  /**
+   * Frontier cloud models used as oracles for distillation (OPSD) and PRM
+   * scoring. Called in "race" mode by default — PRM picks the best response.
+   * Default: [deepseek/deepseek-r1, qwen/qwen3-72b].
+   *
+   * ⚠️  Requires PROTOCOL_API_KEY — teacher models are cloud inference calls.
+   * These are separate from the base model being fine-tuned locally.
+   */
   teacherModels?: string[];
   /** How to query multiple teacher models. Default: "race". */
   teacherMode?: TeacherMode;
@@ -1518,7 +1525,18 @@ export interface OmlsConfig {
       spot?: boolean;        // default: true
     };
     training?: {
-      baseModel?: string;    // default: "unsloth/Qwen2.5-7B-Instruct"
+      /**
+       * The open-weight model to fine-tune locally via QLoRA.
+       * Must be one of the IDs in SUPPORTED_BASE_MODELS (src/omls/supported-models.ts).
+       * Default: "unsloth/Meta-Llama-3.1-8B-Instruct".
+       *
+       * Only ONE base model is active at a time. All LoRA adapters are
+       * hard-tied to the base model they were trained on. Switching this value
+       * discards all existing adapters — orager will warn before training starts.
+       *
+       * Does NOT require PROTOCOL_API_KEY — base models are downloaded locally.
+       */
+      baseModel?: string;
       method?: TrainingMethod;
       loraRank?: number;     // default: 16
       loraAlpha?: number;    // default: 32
