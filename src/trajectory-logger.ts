@@ -33,6 +33,19 @@ export interface TrajectoryMeta {
   subtype: string;
   totalCostUsd: number;
   turnCount: number;
+  // ── OMLS fields (ADR-0007) ─────────────────────────────────────────────────
+  /** True when this trajectory used a distillation-permitted teacher model. */
+  distillable?: boolean;
+  /** The teacher model used for escalation, if any. */
+  teacherModel?: string;
+  /** The confidence router signal that triggered escalation, if any. */
+  routerSignal?: string;
+  /**
+   * SkillBank generation active when this trajectory was produced.
+   * Used for support-query separation: only trajectories from the latest
+   * skill generation enter the RL training batch.
+   */
+  skillGeneration?: number;
 }
 
 export interface TrajectoryLogger {
@@ -40,6 +53,10 @@ export interface TrajectoryLogger {
   setSessionId(id: string): void;
   /** Record a single emit event. */
   onEvent(event: EmitEvent): void;
+  /** Mark this trajectory as distillable (called when a teacher model was used). */
+  markDistillable(teacherModel: string, routerSignal: string): void;
+  /** Set the current SkillBank generation tag. */
+  setSkillGeneration(gen: number): void;
   /** Flush to disk, write the meta sidecar, and close. */
   finalize(): Promise<void>;
 }
@@ -70,9 +87,25 @@ export function createTrajectoryLogger(
   let totalCostUsd = 0;
   let turnCount = 0;
 
+  // OMLS fields (ADR-0007)
+  let distillable = false;
+  let teacherModelUsed: string | undefined;
+  let routerSignalUsed: string | undefined;
+  let skillGeneration: number | undefined;
+
   function setSessionId(id: string): void {
     if (sessionId !== null) return; // already set
     sessionId = id;
+  }
+
+  function markDistillable(teacherModel: string, routerSignal: string): void {
+    distillable = true;
+    teacherModelUsed = teacherModel;
+    routerSignalUsed = routerSignal;
+  }
+
+  function setSkillGeneration(gen: number): void {
+    skillGeneration = gen;
   }
 
   function onEvent(event: EmitEvent): void {
@@ -120,6 +153,12 @@ export function createTrajectoryLogger(
         subtype: resultSubtype,
         totalCostUsd,
         turnCount,
+        ...(distillable && {
+          distillable: true,
+          teacherModel: teacherModelUsed,
+          routerSignal: routerSignalUsed,
+        }),
+        ...(skillGeneration !== undefined && { skillGeneration }),
       };
       const metaPath = trajectoryMetaPath(sessionId);
       await fs.writeFile(metaPath, JSON.stringify(meta, null, 2) + "\n", { encoding: "utf8" });
@@ -130,7 +169,7 @@ export function createTrajectoryLogger(
     }
   }
 
-  return { setSessionId, onEvent, finalize };
+  return { setSessionId, onEvent, markDistillable, setSkillGeneration, finalize };
 }
 
 // ── Pruning ───────────────────────────────────────────────────────────────────

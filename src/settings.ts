@@ -24,6 +24,8 @@ export interface OragerSettings {
   hooksEnabled?: boolean;
   /** SkillBank configuration (ADR-0006). */
   skillbank?: import("./types.js").SkillBankConfig;
+  /** OMLS opportunistic RL training configuration (ADR-0007). */
+  omls?: import("./types.js").OmlsConfig;
 }
 
 interface CachedSettings {
@@ -33,7 +35,7 @@ interface CachedSettings {
 
 const _cache = new Map<string, CachedSettings>();
 
-const KNOWN_SETTINGS_KEYS = new Set(["permissions", "bashPolicy", "hooks", "hooksEnabled", "skillbank"]);
+const KNOWN_SETTINGS_KEYS = new Set(["permissions", "bashPolicy", "hooks", "hooksEnabled", "skillbank", "omls"]);
 
 export async function loadSettings(settingsPath?: string): Promise<OragerSettings> {
   const filePath = settingsPath ?? path.join(os.homedir(), ".orager", "settings.json");
@@ -144,6 +146,11 @@ export function mergeSettings<T extends {
   // skillbank: file settings fill in; runtime keys override
   if (fileSettings.skillbank && (merged as Record<string, unknown>).skillbank === undefined) {
     (merged as Record<string, unknown>).skillbank = fileSettings.skillbank;
+  }
+
+  // omls: file settings fill in; runtime keys override
+  if (fileSettings.omls && (merged as Record<string, unknown>).omls === undefined) {
+    (merged as Record<string, unknown>).omls = fileSettings.omls;
   }
 
   return merged;

@@ -238,6 +238,7 @@ OTHER
   ui [--port <n>]           Start the browser-based UI server (default port: 3457)
   memory <list|inspect|export|clear>  Manage memory namespaces
   skills <list|show|delete|stats|extract>  Manage learned skills (SkillBank)
+  skill-train [--rl] [--status] [--rollback] [--setup-cron]  OMLS RL training
 
 SERVER
   --serve [--port <n>]      Start the HTTP UI server (opt-in, port default: 3456)
@@ -1085,6 +1086,10 @@ async function handleRunCommand(runArgv: string[]): Promise<void> {
       memoryKey,
       onEmit: resultTrackingEmit,
       subprocess: subprocessEnabled ? { enabled: true } : undefined,
+      // OMLS: mark trajectory as distillable when teacher is used (ADR-0007)
+      onOmlsEscalation: (teacherModel, signal) => {
+        trajLogger.markDistillable(teacherModel, signal);
+      },
     });
   } finally {
     // Finalize trajectory (flush .jsonl + .meta.json) — non-blocking
@@ -1249,6 +1254,13 @@ async function main(): Promise<void> {
   if (argv[0] === "skills") {
     const { handleSkillsSubcommand } = await import("./cli/skills-command.js");
     await handleSkillsSubcommand(argv.slice(1));
+    return;
+  }
+
+  // ── skill-train subcommand (ADR-0007) ─────────────────────────────────────
+  if (argv[0] === "skill-train") {
+    const { handleSkillTrainSubcommand } = await import("./cli/skill-train-command.js");
+    await handleSkillTrainSubcommand(argv.slice(1));
     return;
   }
 
