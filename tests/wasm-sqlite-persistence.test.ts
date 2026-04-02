@@ -1,16 +1,14 @@
 /**
- * Persistence round-trip tests for WASM SQLite (src/wasm-sqlite.ts).
+ * Persistence round-trip tests for native SQLite (src/native-sqlite.ts).
  *
- * These tests exercise the serialize/deserialize cycle directly:
- *   openWasmDb(path) → write → close()/_autoSave → openWasmDb(same path) → read
+ * These tests exercise the open/write/close/reopen cycle:
+ *   openWasmDb(path) → write → close() → openWasmDb(same path) → read
  *
- * The existing memory-sqlite.test.ts verifies the memory store API but resets
- * the module singleton in the same process, which doesn't exercise whether
- * _persistToFile() (sqlite3_js_db_export + writeFileSync) + sqlite3_deserialize
- * correctly round-trips data across two independent openWasmDb() calls.
+ * bun:sqlite writes are synchronous and immediately durable — no debounce,
+ * no serialize/deserialize cycle, real WAL mode.
  */
 import { describe, it, expect } from "vitest";
-import { openWasmDb } from "../src/wasm-sqlite.js";
+import { openWasmDb } from "../src/native-sqlite.js";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
@@ -20,7 +18,7 @@ function makeTempDbPath(): string {
   return path.join(os.tmpdir(), `wasm-persist-${crypto.randomUUID()}.db`);
 }
 
-describe("WASM SQLite — serialize/deserialize persistence round-trip", () => {
+describe("native SQLite — persistence round-trip", () => {
   it("data written and close()d survives a second openWasmDb() call", async () => {
     const dbPath = makeTempDbPath();
     try {
@@ -29,10 +27,10 @@ describe("WASM SQLite — serialize/deserialize persistence round-trip", () => {
       db1.exec("CREATE TABLE items (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
       db1.prepare("INSERT INTO items VALUES (?, ?)").run("a", "hello");
       db1.prepare("INSERT INTO items VALUES (?, ?)").run("b", "world");
-      db1.close(); // triggers _persistToFile → sqlite3_js_db_export → writeFileSync
+      db1.close(); // bun:sqlite writes are already durable; close() runs PRAGMA optimize
 
       // ── Phase 2: read from a new DB instance ─────────────────────────────
-      const db2 = await openWasmDb(dbPath); // readFileSync + sqlite3_deserialize
+      const db2 = await openWasmDb(dbPath);
       const rows = db2.prepare("SELECT id, value FROM items ORDER BY id").all();
       db2.close();
 
@@ -84,14 +82,14 @@ describe("WASM SQLite — serialize/deserialize persistence round-trip", () => {
     }
   });
 
-  it("_autoSave writes the file after each top-level statement (without close())", async () => {
+  it("data is durable after writes without close() (native driver writes synchronously)", async () => {
     const dbPath = makeTempDbPath();
     let db: Awaited<ReturnType<typeof openWasmDb>> | undefined;
     try {
       db = await openWasmDb(dbPath);
       db.exec("CREATE TABLE t (v TEXT)");
-      db.prepare("INSERT INTO t VALUES (?)").run("auto-saved");
-      // _autoSave uses a 100ms debounce — wait for it to flush
+      db.prepare("INSERT INTO t VALUES (?)").run("persisted");
+      // flush() is a no-op in the native driver — data is already on disk
       await db.flush();
 
       const stat = fs.statSync(dbPath);
@@ -102,7 +100,7 @@ describe("WASM SQLite — serialize/deserialize persistence round-trip", () => {
       const row = db2.prepare("SELECT v FROM t").get() as { v: string } | undefined;
       db2.close();
 
-      expect(row?.v).toBe("auto-saved");
+      expect(row?.v).toBe("persisted");
     } finally {
       try { db?.close(); } catch { /* ignore */ }
       fs.rmSync(dbPath, { force: true });
@@ -153,7 +151,7 @@ describe("WASM SQLite — serialize/deserialize persistence round-trip", () => {
       const sizeAfter = fs.statSync(dbPath).size;
 
       expect(row?.v).toBe("original");
-      // File size must not change — readonly path passes null filePath to WasmCompatDb
+      // File size must not change — readonly mode does not write
       expect(sizeAfter).toBe(sizeBefore);
     } finally {
       fs.rmSync(dbPath, { force: true });

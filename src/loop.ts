@@ -19,7 +19,7 @@ import type { McpClientHandle } from "./mcp-client.js";
 import { makeTodoTools } from "./tools/todo.js";
 import { makeRememberTool } from "./tools/remember.js";
 import { makeWriteMemoryTool, makeReadMemoryTool, loadAutoMemory } from "./tools/auto-memory.js";
-import { loadMemoryStoreAny, saveMemoryStoreAny, addMemoryEntry, pruneExpired, renderMemoryBlock, renderRetrievedBlock, retrieveEntries, retrieveEntriesWithEmbeddings, memoryKeyFromCwd, buildMemoryKeyFromRepo, shouldUseFtsRetrieval } from "./memory.js";
+import { loadMemoryStoreAny, saveMemoryStoreAny, addMemoryEntry, pruneExpired, renderMemoryBlock, renderRetrievedBlock, retrieveEntries, retrieveEntriesWithEmbeddings, memoryKeyFromCwd, buildMemoryKeyFromRepo, shouldUseFtsRetrieval, withMemoryLock } from "./memory.js";
 import { isSqliteMemoryEnabled, searchMemoryFts, searchMemoryFtsMulti, loadMasterContext, addMemoryEntrySqlite, getMemoryEntryCount, getEntriesForDistillation, deleteMemoryEntriesByIds } from "./memory-sqlite.js";
 import { fireHooks } from "./hooks.js";
 import type { HookConfig, HookPayload } from "./hooks.js";
@@ -1950,16 +1950,18 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
                   _embeddingModel: embeddingModel,
                 });
               } else {
-                // File-store fallback: load → add → save atomically
-                const store = await loadMemoryStoreAny(effectiveMemoryKey);
-                const updated = addMemoryEntry(store, {
-                  content: upd.content,
-                  importance: upd.importance,
-                  tags: upd.tags,
-                  type: upd.type,
-                  runId: sessionId,
+                // File-store fallback: load → add → save atomically under per-key lock
+                await withMemoryLock(effectiveMemoryKey, async () => {
+                  const store = await loadMemoryStoreAny(effectiveMemoryKey);
+                  const updated = addMemoryEntry(store, {
+                    content: upd.content,
+                    importance: upd.importance,
+                    tags: upd.tags,
+                    type: upd.type,
+                    runId: sessionId,
+                  });
+                  await saveMemoryStoreAny(effectiveMemoryKey, updated);
                 });
-                await saveMemoryStoreAny(effectiveMemoryKey, updated);
               }
               ingested++;
             } catch { /* non-fatal */ }

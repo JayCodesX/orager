@@ -36,25 +36,28 @@ export const MEMORY_DYNAMIC_BUDGET_FRACTION = parseFloat(
 
 // Lazy-loaded BPE tokenisers — only imported on first use.
 // Module-level cache so the token tables are loaded at most once per process.
-let _cl100kEncode: ((text: string) => number[]) | null | undefined;
-let _o200kEncode: ((text: string) => number[]) | null | undefined;
+// Uses tiktoken (WASM-backed) for accuracy parity with the OpenAI API.
+let _cl100kEncode: ((text: string) => { length: number }) | null | undefined;
+let _o200kEncode: ((text: string) => { length: number }) | null | undefined;
 
-export async function loadCl100k(): Promise<((text: string) => number[]) | null> {
+export async function loadCl100k(): Promise<((text: string) => { length: number }) | null> {
   if (_cl100kEncode !== undefined) return _cl100kEncode;
   try {
-    const mod = await import("gpt-tokenizer/esm/encoding/cl100k_base");
-    _cl100kEncode = (mod as unknown as { encode: (t: string) => number[] }).encode;
+    const { get_encoding } = await import("tiktoken");
+    const enc = get_encoding("cl100k_base");
+    _cl100kEncode = (text: string) => enc.encode(text);
   } catch {
     _cl100kEncode = null;
   }
   return _cl100kEncode;
 }
 
-export async function loadO200k(): Promise<((text: string) => number[]) | null> {
+export async function loadO200k(): Promise<((text: string) => { length: number }) | null> {
   if (_o200kEncode !== undefined) return _o200kEncode;
   try {
-    const mod = await import("gpt-tokenizer/esm/encoding/o200k_base");
-    _o200kEncode = (mod as unknown as { encode: (t: string) => number[] }).encode;
+    const { get_encoding } = await import("tiktoken");
+    const enc = get_encoding("o200k_base");
+    _o200kEncode = (text: string) => enc.encode(text);
   } catch {
     _o200kEncode = null;
   }

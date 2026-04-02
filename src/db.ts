@@ -45,7 +45,7 @@ export function resolveDbPath(): string | null {
 
 // ── Size check ────────────────────────────────────────────────────────────────
 
-import type { WasmDatabase } from "./wasm-sqlite.js";
+import type { WasmDatabase } from "./native-sqlite.js";
 
 /**
  * Returns the current on-disk size of the database in bytes.

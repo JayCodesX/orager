@@ -5,8 +5,8 @@
  * Schema: sessions table (indexed columns + full JSON data column)
  *         session_locks table (advisory locking)
  */
-import { openWasmDb } from "./wasm-sqlite.js";
-import type { WasmDatabase } from "./wasm-sqlite.js";
+import { openWasmDb } from "./native-sqlite.js";
+import type { WasmDatabase } from "./native-sqlite.js";
 import type { SessionData, SessionSummary, PruneResult } from "./types.js";
 import type { SessionStore } from "./session-store.js";
 import { CURRENT_SESSION_SCHEMA_VERSION, migrateSession } from "./session.js";

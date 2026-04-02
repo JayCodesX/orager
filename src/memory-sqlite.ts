@@ -4,8 +4,8 @@
  * Activated when ORAGER_DB_PATH env var is set.
  * Schema: memory_entries table with FTS5 virtual table for full-text search.
  */
-import { openWasmDb } from "./wasm-sqlite.js";
-import type { WasmDatabase } from "./wasm-sqlite.js";
+import { openWasmDb } from "./native-sqlite.js";
+import type { WasmDatabase } from "./native-sqlite.js";
 import crypto from "node:crypto";
 import type { MemoryStore, MemoryEntry } from "./memory.js";
 import { resolveDbPath, checkDbSize } from "./db.js";

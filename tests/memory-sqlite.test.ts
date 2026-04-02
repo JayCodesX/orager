@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { openWasmDb } from "../src/wasm-sqlite.js";
+import { openWasmDb } from "../src/native-sqlite.js";
 
 // We must import after setting ORAGER_DB_PATH, so we use dynamic imports below.
 // But we also need to reset the singleton between tests.
