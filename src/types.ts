@@ -1305,6 +1305,66 @@ export interface AgentLoopOptions {
   env?: Record<string, string>;
 }
 
+// ── Multi-agent workflow types ───────────────────────────────────────────────
+
+/**
+ * Per-agent configuration slice for use in an AgentWorkflow.
+ * Specifies only the fields that differ between agents — everything else
+ * inherits from AgentWorkflow.base.
+ */
+export interface AgentConfig {
+  /** Human-readable name for this step. Used in logs and cost tracking. */
+  role: string;
+  /** Model to use for this step. Overrides AgentWorkflow.base.model. */
+  model: string;
+  /**
+   * Appended to the shared system prompt. Defines this agent's specific role
+   * and expected output format.
+   */
+  appendSystemPrompt?: string;
+  /** Sampling temperature for this step. */
+  temperature?: number;
+  /**
+   * Memory namespace(s) for this step.
+   * Overrides AgentWorkflow.base.memoryKey.
+   * Array form: index 0 = write target, all elements = read sources (Phase 8).
+   */
+  memoryKey?: string | string[];
+  /** Maximum agent turns for this step. Overrides AgentWorkflow.base.maxTurns. */
+  maxTurns?: number;
+  /** Hard cost ceiling in USD for this step. Overrides AgentWorkflow.base.maxCostUsd. */
+  maxCostUsd?: number;
+}
+
+/**
+ * A named, sequential multi-agent workflow.
+ *
+ * The orchestrator runs each step in order, passing the previous step's output
+ * as the next step's prompt unless a custom handoff function is provided.
+ *
+ * @example
+ * const workflow: AgentWorkflow = {
+ *   base: { apiKey, cwd, addDirs: [], dangerouslySkipPermissions: false, verbose: false, onEmit },
+ *   steps: [
+ *     { role: "researcher", model: "deepseek/deepseek-r1", maxCostUsd: 2.00 },
+ *     { role: "synthesizer", model: "anthropic/claude-sonnet-4-6", temperature: 0.3 },
+ *   ],
+ * };
+ * await runAgentWorkflow(workflow, "Research the competitive landscape");
+ */
+export interface AgentWorkflow {
+  /** Shared base config applied to every step unless overridden by AgentConfig. */
+  base: Omit<AgentLoopOptions, "prompt" | "model">;
+  /** Ordered list of agent steps. Executed sequentially. */
+  steps: AgentConfig[];
+  /**
+   * Optional handoff function. Given the index of the just-completed step and
+   * its full output text, returns the prompt for the next step.
+   * Default: pass the full output of the previous step as-is.
+   */
+  handoff?: (stepIndex: number, output: string) => string;
+}
+
 // ── Permission types ─────────────────────────────────────────────────────────
 
 export type PermissionLevel = "allow" | "deny" | "ask";

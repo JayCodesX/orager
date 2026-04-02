@@ -920,6 +920,8 @@ async function handleMemorySubcommand(argv: string[]): Promise<void> {
 // ── Config file loading + user config — see ./cli/config-loading.ts ───────────
 // loadConfigFile and loadUserConfig are imported at the top of this file.
 export { loadConfigFile }; // re-export for backward compatibility (tests import from index)
+export { runAgentWorkflow } from "./workflow.js";
+export type { AgentConfig, AgentWorkflow } from "./types.js";
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
