@@ -32,6 +32,7 @@ import { fetchGenerationMeta, shouldUseDirect, callEmbeddings } from "./openrout
 import { fetchLiveModelMeta, getLiveModelPricing, isLiveModelMetaCacheWarm, liveModelSupportsTools, liveModelSupportsVision } from "./openrouter-model-meta.js";
 import { recordProviderSuccess } from "./provider-health.js";
 import { loadSkillsFromDirs, buildSkillsSystemPrompt, buildSkillTools } from "./skills.js";
+import { retrieveSkills, buildSkillsPromptSection, updateSkillOutcomes } from "./skillbank.js";
 import { ALL_TOOLS, finishTool, BROWSER_TOOLS } from "./tools/index.js";
 import { FINISH_TOOL_NAME } from "./tools/finish.js";
 import { promptApproval } from "./approval.js";
@@ -536,6 +537,33 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   // skills, project CLAUDE.md, commands).  Dynamic memory blocks appended below
   // are excluded from the frozen section to keep cache hits high.
   const frozenSystemPromptLength = systemPrompt.length;
+
+  // ── SkillBank injection (ADR-0006) ────────────────────────────────────────
+  // Retrieve top-K learned skills by cosine similarity to the run prompt and
+  // inject them as a "## Learned Skills" block. Non-fatal — errors are swallowed.
+  const _injectedSkillIds: string[] = [];
+  if (opts.skillbank?.enabled !== false && opts.memoryEmbeddingModel && apiKey) {
+    try {
+      let skillQueryVec = getCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt);
+      if (!skillQueryVec) {
+        const vecs = await callEmbeddings(apiKey, opts.memoryEmbeddingModel, [prompt]);
+        skillQueryVec = vecs[0] ?? [];
+        if (skillQueryVec.length > 0) {
+          setCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt, skillQueryVec);
+        }
+      }
+      if (skillQueryVec && skillQueryVec.length > 0) {
+        const learnedSkills = await retrieveSkills(skillQueryVec, opts.skillbank);
+        if (learnedSkills.length > 0) {
+          const skillsSection = buildSkillsPromptSection(learnedSkills);
+          if (skillsSection) {
+            systemPrompt += "\n\n" + skillsSection;
+            for (const sk of learnedSkills) _injectedSkillIds.push(sk.id);
+          }
+        }
+      }
+    } catch { /* non-fatal — SkillBank failure must never abort a run */ }
+  }
 
   // Validate extraTools names before merging
   for (const tool of opts.extraTools ?? []) {
@@ -1382,6 +1410,11 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   // result event.
   const emitResult = async (resultEvent: EmitResultEvent): Promise<void> => {
     onEmit(resultEvent);
+    // ── SkillBank: record outcomes for injected skills (ADR-0006) ────────
+    if (_injectedSkillIds.length > 0) {
+      const skillSuccess = resultEvent.subtype === "success";
+      updateSkillOutcomes(_injectedSkillIds, skillSuccess).catch(() => { /* non-fatal */ });
+    }
     // ── OTel metrics: session duration + turn count ──────────────────────
     recordSession(Date.now() - _sessionStartMs, resultEvent.turnCount ?? turn, resultEvent.subtype);
     if (isWebhookUrlSafe(opts.webhookUrl)) {

@@ -1248,6 +1248,10 @@ export interface AgentLoopOptions {
    */
   memoryEmbeddingModel?: string;
 
+  // ── SkillBank (ADR-0006) ──────────────────────────────────────────────────
+  /** SkillBank configuration. When undefined, defaults from DEFAULT_SKILLBANK_CONFIG apply. */
+  skillbank?: SkillBankConfig;
+
   /**
    * Per-agent API key override. When set, this agent uses its own
    * key instead of the global PROTOCOL_API_KEY. Isolates rate limits so one
@@ -1386,6 +1390,30 @@ export interface AgentWorkflow {
    * Default: pass the full output of the previous step as-is.
    */
   handoff?: (stepIndex: number, output: string) => string;
+}
+
+// ── SkillBank types (ADR-0006) ───────────────────────────────────────────────
+
+export interface SkillBankConfig {
+  /** Master enable switch. Default: true. */
+  enabled?: boolean;
+  /**
+   * Model used for skill extraction LLM calls.
+   * Empty string = inherit the model from the run that triggered extraction.
+   */
+  extractionModel?: string;
+  /** Maximum number of live (non-deleted) skills. Oldest/weakest pruned when exceeded. Default: 500. */
+  maxSkills?: number;
+  /** Minimum cosine similarity required to inject a skill. Default: 0.65. */
+  similarityThreshold?: number;
+  /** Minimum cosine similarity to suppress a duplicate skill on write. Default: 0.92. */
+  deduplicationThreshold?: number;
+  /** Maximum skills injected per run. Default: 5. */
+  topK?: number;
+  /** Days to retain trajectory files. Default: 30. */
+  retentionDays?: number;
+  /** Automatically attempt skill extraction after every failed run. Default: true. */
+  autoExtract?: boolean;
 }
 
 // ── Permission types ─────────────────────────────────────────────────────────

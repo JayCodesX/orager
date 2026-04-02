@@ -18,6 +18,8 @@ export const MEMORY_HEADER_MASTER        = "## Persistent Product Context";
 export const MEMORY_HEADER_RETRIEVED     = "## Your persistent memory";
 export const MEMORY_HEADER_AUTO          = "# Persistent memory";
 export const MEMORY_HEADER_PRIOR_SESSION = "## Prior session context";
+/** Header that marks the SkillBank injection section (ADR-0006). */
+export const SKILL_HEADER                = "## Learned Skills";
 
 /**
  * Maximum share of the context window (in tokens) that the dynamic memory
