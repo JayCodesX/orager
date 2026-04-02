@@ -208,8 +208,13 @@ beforeAll(async () => {
     await fs.writeFile(path.join(tmpDir, file), JSON.stringify(data, null, 2), "utf8");
   }
 
-  // 2. Set env var before any import of session.js resolves.
+  // 2. Set env vars before any import of session.js resolves.
+  //    Force file-based store so listSessions() reads the JSON fixtures above.
+  //    bun-setup.ts sets ORAGER_DB_PATH to a temp SQLite path; override to none.
   process.env["ORAGER_SESSIONS_DIR"] = tmpDir;
+  process.env["ORAGER_DB_PATH"] = "none";
+  const { _resetStoreForTesting } = await import("../../src/session.js");
+  _resetStoreForTesting();
 
   // 3. Start test server.
   server = await createSessionsServer();
@@ -226,8 +231,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
-  // Clean up env var.
   delete process.env["ORAGER_SESSIONS_DIR"];
+  delete process.env["ORAGER_DB_PATH"];
+  const { _resetStoreForTesting } = await import("../../src/session.js");
+  _resetStoreForTesting();
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
