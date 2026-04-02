@@ -17,6 +17,16 @@
  *                          so just call the callback immediately
  */
 import { vi } from "bun:test";
+import os from "node:os";
+import path from "node:path";
+import { mkdtempSync } from "node:fs";
+
+// Redirect SQLite to a per-process temp directory so tests never share state
+// and CI runners don't exhaust the WASM heap loading a stale ~/.orager/orager.db.
+if (!process.env["ORAGER_DB_PATH"]) {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "orager-test-"));
+  process.env["ORAGER_DB_PATH"] = path.join(tmpDir, "test.db");
+}
 
 // ── resetModules ──────────────────────────────────────────────────────────────
 // Vitest clears the module registry so subsequent imports get fresh instances.

@@ -187,11 +187,23 @@ export function makeRememberTool(
 
         if (isSqliteMemoryEnabled()) {
           // Fast path: direct INSERT without load→mutate→save round-trip
+          let embedding: number[] | undefined;
+          let embeddingModel: string | undefined;
+          if (embeddingOpts) {
+            try {
+              const vectors = await callEmbeddings(embeddingOpts.apiKey, embeddingOpts.model, [content]);
+              embedding = vectors[0];
+              embeddingModel = embeddingOpts.model;
+            } catch {
+              // Embedding failure must never block the memory save — fall through
+            }
+          }
           const entryData = {
             content,
             ...(tags && tags.length > 0 ? { tags } : {}),
             ...(expiresAt ? { expiresAt } : {}),
             importance,
+            ...(embedding ? { _embedding: embedding, _embeddingModel: embeddingModel } : {}),
           };
           const saved = await withSpan("memory.save", { memoryKey: writeTarget, action: "add" }, () =>
             addMemoryEntrySqlite(writeTarget, entryData)
