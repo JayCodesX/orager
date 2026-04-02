@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>orager — AI agent runtime</title>
+  <meta name="description" content="Production-grade AI agent runtime with persistent memory, multi-model routing, and automated skill learning. Coming soon." />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0a0a0f;
+      --surface:  #111118;
+      --border:   #1e1e2e;
+      --accent:   #6c63ff;
+      --accent2:  #a78bfa;
+      --text:     #e2e8f0;
+      --muted:    #64748b;
+      --success:  #10b981;
+      --radius:   12px;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    /* ── Nav ── */
+    nav {
+      position: fixed; top: 0; left: 0; right: 0;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 1rem 2rem;
+      background: rgba(10,10,15,0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      z-index: 100;
+    }
+    .nav-logo { font-size: 1.1rem; font-weight: 700; letter-spacing: -0.02em; color: var(--text); text-decoration: none; }
+    .nav-logo span { color: var(--accent2); }
+    .nav-link { color: var(--muted); text-decoration: none; font-size: 0.9rem; transition: color 0.2s; }
+    .nav-link:hover { color: var(--text); }
+    .nav-cta {
+      background: var(--accent); color: #fff; border: none; border-radius: 8px;
+      padding: 0.45rem 1rem; font-size: 0.85rem; font-weight: 600; cursor: pointer;
+      text-decoration: none; transition: opacity 0.2s;
+    }
+    .nav-cta:hover { opacity: 0.85; }
+
+    /* ── Hero ── */
+    .hero {
+      min-height: 100vh;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      text-align: center; padding: 6rem 1.5rem 4rem;
+      position: relative; overflow: hidden;
+    }
+    .hero::before {
+      content: "";
+      position: absolute; top: -40%; left: 50%; transform: translateX(-50%);
+      width: 900px; height: 700px;
+      background: radial-gradient(ellipse, rgba(108,99,255,0.12) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .badge {
+      display: inline-flex; align-items: center; gap: 0.4rem;
+      background: rgba(108,99,255,0.12); border: 1px solid rgba(108,99,255,0.3);
+      color: var(--accent2); border-radius: 999px;
+      padding: 0.3rem 0.9rem; font-size: 0.78rem; font-weight: 600;
+      margin-bottom: 1.5rem; letter-spacing: 0.04em; text-transform: uppercase;
+    }
+    .badge-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent2); animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+    h1 {
+      font-size: clamp(2.4rem, 6vw, 4.5rem);
+      font-weight: 800; letter-spacing: -0.03em; line-height: 1.1;
+      max-width: 820px; margin-bottom: 1.25rem;
+    }
+    h1 em { font-style: normal; color: var(--accent2); }
+
+    .hero-sub {
+      font-size: clamp(1rem, 2.5vw, 1.25rem);
+      color: var(--muted); max-width: 560px; margin-bottom: 2.5rem;
+    }
+
+    /* ── Email form ── */
+    .email-form {
+      display: flex; gap: 0.6rem; flex-wrap: wrap; justify-content: center;
+      max-width: 480px; width: 100%; margin-bottom: 1rem;
+    }
+    .email-input {
+      flex: 1; min-width: 240px;
+      background: var(--surface); border: 1px solid var(--border);
+      color: var(--text); border-radius: var(--radius);
+      padding: 0.75rem 1rem; font-size: 0.95rem; outline: none;
+      transition: border-color 0.2s;
+    }
+    .email-input:focus { border-color: var(--accent); }
+    .email-input::placeholder { color: var(--muted); }
+    .submit-btn {
+      background: var(--accent); color: #fff; border: none; border-radius: var(--radius);
+      padding: 0.75rem 1.5rem; font-size: 0.95rem; font-weight: 700;
+      cursor: pointer; white-space: nowrap; transition: opacity 0.2s, transform 0.15s;
+    }
+    .submit-btn:hover { opacity: 0.9; transform: translateY(-1px); }
+    .submit-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+    .form-note { font-size: 0.78rem; color: var(--muted); }
+    .form-success {
+      display: none; align-items: center; gap: 0.5rem;
+      color: var(--success); font-size: 0.95rem; font-weight: 500;
+    }
+    .form-success.visible { display: flex; }
+
+    /* ── Stats strip ── */
+    .stats {
+      display: flex; gap: 2.5rem; flex-wrap: wrap; justify-content: center;
+      padding: 1rem 1.5rem 0; margin-bottom: -1rem;
+    }
+    .stat { text-align: center; }
+    .stat-val { font-size: 1.4rem; font-weight: 800; color: var(--accent2); }
+    .stat-label { font-size: 0.75rem; color: var(--muted); margin-top: 0.1rem; }
+
+    /* ── Section ── */
+    section { padding: 5rem 1.5rem; max-width: 1100px; margin: 0 auto; }
+    .section-label {
+      font-size: 0.75rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--accent2); margin-bottom: 0.75rem;
+    }
+    h2 { font-size: clamp(1.8rem, 4vw, 2.8rem); font-weight: 800; letter-spacing: -0.025em; margin-bottom: 1rem; }
+    .section-sub { color: var(--muted); font-size: 1.05rem; max-width: 540px; }
+
+    /* ── Feature grid ── */
+    .feature-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1.25rem; margin-top: 3rem;
+    }
+    .feature-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 1.5rem;
+      transition: border-color 0.2s, transform 0.2s;
+    }
+    .feature-card:hover { border-color: rgba(108,99,255,0.4); transform: translateY(-2px); }
+    .feature-icon { font-size: 1.6rem; margin-bottom: 0.75rem; }
+    .feature-title { font-weight: 700; font-size: 1rem; margin-bottom: 0.4rem; }
+    .feature-desc { font-size: 0.88rem; color: var(--muted); line-height: 1.55; }
+
+    /* ── Pricing / Tiers ── */
+    .tiers-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 1.25rem; margin-top: 3rem;
+    }
+    .tier-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 1.75rem 1.5rem;
+      display: flex; flex-direction: column; gap: 0.6rem;
+      transition: border-color 0.2s;
+    }
+    .tier-card.featured { border-color: rgba(108,99,255,0.5); background: rgba(108,99,255,0.05); }
+    .tier-name { font-weight: 800; font-size: 1.1rem; }
+    .tier-price { font-size: 1.6rem; font-weight: 800; color: var(--accent2); }
+    .tier-price span { font-size: 0.9rem; color: var(--muted); font-weight: 400; }
+    .tier-desc { font-size: 0.88rem; color: var(--muted); line-height: 1.5; flex: 1; }
+    .tier-tag {
+      display: inline-block; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.06em;
+      text-transform: uppercase; padding: 0.25rem 0.6rem; border-radius: 999px;
+      background: rgba(108,99,255,0.15); color: var(--accent2);
+    }
+
+    /* ── Code block ── */
+    .code-block {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 1.5rem;
+      overflow-x: auto; margin-top: 2rem;
+      font-family: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+      font-size: 0.88rem; line-height: 1.65;
+    }
+    .code-block .cm { color: #6272a4; }
+    .code-block .kw { color: var(--accent2); }
+    .code-block .st { color: #50fa7b; }
+    .code-block .fn { color: #8be9fd; }
+    .code-block .nm { color: #ffb86c; }
+
+    /* ── CTA section ── */
+    .cta-section {
+      text-align: center; padding: 5rem 1.5rem;
+      background: linear-gradient(180deg, transparent, rgba(108,99,255,0.06));
+    }
+    .cta-section h2 { margin-bottom: 0.75rem; }
+    .cta-section p { color: var(--muted); margin-bottom: 2rem; }
+
+    /* ── Footer ── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 2rem 1.5rem; text-align: center;
+      font-size: 0.82rem; color: var(--muted);
+      display: flex; flex-wrap: wrap; gap: 1rem;
+      align-items: center; justify-content: space-between;
+      max-width: 1100px; margin: 0 auto;
+    }
+    footer a { color: var(--muted); text-decoration: none; }
+    footer a:hover { color: var(--text); }
+
+    @media (max-width: 600px) {
+      nav { padding: 0.75rem 1rem; }
+      .stats { gap: 1.5rem; }
+      .email-form { flex-direction: column; }
+      .email-input { min-width: unset; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Nav -->
+<nav>
+  <a href="#" class="nav-logo">or<span>ager</span></a>
+  <a href="https://github.com/JayCodesX/orager" class="nav-link" target="_blank">GitHub</a>
+  <a href="#waitlist" class="nav-cta">Join waitlist</a>
+</nav>
+
+<!-- Hero -->
+<section class="hero">
+  <div class="badge"><span class="badge-dot"></span>Coming soon</div>
+  <h1>The AI agent runtime that <em>remembers everything</em></h1>
+  <p class="hero-sub">
+    Multi-turn tool-calling, persistent 3-layer memory, and multi-model routing —
+    open source and production-ready.
+  </p>
+
+  <form class="email-form" id="waitlist-form" onsubmit="handleSubmit(event)">
+    <input
+      type="email" class="email-input" id="email-input"
+      placeholder="you@company.com" required autocomplete="email"
+    />
+    <button type="submit" class="submit-btn" id="submit-btn">Get early access</button>
+  </form>
+  <p class="form-note">No spam. Unsubscribe any time.</p>
+  <div class="form-success" id="form-success">
+    ✓ You're on the list — we'll be in touch!
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="stat-val">100+</div><div class="stat-label">Models supported</div></div>
+    <div class="stat"><div class="stat-val">3-layer</div><div class="stat-label">Persistent memory</div></div>
+    <div class="stat"><div class="stat-val">91</div><div class="stat-label">Tests passing</div></div>
+    <div class="stat"><div class="stat-val">MIT</div><div class="stat-label">Open source</div></div>
+  </div>
+</section>
+
+<!-- Features -->
+<section id="features">
+  <div class="section-label">What it does</div>
+  <h2>Everything you need to run agents in production</h2>
+  <p class="section-sub">Not a toy. Not a wrapper. A runtime built for real workloads.</p>
+
+  <div class="feature-grid">
+    <div class="feature-card">
+      <div class="feature-icon">🧠</div>
+      <div class="feature-title">3-layer persistent memory</div>
+      <div class="feature-desc">Master context, distilled long-term facts, and short-term episodic memory — all in SQLite. Agents start sessions already knowing what matters.</div>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🔀</div>
+      <div class="feature-title">Multi-model routing</div>
+      <div class="feature-desc">Claude, DeepSeek, GPT-4o, Gemini, Llama — swap models per turn, per session, or based on confidence score. No vendor lock-in.</div>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🛠️</div>
+      <div class="feature-title">Rich tool execution</div>
+      <div class="feature-desc">Bash, file I/O, web search, MCP servers, custom tools — up to 10 concurrent tool calls per turn with full approval controls.</div>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">📚</div>
+      <div class="feature-title">SkillBank learning</div>
+      <div class="feature-desc">Successful task patterns are automatically captured and injected into future runs. Agents get better at your specific workflows over time.</div>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">⚡</div>
+      <div class="feature-title">Auto-summarization</div>
+      <div class="feature-desc">Sessions auto-compress at 70% token pressure, preserving recent context. Runs never die from context overflow.</div>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🔬</div>
+      <div class="feature-title">OMLS training pipeline</div>
+      <div class="feature-desc">Opportunistic RL training from session trajectories. Fine-tune a LoRA adapter during idle hours, host it on Together AI, and route to it automatically.</div>
+    </div>
+  </div>
+</section>
+
+<!-- Code sample -->
+<section>
+  <div class="section-label">Quick start</div>
+  <h2>Up and running in minutes</h2>
+  <div class="code-block">
+<span class="cm"># Install</span>
+npm install -g orager
+
+<span class="cm"># One-shot agent run</span>
+orager run <span class="st">"Summarise the last 10 git commits"</span>
+
+<span class="cm"># Interactive session (persistent memory, resumable)</span>
+orager chat --model deepseek/deepseek-chat
+
+<span class="cm"># Or use the library</span>
+<span class="kw">import</span> { <span class="fn">runAgentLoop</span> } <span class="kw">from</span> <span class="st">"orager"</span>;
+
+<span class="kw">await</span> <span class="fn">runAgentLoop</span>({
+  prompt: <span class="st">"Write a test for the auth module"</span>,
+  model:  <span class="st">"anthropic/claude-sonnet-4-5"</span>,
+  apiKey: process.env.<span class="nm">OPENROUTER_API_KEY</span>,
+  cwd:    process.<span class="fn">cwd</span>(),
+  maxTurns: <span class="nm">20</span>,
+  onEmit: (e) => console.<span class="fn">log</span>(e),
+});
+  </div>
+</section>
+
+<!-- Tiers -->
+<section id="pricing">
+  <div class="section-label">What's coming</div>
+  <h2>Four ways to run orager</h2>
+  <p class="section-sub">The core runtime is MIT open source. Cloud services are coming soon.</p>
+
+  <div class="tiers-grid">
+    <div class="tier-card">
+      <div class="tier-name">Open Source</div>
+      <div class="tier-price">Free <span>forever</span></div>
+      <div class="tier-desc">
+        Full runtime, all features, self-hosted. MIT license. Use it for anything —
+        production, research, or embedding in your own product.
+      </div>
+      <span class="tier-tag">Available now</span>
+    </div>
+
+    <div class="tier-card featured">
+      <div class="tier-name">Orager Cloud</div>
+      <div class="tier-price">~$20 <span>/ mo</span></div>
+      <div class="tier-desc">
+        Managed agents with hosted memory, zero-infrastructure setup.
+        Connect your OpenRouter key, point at your codebase, run.
+        No servers, no SQLite wrangling.
+      </div>
+      <span class="tier-tag">Coming soon</span>
+    </div>
+
+    <div class="tier-card">
+      <div class="tier-name">SkillBank Pro</div>
+      <div class="tier-price">~$30 <span>/ mo</span></div>
+      <div class="tier-desc">
+        Shared skills across your team. Automatic OMLS training runs triggered
+        when you sleep. Wake up to a smarter agent tuned on your actual workflow.
+      </div>
+      <span class="tier-tag">Coming soon</span>
+    </div>
+
+    <div class="tier-card">
+      <div class="tier-name">Enterprise</div>
+      <div class="tier-price">Custom</div>
+      <div class="tier-desc">
+        Self-hosted deployment, SSO, audit logs, SLA, private skill marketplace,
+        and a dedicated support channel.
+      </div>
+      <span class="tier-tag">Contact us</span>
+    </div>
+  </div>
+</section>
+
+<!-- Final CTA -->
+<div class="cta-section" id="waitlist">
+  <div style="max-width:520px;margin:0 auto;">
+    <h2>Be first to know when cloud launches</h2>
+    <p>Email only. No spam. One message when we're ready.</p>
+
+    <form class="email-form" style="justify-content:center;margin:0 auto 0.75rem;" id="waitlist-form-2" onsubmit="handleSubmit(event, '2')">
+      <input type="email" class="email-input" id="email-input-2" placeholder="you@company.com" required autocomplete="email" />
+      <button type="submit" class="submit-btn" id="submit-btn-2">Notify me</button>
+    </form>
+    <p class="form-note">Unsubscribe any time.</p>
+    <div class="form-success" id="form-success-2">
+      ✓ You're on the list — we'll be in touch!
+    </div>
+  </div>
+</div>
+
+<!-- Footer -->
+<footer>
+  <span>© 2026 orager — MIT licensed</span>
+  <div style="display:flex;gap:1.5rem;">
+    <a href="https://github.com/JayCodesX/orager" target="_blank">GitHub</a>
+    <a href="https://www.npmjs.com/package/orager" target="_blank">npm</a>
+    <a href="https://github.com/JayCodesX/orager/blob/main/LICENSE" target="_blank">License</a>
+  </div>
+</footer>
+
+<script>
+  // ── Email capture ─────────────────────────────────────────────────────────
+  // Replace FORM_ENDPOINT below with your Resend, Buttondown, or Mailchimp URL.
+  // Example (Resend Audiences API):
+  //   https://api.resend.com/audiences/YOUR_AUDIENCE_ID/contacts
+  // Example (Buttondown subscription):
+  //   https://buttondown.com/api/emails/embed-subscribe/YOUR_USERNAME
+  // Example (Formspree):
+  //   https://formspree.io/f/YOUR_FORM_ID
+
+  const FORM_ENDPOINT = ""; // ← paste your endpoint here
+
+  async function handleSubmit(e, suffix = "") {
+    e.preventDefault();
+    const emailInput = document.getElementById("email-input" + (suffix ? "-" + suffix : ""));
+    const submitBtn  = document.getElementById("submit-btn"  + (suffix ? "-" + suffix : ""));
+    const successEl  = document.getElementById("form-success" + (suffix ? "-" + suffix : ""));
+    const email = emailInput.value.trim();
+    if (!email) return;
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Submitting…";
+
+    try {
+      if (FORM_ENDPOINT) {
+        await fetch(FORM_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email }),
+        });
+      }
+      // Show success regardless (graceful degradation when endpoint not set)
+      emailInput.closest("form").style.display = "none";
+      emailInput.closest("form").nextElementSibling.style.display = "none"; // hide "no spam" note
+      successEl.classList.add("visible");
+    } catch {
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Try again";
+    }
+  }
+</script>
+</body>
+</html>
