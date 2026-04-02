@@ -962,6 +962,16 @@ async function main(): Promise<void> {
     return;
   }
 
+  // ── Subprocess server mode (JSON-RPC 2.0 over stdio) ─────────────────────
+  // Invoked by runAgentLoopSubprocess when subprocess.enabled = true.
+  // Reads a single agent/run request from stdin, runs the loop, streams
+  // agent/event notifications to stdout, exits when done.
+  if (argv.includes("--subprocess")) {
+    const { startSubprocessServer } = await import("./subprocess.js");
+    await startSubprocessServer();
+    return;
+  }
+
   // ── Daemon mode ─────────────────────────────────────────────────────────────
   if (argv.includes("--serve")) {
     const apiKey =

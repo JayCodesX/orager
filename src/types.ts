@@ -1303,6 +1303,29 @@ export interface AgentLoopOptions {
    * These are NOT set on process.env — they are only passed to subprocess spawns.
    */
   env?: Record<string, string>;
+
+  /**
+   * When enabled, runs the agent loop in a short-lived child process that
+   * communicates over JSON-RPC 2.0 on stdio (same protocol as MCP servers).
+   *
+   * Use this when the caller cannot block its main process for the duration
+   * of an agent run (e.g. a UI thread with a timeout budget).
+   *
+   * Stdout is the JSON-RPC protocol channel; stderr carries diagnostic logs.
+   * The child is terminated with SIGTERM on completion or timeout, escalating
+   * to SIGKILL after a 2-second grace period.
+   */
+  subprocess?: {
+    /** Enable subprocess transport. Default: false (in-process). */
+    enabled: boolean;
+    /** Abort the child after this many milliseconds. Default: no timeout. */
+    timeoutMs?: number;
+    /**
+     * Path to the orager binary to spawn.
+     * Default: process.execPath (the currently running binary).
+     */
+    binaryPath?: string;
+  };
 }
 
 // ── Multi-agent workflow types ───────────────────────────────────────────────

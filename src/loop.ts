@@ -153,6 +153,12 @@ function isWebhookUrlSafe(raw: string | undefined): boolean {
 }
 
 export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
+  // Subprocess transport: delegate to child process over JSON-RPC 2.0 stdio.
+  if (opts.subprocess?.enabled) {
+    const { runAgentLoopSubprocess } = await import("./subprocess.js");
+    return runAgentLoopSubprocess(opts);
+  }
+
   const {
     prompt,
     model: _modelOpt,
