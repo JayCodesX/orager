@@ -21,7 +21,7 @@ import {
   loadLatestCheckpointByContextId,
 } from "./session.js";
 import type { CliOptions, EmitResultEvent, TurnModelRule, UserMessageContentBlock, AgentLoopOptions } from "./types.js";
-import { startDaemon, readDaemonPort } from "./daemon.js";
+import { readDaemonPort } from "./daemon.js";
 import { mintJwt, KEY_PATH } from "./jwt.js";
 import { applyProfileAsync } from "./profiles.js";
 import { initTelemetry } from "./telemetry.js";
@@ -1216,41 +1216,12 @@ async function main(): Promise<void> {
     return;
   }
 
-  // ── Daemon mode ─────────────────────────────────────────────────────────────
+  // ── serve — UI-only HTTP server (alias for `orager ui`) ─────────────────────
+  // Agent runs execute in-process or via subprocess transport, not via HTTP.
   if (argv.includes("--serve")) {
-    const apiKey =
-      process.env["PROTOCOL_API_KEY"] ?? "";
-    if (!apiKey) {
-      process.stderr.write("orager: API key not set. Export PROTOCOL_API_KEY.\n");
-      process.exit(1);
-    }
     const portIdx = argv.indexOf("--port");
-    const port = portIdx !== -1 ? parseInt(argv[portIdx + 1] ?? "3456", 10) : 3456;
-
-    const maxConcIdx = argv.indexOf("--max-concurrent");
-    const maxConcurrent = maxConcIdx !== -1 ? parseInt(argv[maxConcIdx + 1] ?? "3", 10) : 3;
-
-    const idleIdx = argv.indexOf("--idle-timeout");
-    let idleTimeoutMs = 30 * 60 * 1000; // default 30 min
-    if (idleIdx !== -1) {
-      const raw = argv[idleIdx + 1] ?? "";
-      const m = /^(\d+(?:\.\d+)?)(s|m|h)$/.exec(raw);
-      if (m) idleTimeoutMs = parseFloat(m[1]) * (m[2] === "h" ? 3600_000 : m[2] === "m" ? 60_000 : 1_000);
-    }
-
-    const modelIdx = argv.indexOf("--model");
-    const model = modelIdx !== -1 ? (argv[modelIdx + 1] ?? "deepseek/deepseek-chat-v3-2") : "deepseek/deepseek-chat-v3-2";
-
-    const allowedCwdIdxs: number[] = [];
-    for (let i = 0; i < argv.length; i++) {
-      if (argv[i] === "--allowed-cwd") allowedCwdIdxs.push(i);
-    }
-    const allowedCwdPrefixes = allowedCwdIdxs
-      .map((i) => argv[i + 1])
-      .filter((s): s is string => !!s);
-
-    await startDaemon({ port, maxConcurrent, idleTimeoutMs, apiKey, model, allowedCwdPrefixes: allowedCwdPrefixes.length > 0 ? allowedCwdPrefixes : undefined });
-    // startDaemon never returns (server keeps process alive)
+    const port = portIdx !== -1 ? parseInt(argv[portIdx + 1] ?? "3457", 10) : 3457;
+    await startUiServer({ port });
     return;
   }
 
