@@ -5,6 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Node ≥20](https://img.shields.io/badge/node-%E2%89%A520-brightgreen)](https://nodejs.org)
 [![Bun](https://img.shields.io/badge/runtime-bun-black)](https://bun.sh)
+[![Join waitlist](https://img.shields.io/badge/oragerai.com-join%20waitlist-6c63ff)](https://oragerai.com)
 
 **Production-grade AI agent runtime.** Multi-turn tool-calling, persistent memory, and multi-model routing — works with any model provider.
 
