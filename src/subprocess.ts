@@ -1,0 +1,253 @@
+/**
+ * Subprocess transport for orager agent runs.
+ *
+ * Protocol: JSON-RPC 2.0 over stdio, one message per line (same as MCP servers).
+ *   stdin  → JSON-RPC requests  (agent/run, agent/cancel)
+ *   stdout ← JSON-RPC responses + streaming notifications (agent/event)
+ *   stderr ← diagnostic logs (never mixed into the protocol channel)
+ *
+ * Orchestrator side: runAgentLoopSubprocess
+ *   Spawns a child orager process with --subprocess, writes the agent/run
+ *   request, streams agent/event notifications back as EmitEvents, then
+ *   resolves when the child sends a final result response.
+ *
+ * Server side: startSubprocessServer
+ *   Reads agent/run from stdin, calls runAgentLoop, emits agent/event
+ *   notifications for every EmitEvent, then sends the final JSON-RPC response.
+ */
+
+import { spawn } from "node:child_process";
+import * as readline from "node:readline";
+import { runAgentLoop } from "./loop.js";
+import { log } from "./logger.js";
+import type { AgentLoopOptions, EmitEvent } from "./types.js";
+
+// ── JSON-RPC 2.0 wire types ───────────────────────────────────────────────────
+
+interface JsonRpcRequest {
+  jsonrpc: "2.0";
+  id: number;
+  method: string;
+  params: unknown;
+}
+
+interface JsonRpcNotification {
+  jsonrpc: "2.0";
+  method: string;
+  params: unknown;
+}
+
+interface JsonRpcResponse {
+  jsonrpc: "2.0";
+  id: number;
+  result?: unknown;
+  error?: { code: number; message: string };
+}
+
+type JsonRpcMessage = JsonRpcRequest | JsonRpcNotification | JsonRpcResponse;
+
+function isResponse(msg: JsonRpcMessage): msg is JsonRpcResponse {
+  return "id" in msg && ("result" in msg || "error" in msg);
+}
+
+function isNotification(msg: JsonRpcMessage): msg is JsonRpcNotification {
+  return !("id" in msg) && "method" in msg;
+}
+
+function writeLine(stream: NodeJS.WritableStream, msg: JsonRpcMessage): void {
+  stream.write(JSON.stringify(msg) + "\n");
+}
+
+// ── Kill helpers ──────────────────────────────────────────────────────────────
+
+const SIGKILL_GRACE_MS = 2000;
+
+function killChild(child: ReturnType<typeof spawn>): void {
+  try { child.kill("SIGTERM"); } catch { /* already dead */ }
+  setTimeout(() => {
+    try { child.kill("SIGKILL"); } catch { /* already dead */ }
+  }, SIGKILL_GRACE_MS).unref();
+}
+
+// ── Orchestrator side ─────────────────────────────────────────────────────────
+
+/**
+ * Run the agent loop in a child orager process over JSON-RPC 2.0 stdio.
+ * Equivalent to runAgentLoop but the work happens in an isolated subprocess.
+ */
+export async function runAgentLoopSubprocess(opts: AgentLoopOptions): Promise<void> {
+  const { subprocess, onEmit, ...rest } = opts;
+  const binaryPath = subprocess?.binaryPath ?? process.execPath;
+  const timeoutMs = subprocess?.timeoutMs;
+
+  // Strip the subprocess option itself — the child runs in-process mode.
+  const params: Omit<AgentLoopOptions, "onEmit" | "subprocess"> = rest;
+
+  const child = spawn(binaryPath, ["--subprocess"], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  let settled = false;
+
+  return new Promise<void>((resolve, reject) => {
+    // ── Timeout ────────────────────────────────────────────────────────────────
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (timeoutMs && timeoutMs > 0) {
+      timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          killChild(child);
+          reject(new Error(`orager subprocess timed out after ${timeoutMs}ms`));
+        }
+      }, timeoutMs);
+      timer.unref();
+    }
+
+    function cleanup() {
+      if (timer) clearTimeout(timer);
+    }
+
+    // ── Read stdout line by line ───────────────────────────────────────────────
+    const rl = readline.createInterface({ input: child.stdout! });
+    rl.on("line", (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      let msg: JsonRpcMessage;
+      try {
+        msg = JSON.parse(trimmed) as JsonRpcMessage;
+      } catch {
+        process.stderr.write(`[orager/subprocess] malformed JSON from child: ${trimmed}\n`);
+        return;
+      }
+
+      if (isNotification(msg) && msg.method === "agent/event") {
+        // Forward the EmitEvent to the caller's onEmit handler.
+        try {
+          onEmit(msg.params as EmitEvent);
+        } catch { /* caller's onEmit must not throw */ }
+        return;
+      }
+
+      if (isResponse(msg) && msg.id === 1) {
+        // Final response — resolve or reject.
+        cleanup();
+        if (!settled) {
+          settled = true;
+          if (msg.error) {
+            reject(new Error(msg.error.message));
+          } else {
+            resolve();
+          }
+        }
+      }
+    });
+
+    // ── Stderr → logger ───────────────────────────────────────────────────────
+    child.stderr!.on("data", (chunk: Buffer) => {
+      process.stderr.write(chunk);
+    });
+
+    // ── Child exit ────────────────────────────────────────────────────────────
+    child.on("close", (code) => {
+      cleanup();
+      if (!settled) {
+        settled = true;
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(`orager subprocess exited with code ${code}`));
+        }
+      }
+    });
+
+    child.on("error", (err) => {
+      cleanup();
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
+
+    // ── Send the agent/run request ─────────────────────────────────────────────
+    const request: JsonRpcRequest = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "agent/run",
+      params,
+    };
+    writeLine(child.stdin!, request);
+    child.stdin!.end();
+  });
+}
+
+// ── Server side ───────────────────────────────────────────────────────────────
+
+/**
+ * Start the subprocess server. Reads a single JSON-RPC agent/run request from
+ * stdin, executes the agent loop, streams agent/event notifications to stdout,
+ * and writes the final JSON-RPC response before exiting.
+ *
+ * Called when orager is spawned with --subprocess.
+ */
+export async function startSubprocessServer(): Promise<void> {
+  // Read the single request line from stdin.
+  const rl = readline.createInterface({ input: process.stdin });
+
+  const request = await new Promise<JsonRpcRequest>((resolve, reject) => {
+    let received = false;
+    rl.on("line", (line) => {
+      if (received) return;
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      received = true;
+      try {
+        const msg = JSON.parse(trimmed) as JsonRpcRequest;
+        resolve(msg);
+      } catch (err) {
+        reject(new Error(`Failed to parse JSON-RPC request: ${err}`));
+      }
+    });
+    rl.on("close", () => {
+      if (!received) reject(new Error("stdin closed before receiving a request"));
+    });
+  });
+
+  if (request.method !== "agent/run") {
+    writeLine(process.stdout, {
+      jsonrpc: "2.0",
+      id: request.id,
+      error: { code: -32601, message: `Method not found: ${request.method}` },
+    });
+    process.exit(1);
+  }
+
+  // Reconstruct AgentLoopOptions from params, adding onEmit that writes notifications.
+  const params = request.params as Omit<AgentLoopOptions, "onEmit" | "subprocess">;
+
+  const onEmit = (event: EmitEvent): void => {
+    const notification: JsonRpcNotification = {
+      jsonrpc: "2.0",
+      method: "agent/event",
+      params: event,
+    };
+    writeLine(process.stdout, notification);
+  };
+
+  try {
+    await runAgentLoop({ ...params, onEmit });
+    writeLine(process.stdout, {
+      jsonrpc: "2.0",
+      id: request.id,
+      result: { done: true },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error("subprocess_run_error", { error: message });
+    writeLine(process.stdout, {
+      jsonrpc: "2.0",
+      id: request.id,
+      error: { code: -32000, message },
+    });
+    process.exit(1);
+  }
+}
