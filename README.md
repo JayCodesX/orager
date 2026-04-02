@@ -1,7 +1,7 @@
 # orager
 
 [![CI](https://github.com/JayCodesX/orager/actions/workflows/ci.yml/badge.svg)](https://github.com/JayCodesX/orager/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/orager)](https://www.npmjs.com/package/orager)
+[![npm](https://img.shields.io/npm/v/%40orager%2Fcore)](https://www.npmjs.com/package/@orager/core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Node ≥20](https://img.shields.io/badge/node-%E2%89%A520-brightgreen)](https://nodejs.org)
 [![Bun](https://img.shields.io/badge/runtime-bun-black)](https://bun.sh)
@@ -28,10 +28,10 @@ orager is a TypeScript library and CLI for running AI agents that:
 
 ```bash
 # CLI (global)
-npm install -g orager
+npm install -g @orager/core
 
 # Library
-npm install orager
+npm install @orager/core
 ```
 
 **Requirements:** Node ≥ 20 or Bun ≥ 1.3. Set `OPENROUTER_API_KEY` in your environment.
@@ -57,7 +57,7 @@ orager run --model deepseek/deepseek-chat "Explain this codebase"
 ### Library
 
 ```typescript
-import { runAgentLoop } from "orager";
+import { runAgentLoop } from "@orager/core";
 
 await runAgentLoop({
   prompt: "Write a test for the auth module",
@@ -72,8 +72,8 @@ await runAgentLoop({
 ### Multi-agent workflows
 
 ```typescript
-import { runAgentWorkflow } from "orager";
-import type { AgentWorkflow } from "orager";
+import { runAgentWorkflow } from "@orager/core";
+import type { AgentWorkflow } from "@orager/core";
 
 const workflow: AgentWorkflow = {
   steps: [
