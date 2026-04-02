@@ -724,19 +724,20 @@ export interface CliOptions {
   /** Path to a file whose contents are appended to the system prompt. */
   systemPromptFile?: string;
 
-  /** Fraction of context window at which to trigger summarization (0–1). */
+  /** Fraction of context window at which to trigger summarization (0–1). Default: 0.70.
+   *  Set to 0 to disable the token-pressure trigger. */
   summarizeAt?: number;
   /** Model to use for summarization. */
   summarizeModel?: string;
   /** Fallback model to use when the primary model does not support vision and the prompt contains images. */
   visionModel?: string;
   /** When summarizing, keep the last N assistant turns intact and only summarize
-   * the older messages. 0 or undefined = summarize everything (default behavior).
+   * the older messages. Default: 4. Set to 0 to summarize everything.
    */
   summarizeKeepRecentTurns?: number;
   /**
-   * Force summarization every N turns regardless of token pressure.
-   * 0 or undefined = disabled (default). Recommended: 5–7.
+   * Force summarization every N turns regardless of token pressure. Default: 6.
+   * Set to 0 to disable the turn-count trigger.
    * Works alongside summarizeAt — whichever trigger fires first wins.
    */
   summarizeTurnInterval?: number;
@@ -938,18 +939,19 @@ export interface AgentLoopOptions {
   /** Extra text appended to the system prompt (e.g. agent instructions). */
   appendSystemPrompt?: string;
 
-  /** Fraction of context window at which to trigger summarization (default 0.8) */
+  /** Fraction of context window at which to trigger summarization. Default: 0.70.
+   *  Set to 0 to disable the token-pressure trigger. */
   summarizeAt?: number;
   /** Model to use for summarization (defaults to opts.model) */
   summarizeModel?: string;
   /**
    * When summarizing, keep the last N assistant turns intact and only summarize
-   * the older messages. 0 or undefined = summarize everything (default behavior).
+   * the older messages. Default: 4. Set to 0 to summarize everything.
    */
   summarizeKeepRecentTurns?: number;
   /**
-   * Force summarization every N turns regardless of token pressure.
-   * 0 or undefined = disabled (default). Recommended: 5–7.
+   * Force summarization every N turns regardless of token pressure. Default: 6.
+   * Set to 0 to disable the turn-count trigger.
    */
   summarizeTurnInterval?: number;
   /**

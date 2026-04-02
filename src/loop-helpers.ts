@@ -479,6 +479,7 @@ export interface MemoryUpdatePayload {
   content: string;
   importance: 1 | 2 | 3;
   tags: string[];
+  type?: import("./memory.js").MemoryEntryType;
 }
 
 /** Maximum character length of a single memory update's content. */
@@ -493,10 +494,11 @@ export const MEMORY_UPDATE_INSTRUCTION = `\n\n## Autonomous memory updates
 When you discover facts worth preserving across sessions (user preferences, codebase quirks, recurring bugs, key decisions, environment details), output a compact JSON block AFTER your response text:
 
 <memory_update>
-{"content": "concise fact to remember", "importance": 2, "tags": ["tag1", "tag2"]}
+{"content": "concise fact to remember", "type": "insight", "importance": 2, "tags": ["tag1", "tag2"]}
 </memory_update>
 
 Rules:
+- type: insight (default) | fact | competitor | decision | risk | open_question
 - importance: 1 = low, 2 = normal (default), 3 = high (use sparingly)
 - content: max 500 chars, one clear fact per block
 - tags: 1–5 lowercase keywords
@@ -524,10 +526,17 @@ export function parseMemoryUpdates(text: string): MemoryUpdatePayload[] {
       const tags = Array.isArray(raw.tags)
         ? (raw.tags as unknown[]).slice(0, 10).map(String)
         : [];
+      // Validate type against allowed agent-emittable values; default to 'insight'.
+      const AGENT_TYPES = ["insight", "fact", "competitor", "decision", "risk", "open_question"] as const;
+      type AgentType = typeof AGENT_TYPES[number];
+      const type: AgentType = (AGENT_TYPES as readonly string[]).includes(raw.type as string)
+        ? (raw.type as AgentType)
+        : "insight";
       results.push({
         content: raw.content.trim().slice(0, MEMORY_UPDATE_MAX_CHARS),
         importance,
         tags,
+        type,
       });
     } catch {
       // Skip malformed blocks — non-fatal

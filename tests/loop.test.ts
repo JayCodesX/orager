@@ -91,6 +91,11 @@ function loopOpts(overrides: Partial<Parameters<typeof runAgentLoop>[0]> = {}) {
       dangerouslySkipPermissions: false,
       verbose: false,
       onEmit: (e: EmitEvent) => emitted.push(e),
+      // Disable summarization triggers in unit tests — summarization behaviour is
+      // tested separately. Without this, the new defaults (summarizeTurnInterval=6,
+      // summarizeAt=0.70) would fire during multi-turn tests and skew call counts.
+      summarizeTurnInterval: 0,
+      summarizeAt: 0,
       ...overrides,
     },
     emitted,

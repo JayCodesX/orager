@@ -7,7 +7,13 @@
  *   "permissions": { "bash": "allow" | "deny" | "ask", ... },
  *   "bashPolicy": { "blockedCommands": [...], "isolateEnv": false, ... },
  *   "hooks": { "PreToolCall": "...", "PostToolCall": "...", ... },
- *   "hooksEnabled": true
+ *   "hooksEnabled": true,
+ *   "memory": {
+ *     "tokenPressureThreshold": 0.70,
+ *     "turnInterval": 6,
+ *     "keepRecentTurns": 4,
+ *     "summarizationModel": "openai/gpt-4o-mini"
+ *   }
  * }
  */
 import fs from "node:fs/promises";
@@ -16,6 +22,21 @@ import os from "node:os";
 import type { BashPolicy } from "./types.js";
 import type { HookConfig } from "./hooks.js";
 import type { McpServerConfig } from "./mcp-client.js";
+
+/**
+ * Structured memory configuration block in settings.json.
+ * All fields are optional — omitting them uses the loop defaults.
+ */
+export interface MemoryConfig {
+  /** Fraction of context window at which to trigger summarization (0–1). Default: 0.70. Set to 0 to disable. */
+  tokenPressureThreshold?: number;
+  /** Summarize every N turns regardless of token pressure. Default: 6. Set to 0 to disable. */
+  turnInterval?: number;
+  /** When summarizing, keep the last N assistant turns intact. Default: 4. */
+  keepRecentTurns?: number;
+  /** Model to use for summarization calls. Defaults to the session's primary model. */
+  summarizationModel?: string;
+}
 
 export interface OragerSettings {
   permissions?: Record<string, "allow" | "deny" | "ask">;
@@ -26,6 +47,8 @@ export interface OragerSettings {
   skillbank?: import("./types.js").SkillBankConfig;
   /** OMLS opportunistic RL training configuration (ADR-0007). */
   omls?: import("./types.js").OmlsConfig;
+  /** Memory system configuration — summarization thresholds, model overrides. */
+  memory?: MemoryConfig;
 }
 
 interface CachedSettings {
@@ -35,7 +58,7 @@ interface CachedSettings {
 
 const _cache = new Map<string, CachedSettings>();
 
-const KNOWN_SETTINGS_KEYS = new Set(["permissions", "bashPolicy", "hooks", "hooksEnabled", "skillbank", "omls"]);
+const KNOWN_SETTINGS_KEYS = new Set(["permissions", "bashPolicy", "hooks", "hooksEnabled", "skillbank", "omls", "memory"]);
 
 export async function loadSettings(settingsPath?: string): Promise<OragerSettings> {
   const filePath = settingsPath ?? path.join(os.homedir(), ".orager", "settings.json");
@@ -151,6 +174,22 @@ export function mergeSettings<T extends {
   // omls: file settings fill in; runtime keys override
   if (fileSettings.omls && (merged as Record<string, unknown>).omls === undefined) {
     (merged as Record<string, unknown>).omls = fileSettings.omls;
+  }
+
+  // memory: map MemoryConfig fields to their AgentLoopOptions equivalents.
+  // File values only fill in when the runtime option is still at its default
+  // (undefined), so explicit CLI flags always win.
+  if (fileSettings.memory) {
+    const m = fileSettings.memory;
+    const r = merged as Record<string, unknown>;
+    if (m.tokenPressureThreshold !== undefined && r["summarizeAt"] === undefined)
+      r["summarizeAt"] = m.tokenPressureThreshold;
+    if (m.turnInterval !== undefined && r["summarizeTurnInterval"] === undefined)
+      r["summarizeTurnInterval"] = m.turnInterval;
+    if (m.keepRecentTurns !== undefined && r["summarizeKeepRecentTurns"] === undefined)
+      r["summarizeKeepRecentTurns"] = m.keepRecentTurns;
+    if (m.summarizationModel !== undefined && r["summarizeModel"] === undefined)
+      r["summarizeModel"] = m.summarizationModel;
   }
 
   return merged;

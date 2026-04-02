@@ -26,6 +26,17 @@ export interface MemoryStore {
   updatedAt: string; // ISO
 }
 
+/** Valid type values agents may emit in <memory_update> blocks. */
+export const MEMORY_ENTRY_TYPES = [
+  "insight",
+  "fact",
+  "competitor",
+  "decision",
+  "risk",
+  "open_question",
+] as const;
+export type MemoryEntryType = typeof MEMORY_ENTRY_TYPES[number] | "master_context" | "session_summary";
+
 export interface MemoryEntry {
   id: string;           // crypto.randomUUID()
   content: string;      // freeform text, agent-authored
@@ -34,6 +45,7 @@ export interface MemoryEntry {
   expiresAt?: string;   // ISO — undefined means never expires
   runId?: string;       // orager session ID that created it
   importance: 1 | 2 | 3; // 1=low, 2=normal, 3=high (affects sort order)
+  type?: MemoryEntryType; // categorises the entry for retrieval and distillation
   _embedding?: number[];    // cached embedding vector
   _embeddingModel?: string; // model used to generate it
 }

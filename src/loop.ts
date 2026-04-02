@@ -190,11 +190,16 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
 
   const maxRetries = opts.maxRetries ?? 3;
   const forceResume = opts.forceResume ?? false;
-  const summarizeAt = opts.summarizeAt ?? 0;
+  // Token-pressure trigger: fire when prompt_tokens exceed 70% of context window.
+  // Set to 0 to disable. Uses actual prompt_tokens from the previous API response
+  // (more accurate than local estimation) so the first turn falls back to estimateTokens.
+  const summarizeAt = opts.summarizeAt ?? 0.70;
   const summarizeModel = opts.summarizeModel ?? model;
-  const summarizeKeepRecentTurns = opts.summarizeKeepRecentTurns ?? 0;
-  // Phase 2: turn-count trigger — 0 means disabled (default).
-  const summarizeTurnInterval = opts.summarizeTurnInterval ?? 0;
+  // Keep the last 4 assistant turns intact when summarizing so recent context is preserved.
+  const summarizeKeepRecentTurns = opts.summarizeKeepRecentTurns ?? 4;
+  // Turn-count trigger: fire every 6 turns regardless of token pressure.
+  // Whichever trigger fires first wins. Set to 0 to disable.
+  const summarizeTurnInterval = opts.summarizeTurnInterval ?? 6;
   const toolErrorBudgetHardStop = opts.toolErrorBudgetHardStop ?? false;
 
   // ── Profile expansion ─────────────────────────────────────────────────────
@@ -1939,6 +1944,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
                   content: upd.content,
                   importance: upd.importance,
                   tags: upd.tags,
+                  type: upd.type,
                   runId: sessionId,
                   _embedding: embeddingVec,
                   _embeddingModel: embeddingModel,
@@ -1950,6 +1956,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
                   content: upd.content,
                   importance: upd.importance,
                   tags: upd.tags,
+                  type: upd.type,
                   runId: sessionId,
                 });
                 await saveMemoryStoreAny(effectiveMemoryKey, updated);
