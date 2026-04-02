@@ -1,18 +1,15 @@
 /**
- * orager HTTP daemon — persistent server mode.
+ * orager HTTP server — status/metrics/sessions only (no agent execution).
  *
- * Start with:  orager --serve [--port 3456] [--max-concurrent 3] [--idle-timeout 30m]
+ * Start with:  orager --serve [--port 3456] [--idle-timeout 30m]
  *
- * The adapter sends a POST /run request (Authorization: Bearer <jwt>) and
- * receives a stream of newline-delimited JSON events (same format as CLI stdout).
+ * Agent runs execute in-process (default) or in an isolated subprocess
+ * via the JSON-RPC 2.0 transport (subprocess.enabled = true).
  *
- * Security properties (non-negotiable):
+ * Security properties:
  * - Bind to 127.0.0.1 only — never 0.0.0.0
- * - JWT verification on every /run request (HS256, 5-min TTL)
- * - Max concurrent runs enforced (503 if exceeded)
- * - Per-request timeout (default 5 min)
+ * - JWT verification on authenticated routes (HS256, 5-min TTL)
  * - Auto idle shutdown (default 30 min)
- * - Audit logs: timestamp + agentId + duration + status — never prompt/response content
  * - Signing key at ~/.orager/daemon.key (chmod 600), generated on first start
  *
  * Internal implementation is split across src/daemon/:
@@ -21,7 +18,7 @@
  * - drain.ts        — drainAndExit
  * - key-cache.ts    — getCachedKeyInfo (5-min TTL API key info cache)
  * - sanitize.ts     — sanitizeDaemonRunOpts allowlist
- * - routes/health.ts, metrics.ts, sessions.ts, rotate-key.ts, cancel.ts, run.ts
+ * - routes/health.ts, metrics.ts, sessions.ts, rotate-key.ts
  */
 
 import http from "node:http";
@@ -29,7 +26,7 @@ import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
-import { mintJwt, loadOrCreateSigningKey, KEY_PATH } from "./jwt.js";
+import { loadOrCreateSigningKey, KEY_PATH } from "./jwt.js";
 import { ensureSessionsDirPermissions, pruneOldSessions, getSessionsDir } from "./session.js";
 import { initTelemetry } from "./telemetry.js";
 import { checkAndLogApiKeyHealth } from "./openrouter-key.js";
@@ -42,10 +39,8 @@ import { warmCache, startKeepAlive, scheduleIdleCheck } from "./daemon/lifecycle
 import { drainAndExit as _drainAndExitImpl } from "./daemon/drain.js";
 import { handleHealth, handleHealthDetail } from "./daemon/routes/health.js";
 import { handleMetrics, handleMetricsPrometheus } from "./daemon/routes/metrics.js";
-import { handleRun } from "./daemon/routes/run.js";
 import { handleSessions } from "./daemon/routes/sessions.js";
 import { handleRotateKey } from "./daemon/routes/rotate-key.js";
-import { handleCancel } from "./daemon/routes/cancel.js";
 
 // Re-export for external callers (adapter, index.ts, tests)
 export { sanitizeDaemonRunOpts } from "./daemon/sanitize.js";
@@ -204,12 +199,6 @@ export function checkRateLimit(
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
-export interface DaemonRunRequest {
-  prompt: string;
-  promptContent?: unknown[];
-  opts: Record<string, unknown>;
-}
-
 export interface DaemonStartOptions {
   port?: number;
   maxConcurrent?: number;
@@ -315,13 +304,8 @@ export async function startDaemon(
   const requestHandler = (req: http.IncomingMessage, res: http.ServerResponse): void => {
     ctx.lastActivityAt = Date.now();
 
-    // M-22: Rate limiting uses socket remoteAddress only. The daemon binds to
-    // 127.0.0.1 exclusively, so x-forwarded-for is never legitimate and can be
-    // trivially spoofed to bypass rate limits. If a reverse proxy is used in
-    // the future, add a trustedProxies config option before trusting XFF.
     const ip = req.socket.remoteAddress ?? "unknown";
-    const isRunEndpoint = req.method === "POST" && req.url === "/run";
-    const rl = checkRateLimit(ip, isRunEndpoint);
+    const rl = checkRateLimit(ip, false);
     if (!rl.allowed) {
       res.writeHead(429, { "Content-Type": "application/json", "Retry-After": String(rl.retryAfter) });
       res.end(JSON.stringify({ error: "rate limit exceeded", retryAfter: rl.retryAfter }));
@@ -340,17 +324,11 @@ export async function startDaemon(
     if (req.method === "GET" && req.url === "/metrics/prometheus") {
       handleMetricsPrometheus(ctx, req, res); return;
     }
-    if (req.method === "POST" && req.url === "/run") {
-      handleRun(ctx, req, res); return;
-    }
     if (req.url?.startsWith("/sessions")) {
       handleSessions(ctx, req, res); return;
     }
     if (req.method === "POST" && req.url === "/rotate-key") {
       handleRotateKey(ctx, req, res); return;
-    }
-    if (req.method === "POST" && req.url?.startsWith("/runs/") && req.url.endsWith("/cancel")) {
-      handleCancel(ctx, req, res); return;
     }
 
     res.writeHead(404); res.end();
@@ -524,7 +502,7 @@ export async function startDaemon(
   return { port: actualPort, shutdown };
 }
 
-// ── Daemon client helpers ─────────────────────────────────────────────────────
+// ── Server client helpers ─────────────────────────────────────────────────────
 
 export async function isDaemonAlive(baseUrl: string): Promise<boolean> {
   try {
@@ -535,29 +513,4 @@ export async function isDaemonAlive(baseUrl: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-export async function runOnDaemon(
-  baseUrl: string,
-  signingKey: string,
-  agentId: string,
-  req: DaemonRunRequest,
-): Promise<ReadableStream<Uint8Array>> {
-  const token = mintJwt(signingKey, agentId);
-  const response = await fetch(`${baseUrl}/run`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(req),
-  });
-
-  if (!response.ok) {
-    const text = await response.text().catch(() => "(unreadable)");
-    throw new Error(`Daemon error ${response.status}: ${text.slice(0, 200)}`);
-  }
-
-  if (!response.body) throw new Error("Daemon response has no body");
-  return response.body;
 }

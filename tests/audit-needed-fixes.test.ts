@@ -266,28 +266,5 @@ describe("N-01: Abort signal forwarded to LLM API call", () => {
   });
 });
 
-// ── N-02: Cost tracking only from result events ─────────────────────────────
-
-describe("N-02: Cost tracking restricted to result events", () => {
-  it("the onEmit callback checks for result event type before tracking cost", async () => {
-    const source = await fs.readFile(
-      path.join(process.cwd(), "src/daemon/routes/run.ts"),
-      "utf8",
-    );
-    expect(source).toContain('eventAny.type === "result"');
-    expect(source).toContain("N-02");
-  });
-});
-
-// ── N-06: completedRuns only counts successful runs ─────────────────────────
-
-describe("N-06: completedRuns excludes error runs", () => {
-  it("completedRuns increment is conditional on !_runFailed", async () => {
-    const source = await fs.readFile(
-      path.join(process.cwd(), "src/daemon/routes/run.ts"),
-      "utf8",
-    );
-    expect(source).toContain("if (!_runFailed) ctx.completedRuns++");
-    expect(source).toContain("N-06");
-  });
-});
+// N-02 and N-06 audited daemon/routes/run.ts which has been removed in
+// Ticket 3 (daemon agent-execution removed; agents run in-process only).
