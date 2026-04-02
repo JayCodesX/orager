@@ -13,18 +13,29 @@ import fs from "node:fs/promises";
 
 const TEST_SESSIONS_DIR = path.join(os.tmpdir(), `orager-test-size-${process.pid}`);
 
+let savedDbPath: string | undefined;
+
 beforeEach(async () => {
   await fs.mkdir(TEST_SESSIONS_DIR, { recursive: true, mode: 0o700 });
   process.env["ORAGER_SESSIONS_DIR"] = TEST_SESSIONS_DIR;
-  // Reset module cache so the store singleton picks up the new env var
+  // Force file-based store: size-cap logic lives in _fileSave, not the SQLite store.
+  // Under bun vi.resetModules() is a no-op, so explicitly reset the store singleton.
+  savedDbPath = process.env["ORAGER_DB_PATH"];
+  process.env["ORAGER_DB_PATH"] = "none";
   vi.resetModules();
+  const { _resetStoreForTesting } = await import("../src/session.js");
+  _resetStoreForTesting();
 });
 
 afterEach(async () => {
   delete process.env["ORAGER_SESSIONS_DIR"];
   delete process.env["ORAGER_SESSION_MAX_SIZE_BYTES"];
+  if (savedDbPath === undefined) delete process.env["ORAGER_DB_PATH"];
+  else process.env["ORAGER_DB_PATH"] = savedDbPath;
   await fs.rm(TEST_SESSIONS_DIR, { recursive: true, force: true });
   vi.resetModules();
+  const { _resetStoreForTesting } = await import("../src/session.js");
+  _resetStoreForTesting();
 });
 
 function makeSessionId(): string {

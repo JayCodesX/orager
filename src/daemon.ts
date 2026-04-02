@@ -304,6 +304,7 @@ export async function startDaemon(
   const requestHandler = (req: http.IncomingMessage, res: http.ServerResponse): void => {
     ctx.lastActivityAt = Date.now();
 
+    // M-22: rate limit uses socket address only, never trusts x-forwarded-for
     const ip = req.socket.remoteAddress ?? "unknown";
     const rl = checkRateLimit(ip, false);
     if (!rl.allowed) {

@@ -32,6 +32,10 @@ import { fetchGenerationMeta, shouldUseDirect, callEmbeddings } from "./openrout
 import { fetchLiveModelMeta, getLiveModelPricing, isLiveModelMetaCacheWarm, liveModelSupportsTools, liveModelSupportsVision } from "./openrouter-model-meta.js";
 import { recordProviderSuccess } from "./provider-health.js";
 import { loadSkillsFromDirs, buildSkillsSystemPrompt, buildSkillTools } from "./skills.js";
+import { retrieveSkills, buildSkillsPromptSection, updateSkillOutcomes } from "./skillbank.js";
+import { routeRequest, checkConfidenceToken, selectTeachers } from "./omls/confidence-router.js";
+import { getCurrentEndpoint } from "./omls/together-hosting.js";
+import type { RouterSignal } from "./types.js";
 import { ALL_TOOLS, finishTool, BROWSER_TOOLS } from "./tools/index.js";
 import { FINISH_TOOL_NAME } from "./tools/finish.js";
 import { promptApproval } from "./approval.js";
@@ -536,6 +540,43 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   // skills, project CLAUDE.md, commands).  Dynamic memory blocks appended below
   // are excluded from the frozen section to keep cache hits high.
   const frozenSystemPromptLength = systemPrompt.length;
+
+  // ── SkillBank injection (ADR-0006) ────────────────────────────────────────
+  // Retrieve top-K learned skills by cosine similarity to the run prompt and
+  // inject them as a "## Learned Skills" block. Non-fatal — errors are swallowed.
+  const _injectedSkillIds: string[] = [];
+  if (opts.skillbank?.enabled !== false && opts.memoryEmbeddingModel && apiKey) {
+    try {
+      let skillQueryVec = getCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt);
+      if (!skillQueryVec) {
+        const vecs = await callEmbeddings(apiKey, opts.memoryEmbeddingModel, [prompt]);
+        skillQueryVec = vecs[0] ?? [];
+        if (skillQueryVec.length > 0) {
+          setCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt, skillQueryVec);
+        }
+      }
+      if (skillQueryVec && skillQueryVec.length > 0) {
+        const learnedSkills = await retrieveSkills(skillQueryVec, opts.skillbank);
+        if (learnedSkills.length > 0) {
+          const skillsSection = buildSkillsPromptSection(learnedSkills);
+          if (skillsSection) {
+            systemPrompt += "\n\n" + skillsSection;
+            for (const sk of learnedSkills) _injectedSkillIds.push(sk.id);
+          }
+        }
+      }
+    } catch { /* non-fatal — SkillBank failure must never abort a run */ }
+  }
+
+  // ── OMLS: load RL endpoint + select teachers (ADR-0007) ─────────────────
+  // Non-fatal — any failure leaves _rlEndpoint null (use base model).
+  let _rlEndpoint: string | null = null;
+  const _omlsEnabled = opts.omls?.enabled === true;
+  if (_omlsEnabled) {
+    try {
+      _rlEndpoint = await getCurrentEndpoint();
+    } catch { /* non-fatal */ }
+  }
 
   // Validate extraTools names before merging
   for (const tool of opts.extraTools ?? []) {
@@ -1382,6 +1423,11 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   // result event.
   const emitResult = async (resultEvent: EmitResultEvent): Promise<void> => {
     onEmit(resultEvent);
+    // ── SkillBank: record outcomes for injected skills (ADR-0006) ────────
+    if (_injectedSkillIds.length > 0) {
+      const skillSuccess = resultEvent.subtype === "success";
+      updateSkillOutcomes(_injectedSkillIds, skillSuccess).catch(() => { /* non-fatal */ });
+    }
     // ── OTel metrics: session duration + turn count ──────────────────────
     recordSession(Date.now() - _sessionStartMs, resultEvent.turnCount ?? turn, resultEvent.subtype);
     if (isWebhookUrlSafe(opts.webhookUrl)) {
@@ -1617,6 +1663,45 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         ? opts.models.map((m) => (m.includes(":") ? m : `${m}:online`))
         : opts.models;
 
+      // ── OMLS confidence routing (ADR-0007) ───────────────────────────────
+      // When an RL-trained endpoint is available, route through the confidence
+      // router on turn 1. Subsequent turns always use whatever model was selected.
+      let _omlsRouted = false;
+      if (_omlsEnabled && _rlEndpoint && turn === 1) {
+        try {
+          const teachers = selectTeachers(opts.omls!);
+          const teacherModel = teachers[0] ?? model;
+          const promptVec = opts.memoryEmbeddingModel
+            ? getCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt) ?? null
+            : null;
+          const decision = await routeRequest(
+            prompt,
+            promptVec,
+            _rlEndpoint,
+            teacherModel,
+            apiKey,
+            opts.memoryEmbeddingModel ?? null,
+            opts.omls,
+          );
+          if (decision.escalated) {
+            // Override model to teacher for this run
+            (turnOverrides as Record<string, unknown>).model = decision.model;
+            _omlsRouted = true;
+            opts.onOmlsEscalation?.(decision.model, decision.signal as RouterSignal);
+            log.info("omls_escalation", {
+              sessionId,
+              signal: decision.signal,
+              teacherModel: decision.model,
+              confidenceScore: decision.confidenceScore,
+              entropy: decision.entropy,
+            });
+          } else {
+            // Use RL endpoint
+            (turnOverrides as Record<string, unknown>).model = _rlEndpoint;
+          }
+        } catch { /* non-fatal — fall through to base model */ }
+      }
+
       // ── PreLLMRequest hook ────────────────────────────────────────────────
       if (effectiveOpts.hooks?.PreLLMRequest) {
         await fireHooks("PreLLMRequest", effectiveOpts.hooks.PreLLMRequest, { event: "PreLLMRequest", sessionId, model: _effectiveModel, turn, ts: new Date().toISOString() }, _hookOpts, (msg) => onLog?.("stderr", msg));
@@ -1699,6 +1784,26 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
 
       lastResponseModel = response.model;
       lastFinishReason = response.finishReason;
+
+      // ── OMLS: Self-REF confidence token check (ADR-0007) ─────────────────
+      // After getting the RL model response, extract the Self-REF score.
+      // If low, log the escalation signal (the next turn's routing will use teacher).
+      if (_omlsEnabled && _rlEndpoint && !_omlsRouted && response.content) {
+        try {
+          const teachers = selectTeachers(opts.omls!);
+          const teacherModel = teachers[0] ?? model;
+          const escalation = checkConfidenceToken(response.content, teacherModel, opts.omls);
+          if (escalation) {
+            opts.onOmlsEscalation?.(escalation.model, escalation.signal as RouterSignal);
+            log.info("omls_self_ref_escalation", {
+              sessionId,
+              signal: escalation.signal,
+              confidenceScore: escalation.confidenceScore,
+              teacherModel: escalation.model,
+            });
+          }
+        } catch { /* non-fatal */ }
+      }
 
       // Accumulate usage
       lastTurnPromptTokens = response.usage.prompt_tokens;

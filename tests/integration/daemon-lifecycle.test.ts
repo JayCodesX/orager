@@ -236,87 +236,24 @@ describe("daemon HTTP lifecycle", () => {
     expect(b.status).toBe("ok");
   });
 
-  it("POST /run without JWT returns 401", async () => {
+  // /run was removed per ADR-0003 — agent execution no longer goes through the daemon HTTP API.
+  it("POST /run returns 404 (route removed per ADR-0003)", async () => {
     const { status } = await fetchJson(`${daemonUrl}/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt: "hello", opts: {} }),
     });
-    expect(status).toBe(401);
+    expect(status).toBe(404);
   });
 
-  it("POST /run with invalid JWT returns 401", async () => {
-    const { status } = await fetchJson(`${daemonUrl}/run`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer definitely.not.valid",
-      },
-      body: JSON.stringify({ prompt: "hello", opts: {} }),
-    });
-    expect(status).toBe(401);
-  });
-
-  it("POST /run with valid JWT streams a result event", async () => {
-    const res = await fetch(`${daemonUrl}/run`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${validJwt()}`,
-      },
-      body: JSON.stringify({ prompt: "say hello", opts: { model: "test-model" } }),
-    });
-    expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toContain("application/x-ndjson");
-
-    const text = await res.text();
-    const events = text
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as Record<string, unknown>);
-
-    expect(events.length).toBeGreaterThan(0);
-    const resultEvent = events.find((e) => e.type === "result");
-    expect(resultEvent).toBeDefined();
-    expect(resultEvent?.subtype).toBe("success");
-    expect(resultEvent?.result).toBe("hello from mock");
-  });
-
-  it("POST /run with oversized body returns 413 (or closes connection)", async () => {
-    // req.destroy() may close the socket before the 413 is sent — accept either outcome
-    const bigBody = "x".repeat(5 * 1024 * 1024); // 5 MB > 4 MB limit
-    try {
-      const { status } = await fetchJson(`${daemonUrl}/run`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${validJwt()}`,
-        },
-        body: bigBody,
-      });
-      expect(status).toBe(413);
-    } catch (err) {
-      // Socket was destroyed before response — server correctly rejected oversized body
-      expect(String(err)).toMatch(/fetch failed|socket|closed|EPIPE/i);
-    }
-  });
-
-  it("POST /runs/:id/cancel with unknown run ID returns 404", async () => {
+  // /runs/:id/cancel was removed per ADR-0003 alongside the /run route.
+  it("POST /runs/:id/cancel returns 404 (route removed per ADR-0003)", async () => {
     const fakeId = "00000000-0000-0000-0000-000000000000";
-    const { status, body } = await fetchJson(`${daemonUrl}/runs/${fakeId}/cancel`, {
+    const { status } = await fetchJson(`${daemonUrl}/runs/${fakeId}/cancel`, {
       method: "POST",
       headers: { Authorization: `Bearer ${validJwt()}` },
     });
     expect(status).toBe(404);
-    expect((body as { error: string }).error).toContain("run not found");
-  });
-
-  it("POST /runs/:id/cancel with invalid UUID format returns 400", async () => {
-    const { status } = await fetchJson(`${daemonUrl}/runs/not-a-uuid/cancel`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${validJwt()}` },
-    });
-    expect(status).toBe(400);
   });
 
   it("GET /metrics with valid JWT returns run counters", async () => {
@@ -326,7 +263,7 @@ describe("daemon HTTP lifecycle", () => {
     expect(status).toBe(200);
     const metrics = body as Record<string, unknown>;
     expect(typeof metrics["completedRuns"]).toBe("number");
-    expect(metrics["completedRuns"] as number).toBeGreaterThanOrEqual(1);
+    expect(metrics["completedRuns"] as number).toBeGreaterThanOrEqual(0); // no /run endpoint: no runs complete through daemon
     expect(typeof metrics["activeRuns"]).toBe("number");
     expect(metrics["model"]).toBe("test-model");
   });
@@ -358,18 +295,18 @@ describe("daemon HTTP lifecycle", () => {
     expect(status).toBe(401);
   });
 
-  it("GET /health/detail returns 503 degraded when a check fails", async () => {
+  it("GET /health/detail reports db=pending when DB path set but file not yet created (M-23)", async () => {
+    // M-23: the health check uses accessSync() not WASM open. A non-existent DB file
+    // is "pending" (not yet created on first run) — 200 OK, not 503.
     const prev = process.env["ORAGER_DB_PATH"];
     process.env["ORAGER_DB_PATH"] = "/tmp/nonexistent-orager-db-healthcheck-test.sqlite";
     try {
       const { status, body } = await fetchJson(`${daemonUrl}/health/detail`, {
         headers: { Authorization: `Bearer ${validJwt()}` },
       });
-      expect(status).toBe(503);
-      const b = body as { status: string; reason: string; checks: Record<string, string> };
-      expect(b.status).toBe("degraded");
-      expect(b.checks.db).toBe("error");
-      expect(b.reason).toContain("db");
+      expect(status).toBe(200); // pending != error
+      const b = body as { status: string; checks: Record<string, string> };
+      expect(b.checks.db).toBe("pending");
     } finally {
       if (prev === undefined) {
         delete process.env["ORAGER_DB_PATH"];

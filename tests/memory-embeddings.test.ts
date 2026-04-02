@@ -157,23 +157,15 @@ vi.mock("../src/openrouter.js", () => ({
 
 import { callEmbeddings } from "../src/openrouter.js";
 import { makeRememberTool } from "../src/tools/remember.js";
-import { loadMemoryStore, saveMemoryStore } from "../src/memory.js";
-import os from "node:os";
-import path from "node:path";
-import fs from "node:fs/promises";
+import { loadMemoryStoreAny } from "../src/memory.js";
 
 describe("makeRememberTool with embeddingOpts", () => {
-  const testKey = `test-embeddings-${Date.now()}`;
+  // Use a unique key per test to avoid in-memory store cache collisions between tests
+  let testKey: string;
 
   beforeEach(async () => {
+    testKey = `test-embeddings-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     vi.clearAllMocks();
-    // Clean up any leftover test memory
-    const memDir = process.env["ORAGER_MEMORY_DIR"] ?? path.join(os.homedir(), ".orager", "memory");
-    try {
-      await fs.unlink(path.join(memDir, `${testKey}.json`));
-    } catch {
-      // ignore
-    }
   });
 
   it("saves entry with _embedding set on successful callEmbeddings", async () => {
@@ -193,9 +185,15 @@ describe("makeRememberTool with embeddingOpts", () => {
     expect(result.isError).toBe(false);
 
     // Verify the entry was saved with the embedding
-    const store = await loadMemoryStore(testKey);
+    const store = await loadMemoryStoreAny(testKey);
     expect(store.entries.length).toBe(1);
-    expect(store.entries[0]._embedding).toEqual(mockEmbedding);
+    // SQLite stores embeddings as Float32 BLOB; compare within float32 precision
+    const saved = store.entries[0]._embedding;
+    expect(saved).toBeDefined();
+    expect(saved!.length).toBe(mockEmbedding.length);
+    for (let i = 0; i < mockEmbedding.length; i++) {
+      expect(saved![i]).toBeCloseTo(mockEmbedding[i]!, 5);
+    }
     expect(store.entries[0]._embeddingModel).toBe("openai/text-embedding-3-small");
 
     expect(callEmbeddings).toHaveBeenCalledWith(
@@ -221,7 +219,7 @@ describe("makeRememberTool with embeddingOpts", () => {
     // Should still succeed — embedding failure is non-fatal
     expect(result.isError).toBe(false);
 
-    const store = await loadMemoryStore(testKey);
+    const store = await loadMemoryStoreAny(testKey);
     expect(store.entries.length).toBe(1);
     expect(store.entries[0]._embedding).toBeUndefined();
     expect(store.entries[0].content).toBe("Codebase uses pnpm for package management");

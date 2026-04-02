@@ -31,6 +31,8 @@ import { createRequire } from "node:module";
 import { loadMemoryStoreAny, MEMORY_DIR } from "./memory.js";
 import { parseArgs, readStdin } from "./cli/parse-args.js";
 import { loadConfigFile, loadUserConfig } from "./cli/config-loading.js";
+import { createTrajectoryLogger, pruneOldTrajectories } from "./trajectory-logger.js";
+import { extractSkillFromTrajectory, trajectoryPath, DEFAULT_SKILLBANK_CONFIG } from "./skillbank.js";
 import {
   isSqliteMemoryEnabled,
   listMemoryKeysSqlite,
@@ -235,6 +237,8 @@ OTHER
   setup --check             Validate config and test the API key
   ui [--port <n>]           Start the browser-based UI server (default port: 3457)
   memory <list|inspect|export|clear>  Manage memory namespaces
+  skills <list|show|delete|stats|extract>  Manage learned skills (SkillBank)
+  skill-train [--rl] [--status] [--rollback] [--setup-cron]  OMLS RL training
 
 SERVER
   --serve [--port <n>]      Start the HTTP UI server (opt-in, port default: 3456)
@@ -1039,6 +1043,33 @@ async function handleRunCommand(runArgv: string[]): Promise<void> {
 
   if (opts.sessionId) interruptSessionId = opts.sessionId;
 
+  // ── Trajectory logging (ADR-0006) ─────────────────────────────────────────
+  // Create a trajectory logger that will capture all emit events for this run.
+  // The logger is non-fatal — errors are swallowed and never abort a run.
+  const trajLogger = createTrajectoryLogger(prompt, opts.model, process.cwd());
+  const baseOnEmit = makeCliOnEmit(emit);
+  const wrappedOnEmit = (event: Parameters<typeof baseOnEmit>[0]) => {
+    trajLogger.onEvent(event);
+    baseOnEmit(event);
+  };
+
+  // Track result subtype for post-run skill extraction decision
+  let _runSubtype = "unknown";
+  let _runSessionId: string | null = opts.sessionId;
+  const resultTrackingEmit = (event: Parameters<typeof baseOnEmit>[0]) => {
+    if (event.type === "result") {
+      _runSubtype = event.subtype;
+      _runSessionId = event.session_id;
+    } else if (event.type === "system" && event.subtype === "init") {
+      _runSessionId = event.session_id;
+    }
+    wrappedOnEmit(event);
+  };
+
+  // Prune old trajectories opportunistically (non-blocking)
+  const retentionDays = DEFAULT_SKILLBANK_CONFIG.retentionDays;
+  pruneOldTrajectories(retentionDays).catch(() => { /* non-fatal */ });
+
   try {
     await runAgentLoop({
       prompt,
@@ -1053,10 +1084,35 @@ async function handleRunCommand(runArgv: string[]): Promise<void> {
       verbose: opts.verbose,
       maxCostUsd: opts.maxCostUsd,
       memoryKey,
-      onEmit: makeCliOnEmit(emit),
+      onEmit: resultTrackingEmit,
       subprocess: subprocessEnabled ? { enabled: true } : undefined,
+      // OMLS: mark trajectory as distillable when teacher is used (ADR-0007)
+      onOmlsEscalation: (teacherModel, signal) => {
+        trajLogger.markDistillable(teacherModel, signal);
+      },
     });
   } finally {
+    // Finalize trajectory (flush .jsonl + .meta.json) — non-blocking
+    await trajLogger.finalize().catch(() => { /* non-fatal */ });
+
+    // Auto-extract skill on failed runs (ADR-0006)
+    const skillbank = DEFAULT_SKILLBANK_CONFIG;
+    const isFailed = _runSubtype !== "success" && _runSubtype !== "interrupted" && _runSubtype !== "unknown";
+    const _embeddingModel = process.env["ORAGER_EMBEDDING_MODEL"] ?? "";
+    if (skillbank.autoExtract && isFailed && _runSessionId && _embeddingModel) {
+      const embeddingModel = _embeddingModel;
+      const model = opts.model;
+      const sid = _runSessionId;
+      // Fire-and-forget: extraction happens after the run completes
+      extractSkillFromTrajectory(
+        trajectoryPath(sid),
+        sid,
+        model,
+        apiKey,
+        embeddingModel,
+      ).catch(() => { /* non-fatal */ });
+    }
+
     await releaseCliPidLock();
   }
 }
@@ -1191,6 +1247,20 @@ async function main(): Promise<void> {
   // ── Memory subcommand ─────────────────────────────────────────────────────
   if (argv[0] === "memory") {
     await handleMemorySubcommand(argv);
+    return;
+  }
+
+  // ── skills subcommand (ADR-0006) ─────────────────────────────────────────
+  if (argv[0] === "skills") {
+    const { handleSkillsSubcommand } = await import("./cli/skills-command.js");
+    await handleSkillsSubcommand(argv.slice(1));
+    return;
+  }
+
+  // ── skill-train subcommand (ADR-0007) ─────────────────────────────────────
+  if (argv[0] === "skill-train") {
+    const { handleSkillTrainSubcommand } = await import("./cli/skill-train-command.js");
+    await handleSkillTrainSubcommand(argv.slice(1));
     return;
   }
 

@@ -163,7 +163,33 @@ function _migrate(db: WasmDatabase): void {
       } catch { /* skip malformed rows */ }
     }
   }
+
+  // ── SkillBank table (ADR-0006) ────────────────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS skills (
+      id               TEXT PRIMARY KEY,
+      version          INTEGER NOT NULL DEFAULT 1,
+      text             TEXT NOT NULL,
+      embedding        BLOB,
+      embedding_model  TEXT,
+      source_session   TEXT NOT NULL,
+      extraction_model TEXT NOT NULL,
+      created_at       TEXT NOT NULL,
+      updated_at       TEXT NOT NULL,
+      use_count        INTEGER NOT NULL DEFAULT 0,
+      success_rate     REAL NOT NULL DEFAULT 0.5,
+      deleted          INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_skills_deleted  ON skills(deleted);
+    CREATE INDEX IF NOT EXISTS idx_skills_success  ON skills(deleted, success_rate);
+  `);
 }
+
+/**
+ * @internal — exposed only for use by src/skillbank.ts so it can share
+ * the single SQLite connection rather than opening a second one.
+ */
+export { getDb as _getDb };
 
 // ── Row mapping ───────────────────────────────────────────────────────────────
 

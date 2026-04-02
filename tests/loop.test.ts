@@ -366,7 +366,7 @@ describe("runAgentLoop — unlimited turns (maxTurns=0)", () => {
 
     await runAgentLoop(opts);
 
-    expect(calls).toBe(7);
+    expect(calls).toBe(8); // 7 agent turns + 1 session-end synthesis call
     expect(resultEvent(emitted).subtype).toBe("success");
   });
 });

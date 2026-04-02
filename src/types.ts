@@ -1248,6 +1248,22 @@ export interface AgentLoopOptions {
    */
   memoryEmbeddingModel?: string;
 
+  // ── SkillBank (ADR-0006) ──────────────────────────────────────────────────
+  /** SkillBank configuration. When undefined, defaults from DEFAULT_SKILLBANK_CONFIG apply. */
+  skillbank?: SkillBankConfig;
+
+  // ── OMLS (ADR-0007) ───────────────────────────────────────────────────────
+  /** OMLS opportunistic RL training configuration. Default: disabled. */
+  omls?: OmlsConfig;
+
+  /**
+   * Called when the OMLS confidence router escalates a turn to a teacher model.
+   * Used by the trajectory logger to tag the trajectory as distillable.
+   * @param teacherModel - The teacher model selected for this escalation
+   * @param signal       - The confidence router signal that triggered escalation
+   */
+  onOmlsEscalation?: (teacherModel: string, signal: RouterSignal) => void;
+
   /**
    * Per-agent API key override. When set, this agent uses its own
    * key instead of the global PROTOCOL_API_KEY. Isolates rate limits so one
@@ -1386,6 +1402,138 @@ export interface AgentWorkflow {
    * Default: pass the full output of the previous step as-is.
    */
   handoff?: (stepIndex: number, output: string) => string;
+}
+
+// ── SkillBank types (ADR-0006) ───────────────────────────────────────────────
+
+export interface SkillBankConfig {
+  /** Master enable switch. Default: true. */
+  enabled?: boolean;
+  /**
+   * Model used for skill extraction LLM calls.
+   * Empty string = inherit the model from the run that triggered extraction.
+   */
+  extractionModel?: string;
+  /** Maximum number of live (non-deleted) skills. Oldest/weakest pruned when exceeded. Default: 500. */
+  maxSkills?: number;
+  /** Minimum cosine similarity required to inject a skill. Default: 0.65. */
+  similarityThreshold?: number;
+  /** Minimum cosine similarity to suppress a duplicate skill on write. Default: 0.92. */
+  deduplicationThreshold?: number;
+  /** Maximum skills injected per run. Default: 5. */
+  topK?: number;
+  /** Days to retain trajectory files. Default: 30. */
+  retentionDays?: number;
+  /** Automatically attempt skill extraction after every failed run. Default: true. */
+  autoExtract?: boolean;
+}
+
+// ── OMLS types (ADR-0007) ────────────────────────────────────────────────────
+
+/** How multiple teacher models are queried during escalation. */
+export type TeacherMode =
+  | "sequential"   // try teachers in order, return first success
+  | "race";        // call all teachers in parallel, PRM picks winner
+
+/** Which signal triggered a confidence-router escalation. */
+export type RouterSignal =
+  | "task_classifier"    // hard-task pattern matched before any inference
+  | "confidence_token"   // Self-REF score below threshold
+  | "semantic_entropy"   // N=3 samples had high divergence
+  | "standing_gate"      // cost/turn budget exceeded (turnModelRules)
+  | "local";             // served by RL model — no escalation
+
+/** Configuration for the three-signal confidence router. */
+export interface ConfidenceRouterConfig {
+  /** Minimum Self-REF confidence score to serve locally. Default: 0.40. */
+  confidenceThreshold?: number;
+  /** Semantic entropy threshold above which escalation fires. Default: 0.70. */
+  entropyThreshold?: number;
+  /** Number of samples for the semantic entropy gate. Default: 3. */
+  entropySamples?: number;
+  /** Temperature for entropy sampling. Default: 0.8. */
+  entropyTemperature?: number;
+}
+
+/** VPS provider backend for RL training. */
+export type VpsBackend = "vastai" | "runpod" | "tinker" | "together" | "mint";
+
+/** Hosting provider for serving the fine-tuned LoRA model. */
+export type HostingProvider = "together" | "fireworks";
+
+/** RL training method. "auto" selects OPSD when teacher responses are available, else GRPO. */
+export type TrainingMethod = "auto" | "grpo" | "opsd";
+
+/** Full OMLS configuration block. All fields are optional; defaults apply when not set. */
+export interface OmlsConfig {
+  /** Master enable switch. Default: false (opt-in). */
+  enabled?: boolean;
+
+  // ── Teacher model configuration ───────────────────────────────────────────
+  /** Ordered list of distillable teacher models. Default: [deepseek/deepseek-r1, qwen/qwen3-72b]. */
+  teacherModels?: string[];
+  /** How to query multiple teacher models. Default: "race". */
+  teacherMode?: TeacherMode;
+  /**
+   * When true, tracks per-teacher win-rates and automatically switches to
+   * single-call routing for the winning teacher once autoLearnThreshold is reached.
+   * Default: true.
+   */
+  autoLearnRouting?: boolean;
+  /** Number of escalations before autoLearnRouting activates single-call mode. Default: 200. */
+  autoLearnThreshold?: number;
+
+  // ── Confidence router ─────────────────────────────────────────────────────
+  router?: ConfidenceRouterConfig;
+
+  // ── Scheduler (idle detection) ────────────────────────────────────────────
+  /** Cron expression for OMLS idle check. Default: every 15 minutes. */
+  schedule?: string;
+  /** Start of guaranteed idle window (HH:MM, 24h). Default: "23:00". */
+  sleepStart?: string;
+  /** End of guaranteed idle window (HH:MM, 24h). Default: "07:00". */
+  sleepEnd?: string;
+  /** Minutes of keyboard inactivity before training may start. Default: 10. */
+  idleThresholdMinutes?: number;
+  /** Minimum distillable trajectory buffer size before RL fires. Default: 32. */
+  minBatchSize?: number;
+  /** Path to Google Calendar OAuth credentials JSON (optional). */
+  calendarCredentials?: string;
+
+  // ── RL training ───────────────────────────────────────────────────────────
+  rl?: {
+    enabled?: boolean;
+    backend?: VpsBackend;
+    vastai?: {
+      apiKey?: string;       // overrides VASTAI_API_KEY env var
+      gpuType?: string;      // default: "RTX_4090"
+      imageId?: string;      // default: "unsloth/unsloth:latest"
+      spot?: boolean;        // default: true
+    };
+    runpod?: {
+      apiKey?: string;       // overrides RUNPOD_API_KEY env var
+      gpuType?: string;      // default: "NVIDIA RTX 4090"
+      spot?: boolean;        // default: true
+    };
+    training?: {
+      baseModel?: string;    // default: "unsloth/Qwen2.5-7B-Instruct"
+      method?: TrainingMethod;
+      loraRank?: number;     // default: 16
+      loraAlpha?: number;    // default: 32
+      epochs?: number;       // default: 1
+      batchSize?: number;    // default: 4
+      learningRate?: number; // default: 2e-5
+    };
+    hosting?: {
+      provider?: HostingProvider;
+      together?: {
+        apiKey?: string;     // overrides TOGETHER_API_KEY env var
+      };
+      fireworks?: {
+        apiKey?: string;     // overrides FIREWORKS_API_KEY env var
+      };
+    };
+  };
 }
 
 // ── Permission types ─────────────────────────────────────────────────────────

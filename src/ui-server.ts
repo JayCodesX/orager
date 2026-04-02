@@ -559,6 +559,7 @@ async function handleLogStream(
       const stat = await fs.stat(watchedFile);
       if (stat.size <= filePos) return; // unchanged
       const buf = Buffer.alloc(stat.size - filePos);
+      // L-08: wrap fd operations in try/finally to prevent fd leak on read error
       const fd  = fsSync.openSync(watchedFile, "r");
       try {
         fsSync.readSync(fd, buf, 0, buf.length, filePos);
