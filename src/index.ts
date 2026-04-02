@@ -177,26 +177,23 @@ function handleHelp(): void {
   process.stdout.write(`orager ${_ORAGER_VERSION} — autonomous AI agent runner
 
 USAGE
-  orager [OPTIONS] [PROMPT]
-  echo "prompt" | orager --print -
+  orager run [OPTIONS] "prompt"
+  orager chat [OPTIONS]
+  echo "prompt" | orager --print -   (legacy pipe mode)
 
-BASIC
+COMMANDS
+  run "prompt"              Run the agent once and exit (non-interactive)
+  chat                      Start an interactive multi-turn conversation
+
+COMMON OPTIONS (run & chat)
   --model <id>              Model to use (default: deepseek/deepseek-chat-v3-2)
+  --session-id <id>         Resume an existing session (alias: --resume)
   --max-turns <n>           Maximum agent turns (default: 20)
-  --timeout-sec <n>         Run-level timeout in seconds (default: 300)
-  --resume <id>             Resume an existing session
-  --cwd <path>              Working directory for the agent
-  --print                   Print result to stdout (non-interactive mode)
+  --max-cost-usd <n>        Hard stop when cost exceeds this value (USD)
+  --memory-key <key>        Memory namespace for this run
+  --subprocess              Run agent in an isolated subprocess (JSON-RPC transport)
   --verbose                 Verbose logging
-
-DAEMON
-  --serve                   Start the HTTP daemon (persistent server mode)
-  --port <n>                Daemon port (default: 3456)
-  --max-concurrent <n>      Max concurrent runs (default: 3)
-  --idle-timeout <duration> Idle shutdown timeout, e.g. 30s, 30m, 1h (default: 30m)
-  --status                  Check if the daemon is running
-  --status --json           Machine-readable status output
-  --clear-model-cache       Delete cached model metadata (force fresh fetch)
+  --dangerously-skip-permissions  Skip all tool-use permission checks
 
 PROFILES
   --profile <name>          Apply a named profile preset (code-review, bug-fix,
@@ -212,25 +209,24 @@ SESSIONS
   --delete-session <id>     Permanently delete a session
   --delete-trashed          Delete all trashed sessions
   --rollback-session <id>   Roll back a session to previous turn
-  --fork-session <id>       Create a branch of a session (like --fork-session in Claude Code)
+  --fork-session <id>       Create a branch of a session
                               --at-turn <n>   Fork at a specific turn (default: latest)
                               --resume        Immediately resume the forked session
-  --compact-session <id>    Summarize a session in-place (like /compact in Claude Code)
+  --compact-session <id>    Summarize a session in-place
   --prune-sessions          Delete sessions older than 30 days (default)
                               --older-than <value>  Override age threshold, e.g. 7d, 24h, 1h
-  --abandoned-sessions      Show runs that were abandoned during the last daemon crash/restart
 
 TOOLS & SAFETY
-  --dangerously-skip-permissions  Skip all tool-use permission checks
   --require-approval              Require approval for all tool calls
   --require-approval-for <tools>  Require approval for specific tools (comma-separated)
   --bash-policy <json>            Bash tool policy (blocked commands, env vars)
   --settings-file <path>          Path to a custom settings JSON file
-  --auto-memory                   Enable auto-memory (write_memory/read_memory tools that persist notes to CLAUDE.md)
+  --auto-memory                   Enable auto-memory (write_memory/read_memory tools)
 
 COST
   --max-cost-usd <n>        Hard stop if cost exceeds this value
   --max-cost-usd-soft <n>   Warn (but continue) when cost exceeds this value
+  --timeout-sec <n>         Run-level timeout in seconds
 
 OTHER
   --version, -v             Print version and exit
@@ -238,6 +234,10 @@ OTHER
   setup                     Run the interactive setup wizard
   setup --check             Validate config and test the API key
   ui [--port <n>]           Start the browser-based UI server (default port: 3457)
+  memory <list|inspect|export|clear>  Manage memory namespaces
+
+SERVER
+  --serve [--port <n>]      Start the HTTP UI server (opt-in, port default: 3456)
 
 ENVIRONMENT
   PROTOCOL_API_KEY          LLM provider API key (required)
@@ -923,6 +923,238 @@ export { loadConfigFile }; // re-export for backward compatibility (tests import
 export { runAgentWorkflow } from "./workflow.js";
 export type { AgentConfig, AgentWorkflow } from "./types.js";
 
+// ── Shared CLI helpers ────────────────────────────────────────────────────────
+
+/** Wrap a base emit fn with turn-count and cost summary written to stderr. */
+function makeCliOnEmit(baseEmit: typeof emit): (event: Parameters<typeof emit>[0]) => void {
+  const runStart = Date.now();
+  let cliTurn = 0;
+  let cliTurnStart = runStart;
+
+  return (event) => {
+    baseEmit(event);
+
+    if (event.type === "assistant") {
+      cliTurnStart = Date.now();
+    }
+    if (event.type === "tool") {
+      const elapsed = ((Date.now() - cliTurnStart) / 1000).toFixed(1);
+      process.stderr.write(`\r[turn ${cliTurn + 1} | ${elapsed}s]\x1b[K\n`);
+      cliTurn++;
+      cliTurnStart = Date.now();
+    }
+    if (event.type === "result") {
+      const totalElapsedS = Math.round((Date.now() - runStart) / 1000);
+      const { input_tokens, output_tokens, cache_read_input_tokens } = event.usage;
+      const totalTokens = input_tokens + output_tokens;
+      const cachedPct = totalTokens > 0
+        ? Math.round((cache_read_input_tokens / totalTokens) * 100)
+        : 0;
+      process.stderr.write(
+        `\r\x1b[K` +
+        `─────────────────────────────────────\n` +
+        `  Turns:    ${event.turnCount ?? cliTurn}\n` +
+        `  Tokens:   ${input_tokens.toLocaleString()} prompt / ${output_tokens.toLocaleString()} completion\n` +
+        `  Cached:   ${cache_read_input_tokens.toLocaleString()} (${cachedPct}%)\n` +
+        `  Cost:     ~$${event.total_cost_usd.toFixed(4)}\n` +
+        `  Duration: ${totalElapsedS}s\n` +
+        `  Session:  ${event.session_id.slice(0, 8)}...\n` +
+        `─────────────────────────────────────\n`,
+      );
+    }
+  };
+}
+
+// Flags that consume the next token — used when extracting positional args.
+const _FLAGS_WITH_VALUE = new Set([
+  "--model", "--resume", "--session-id", "--max-turns", "--max-cost-usd",
+  "--memory-key", "--timeout-sec", "--max-retries", "--add-dir", "--temperature",
+  "--reasoning-effort", "--reasoning-max-tokens", "--cwd", "--site-name",
+  "--site-url", "--output-format", "--summarize-at", "--summarize-model",
+  "--vision-model", "--profile", "--tools-file", "--system-prompt-file",
+  "--sandbox-root", "--approval-mode", "--settings-file", "--hook-error-mode",
+  "--max-spawn-depth", "--agent-id", "--repo-url", "--preset", "--transforms",
+  "--model-fallback", "--summarize-keep-recent-turns", "--stop",
+]);
+
+function collectPositionals(argv: string[]): string[] {
+  const positionals: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg.startsWith("--")) {
+      if (_FLAGS_WITH_VALUE.has(arg)) i++; // skip value token
+    } else {
+      positionals.push(arg);
+    }
+  }
+  return positionals;
+}
+
+function extractFlag(argv: string[], flag: string): string | undefined {
+  const idx = argv.indexOf(flag);
+  return idx !== -1 && idx + 1 < argv.length ? argv[idx + 1] : undefined;
+}
+
+// ── orager run ────────────────────────────────────────────────────────────────
+
+/**
+ * orager run [OPTIONS] "prompt"
+ *
+ * Non-interactive: run the agent once with the given prompt and exit.
+ * Supports --model, --session-id/--resume, --max-turns, --max-cost-usd,
+ * --memory-key, --subprocess, --verbose, --dangerously-skip-permissions.
+ */
+async function handleRunCommand(runArgv: string[]): Promise<void> {
+  const apiKey = (process.env["PROTOCOL_API_KEY"] ?? "").trim();
+  if (!apiKey) {
+    process.stderr.write("orager: API key not set. Export PROTOCOL_API_KEY.\n");
+    process.exit(1);
+  }
+
+  const opts = parseArgs(runArgv);
+  const memoryKey = extractFlag(runArgv, "--memory-key");
+  const subprocessEnabled = runArgv.includes("--subprocess");
+
+  // Collect positional args joined as the prompt.
+  const positionals = collectPositionals(runArgv);
+  let prompt = positionals.join(" ").trim();
+
+  if (!prompt) {
+    if (!process.stdin.isTTY) {
+      prompt = await readStdin();
+    } else {
+      process.stderr.write(
+        "orager run: provide a prompt argument or pipe it via stdin\n" +
+        "  Example: orager run \"write a hello world script\"\n",
+      );
+      process.exit(1);
+    }
+  }
+
+  prompt = prompt.trim();
+  if (!prompt) {
+    process.stderr.write("orager run: empty prompt\n");
+    process.exit(1);
+  }
+
+  if (opts.sessionId) interruptSessionId = opts.sessionId;
+
+  try {
+    await runAgentLoop({
+      prompt,
+      model: opts.model,
+      apiKey,
+      sessionId: opts.sessionId,
+      addDirs: opts.addDirs,
+      maxTurns: opts.maxTurns,
+      maxRetries: opts.maxRetries,
+      cwd: process.cwd(),
+      dangerouslySkipPermissions: opts.dangerouslySkipPermissions,
+      verbose: opts.verbose,
+      maxCostUsd: opts.maxCostUsd,
+      memoryKey,
+      onEmit: makeCliOnEmit(emit),
+      subprocess: subprocessEnabled ? { enabled: true } : undefined,
+    });
+  } finally {
+    await releaseCliPidLock();
+  }
+}
+
+// ── orager chat ───────────────────────────────────────────────────────────────
+
+/**
+ * orager chat [OPTIONS]
+ *
+ * Interactive multi-turn conversation. Reads user messages from stdin and
+ * runs the agent loop for each, preserving session context between turns.
+ * Supports --model, --session-id/--resume, --max-turns, --max-cost-usd,
+ * --memory-key, --verbose.
+ */
+async function handleChatCommand(chatArgv: string[]): Promise<void> {
+  const apiKey = (process.env["PROTOCOL_API_KEY"] ?? "").trim();
+  if (!apiKey) {
+    process.stderr.write("orager: API key not set. Export PROTOCOL_API_KEY.\n");
+    process.exit(1);
+  }
+
+  const opts = parseArgs(chatArgv);
+  const memoryKey = extractFlag(chatArgv, "--memory-key");
+
+  let sessionId: string | null = opts.sessionId;
+  let forceResume = !!sessionId;
+
+  const isInteractive = process.stdin.isTTY;
+
+  if (isInteractive) {
+    process.stderr.write(`orager chat — model: ${opts.model}\n`);
+    if (sessionId) process.stderr.write(`Resuming session: ${sessionId}\n`);
+    process.stderr.write(`Type your message and press Enter. Ctrl+D or "exit" to quit.\n\n`);
+  }
+
+  const rl = readline.createInterface({ input: process.stdin, terminal: false });
+
+  const showPrompt = () => {
+    if (isInteractive) process.stderr.write("you> ");
+  };
+
+  showPrompt();
+
+  for await (const line of rl) {
+    const userPrompt = line.trim();
+    if (!userPrompt) { showPrompt(); continue; }
+    if (userPrompt === "exit" || userPrompt === "quit") break;
+
+    if (sessionId) interruptSessionId = sessionId;
+
+    let capturedSessionId: string | null = null;
+
+    // Chat output: write assistant text directly to stdout for readability.
+    const chatOnEmit = (event: Parameters<typeof emit>[0]) => {
+      if (event.type === "assistant") {
+        for (const block of event.message.content) {
+          if (block.type === "text") process.stdout.write(block.text);
+        }
+      } else if (event.type === "result") {
+        capturedSessionId = event.session_id;
+        process.stdout.write("\n");
+      } else {
+        emit(event);
+      }
+    };
+
+    try {
+      await runAgentLoop({
+        prompt: userPrompt,
+        model: opts.model,
+        apiKey,
+        sessionId,
+        forceResume,
+        addDirs: opts.addDirs,
+        maxTurns: opts.maxTurns,
+        maxRetries: opts.maxRetries,
+        cwd: process.cwd(),
+        dangerouslySkipPermissions: opts.dangerouslySkipPermissions,
+        verbose: opts.verbose,
+        maxCostUsd: opts.maxCostUsd,
+        memoryKey,
+        onEmit: chatOnEmit,
+      });
+    } catch (err) {
+      process.stderr.write(`\norager: error: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+
+    if (capturedSessionId) {
+      sessionId = capturedSessionId;
+      forceResume = true;
+    }
+
+    showPrompt();
+  }
+
+  if (isInteractive) process.stderr.write("\nGoodbye!\n");
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -959,6 +1191,18 @@ async function main(): Promise<void> {
   // ── Memory subcommand ─────────────────────────────────────────────────────
   if (argv[0] === "memory") {
     await handleMemorySubcommand(argv);
+    return;
+  }
+
+  // ── run subcommand ────────────────────────────────────────────────────────
+  if (argv[0] === "run") {
+    await handleRunCommand(argv.slice(1));
+    return;
+  }
+
+  // ── chat subcommand ───────────────────────────────────────────────────────
+  if (argv[0] === "chat") {
+    await handleChatCommand(argv.slice(1));
     return;
   }
 
