@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
+import { loadSession } from "../src/session.js";
 
 // Complete explicit mocks — importOriginal pattern is broken under bun
 // (import() inside a mock factory returns the mock itself, not the real module).
@@ -161,15 +162,10 @@ describe("P2-2: guaranteed session save on disconnect", () => {
     const resultEvent = events.find((e) => e.type === "result");
     expect(resultEvent).toBeDefined();
 
-    // Session should have been created
+    // Session should have been persisted (works with both file and SQLite store)
     if (sessionId) {
-      const filePath = path.join(TEST_SESSIONS_DIR, `${sessionId}.json`);
-      let exists = false;
-      try {
-        await fs.access(filePath);
-        exists = true;
-      } catch { /* ignore */ }
-      expect(exists).toBe(true);
+      const saved = await loadSession(sessionId);
+      expect(saved).not.toBeNull();
     }
   });
 });

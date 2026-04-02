@@ -147,6 +147,21 @@ describe("logToolCall", () => {
 // ── 2. File-based prune: compacted sessions get 3× retention ──────────────────
 
 describe("_filePrune: compacted sessions use 3× retention", () => {
+  // Force file-based session store so pruneOldSessions() scans the JSON files
+  // written by writeSession() above. Under bun, vi.resetModules() is a no-op,
+  // so we must manually reset the store singleton and set ORAGER_DB_PATH=none.
+  let savedDbPath: string | undefined;
+  beforeEach(() => {
+    savedDbPath = process.env["ORAGER_DB_PATH"];
+    process.env["ORAGER_DB_PATH"] = "none";
+    // Lazy import — _resetStoreForTesting must be called after env is set
+    return import("../src/session.js").then(({ _resetStoreForTesting }) => _resetStoreForTesting());
+  });
+  afterEach(() => {
+    if (savedDbPath === undefined) delete process.env["ORAGER_DB_PATH"];
+    else process.env["ORAGER_DB_PATH"] = savedDbPath;
+    return import("../src/session.js").then(({ _resetStoreForTesting }) => _resetStoreForTesting());
+  });
   async function writeSession(
     sessionId: string,
     summarized: boolean,

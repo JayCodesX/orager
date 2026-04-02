@@ -42,14 +42,17 @@ describe("acquireSessionLock", () => {
 
     const release = await acquireSessionLock(sessionId);
 
-    // Lock file should exist after acquire
-    const lp = lockFilePath(sessionId);
-    await fs.access(lp); // throws if not accessible — fails test if file missing
+    // After acquiring, a second acquire attempt should fail (lock is held).
+    // This works with both file-based and SQLite-based lock stores.
+    await expect(
+      acquireSessionLock(sessionId, { timeoutMs: 100, maxAttempts: 1, initialDelayMs: 10 })
+    ).rejects.toThrow();
 
     await release();
 
-    // Lock file should be gone after release
-    await expect(fs.access(lp)).rejects.toThrow();
+    // After releasing, acquiring again should succeed
+    const release2 = await acquireSessionLock(sessionId, { timeoutMs: 500 });
+    await release2();
   });
 
   it("double-acquire on same session throws with descriptive error after retry timeout", async () => {
