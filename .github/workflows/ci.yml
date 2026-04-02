@@ -34,3 +34,21 @@ jobs:
       - name: Integration tests
         run: bun run test:bun:int
         timeout-minutes: 5
+
+      - name: Publish unit test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Unit Tests
+          path: test-results/unit/*.xml
+          reporter: jest-junit
+          fail-on-error: false
+
+      - name: Publish integration test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Integration Tests
+          path: test-results/integration/*.xml
+          reporter: jest-junit
+          fail-on-error: false

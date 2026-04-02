@@ -4,14 +4,20 @@
 # Bun runs all test files in a single OS process, so vi.mock() calls are
 # process-wide and bleed across files. Running each file in its own process
 # guarantees clean mock isolation at the cost of ~200ms startup per file.
+#
+# JUnit XML is written to test-results/unit/ for CI test reporting.
 set -uo pipefail
 
 FAILED_FILES=()
 TOTAL=0
+JUNIT_DIR="test-results/unit"
+mkdir -p "$JUNIT_DIR"
 
 for f in ./tests/*.test.ts; do
   TOTAL=$((TOTAL + 1))
-  OUTPUT=$(bun test "$f" 2>&1)
+  BASENAME=$(basename "$f" .test.ts)
+  XML_OUT="$JUNIT_DIR/${BASENAME}.xml"
+  OUTPUT=$(bun test "$f" --reporter=junit --reporter-outfile="$XML_OUT" 2>&1)
   if [ $? -ne 0 ]; then
     FAILED_FILES+=("$f")
     echo "FAIL: $f"
