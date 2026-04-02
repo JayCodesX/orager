@@ -76,6 +76,8 @@ function loopOpts(overrides: Partial<Parameters<typeof runAgentLoop>[0]> = {}) {
       dangerouslySkipPermissions: true,
       verbose: false,
       onEmit: (e: EmitEvent) => emitted.push(e),
+      summarizeTurnInterval: 0,
+      summarizeAt: 0,
       ...overrides,
     },
     emitted,

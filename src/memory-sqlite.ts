@@ -338,9 +338,9 @@ export async function addMemoryEntrySqlite(
 
   db.prepare(`
     INSERT INTO memory_entries
-      (id, memory_key, content, tags, created_at, expires_at, run_id, importance, embedding, embedding_model)
+      (id, memory_key, content, tags, created_at, expires_at, run_id, importance, embedding, embedding_model, type)
     VALUES
-      (@id, @memoryKey, @content, @tags, @createdAt, @expiresAt, @runId, @importance, @embedding, @embeddingModel)
+      (@id, @memoryKey, @content, @tags, @createdAt, @expiresAt, @runId, @importance, @embedding, @embeddingModel, @type)
   `).run({
     id,
     memoryKey,
@@ -354,6 +354,7 @@ export async function addMemoryEntrySqlite(
       ? Buffer.from(new Float32Array(entry._embedding).buffer)
       : null,
     embeddingModel: entry._embeddingModel ?? null,
+    type: entry.type ?? "insight",
   });
 
   return {
