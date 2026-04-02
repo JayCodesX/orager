@@ -90,7 +90,7 @@ export function ModelSelect({
       const q = query.toLowerCase();
       list = list.filter((m) => m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q));
     }
-    return list.slice(0, 50);
+    return [...list].sort((a, b) => a.id.localeCompare(b.id)).slice(0, 50);
   }, [models, query, visionOnly]);
 
   const handleSelect = useCallback((id: string) => {
@@ -195,7 +195,7 @@ export function MultiModelSelect({
       const q = query.toLowerCase();
       list = list.filter((m) => m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q));
     }
-    return list.slice(0, 50);
+    return [...list].sort((a, b) => a.id.localeCompare(b.id)).slice(0, 50);
   }, [models, query]);
 
   const toggle = useCallback((id: string) => {
