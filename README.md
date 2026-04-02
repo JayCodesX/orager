@@ -23,6 +23,7 @@ A production-grade agent loop engine that runs multi-turn, tool-calling LLM work
 - [Model support](#model-support)
 - [Memory system](#memory-system)
 - [Session management](#session-management)
+- [Multi-agent workflows](#multi-agent-workflows)
 - [Architecture](#architecture)
 - [Development](#development)
 - [Contributing](#contributing)
@@ -38,36 +39,28 @@ Running LLM agents in production requires more than a single API call:
 - Working with any model (Claude, DeepSeek, GPT-4o, Gemini, Llama) without code changes
 - Retaining facts across sessions so agents don't start cold every time
 - Preventing runaway token spend and context window overflow
-- Keeping startup overhead low when agents fire every 30 seconds
+- Orchestrating multi-agent workflows where one agent's output feeds the next
 
-Existing options are either locked to one provider, too bare-bones for production, or too slow for high-frequency heartbeats.
+Existing options are either locked to one provider, too bare-bones for production, or too complex to embed in your own stack.
 
 ---
 
 ## How it works
 
 ```
-                          ┌─────────────────────┐
-                          │   Paperclip / CLI    │
-                          └──────────┬──────────┘
-                                     │
-                        stdin or POST /run (JWT)
-                                     │
-                                     ▼
-                          ┌─────────────────────┐
-                          │     daemon.ts        │
-                          │  HTTP server on      │
-                          │  127.0.0.1           │
-                          │                      │
-                          │  POST /run           │
-                          │  GET  /health        │
-                          │  GET  /metrics       │
-                          │  POST /drain         │
-                          └──────────┬──────────┘
-                                     │
-                                     ▼
+┌──────────────────────────────────────┐
+│          Your code / CLI             │
+│                                      │
+│  orager run "prompt"                 │
+│  orager chat                         │
+│  runAgentLoop(opts)      (library)   │
+│  runAgentWorkflow(wf, p) (library)   │
+└─────────────────┬────────────────────┘
+                  │  in-process  (default)
+                  │  or subprocess JSON-RPC 2.0
+                  ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│                          loop.ts — Agent Loop                        │
+│                        loop.ts — Agent Loop                          │
 │                                                                      │
 │  1. Assemble system prompt                                           │
 │     ├─ [FROZEN]  base instructions · skills · CLAUDE.md · commands  │
@@ -93,13 +86,22 @@ Existing options are either locked to one provider, too bare-bones for productio
 │  │    • Session save                           │           │           │
 │  └────────────────────────────────────────────┘           │
 │                                                            │
-│  Emit NDJSON stream → stdout or HTTP response              │
+│  Emit NDJSON stream → stdout                               │
 └──────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Features
+
+### `orager run` — non-interactive agent
+Run an agent once with a prompt and exit. Output is streamed to stdout as NDJSON events. Machine-readable and composable with pipes.
+
+### `orager chat` — interactive REPL
+Multi-turn conversation that preserves session context across turns. Assistant text written directly to stdout. `Ctrl+D` or `exit` to quit.
+
+### `orager serve` — browser UI
+Start a local browser UI (port 3457) for viewing config, settings, logs, costs, and session history. Agents still run in-process via `orager run` or `orager chat` — the server is UI-only.
 
 ### Agent loop
 Multi-turn execution engine. Calls the LLM, parses tool calls, executes them in parallel (up to 10 concurrent), tracks cost and token usage, and saves session state after every turn. Supports model fallback rotation on 429/503 and API key pool rotation mid-run.
@@ -116,8 +118,39 @@ Multi-turn execution engine. Calls the LLM, parses tool calls, executes them in 
 | **Notebooks** | `notebook_read`, `notebook_edit` |
 | **Control** | `finish`, `exit_plan_mode`, `todo_write`, `todo_read` |
 
-### Daemon mode
-Persistent HTTP server (JWT-authenticated, HS256, 5-min TTL) that eliminates ~200ms Node.js startup overhead per run. Skill caches, tool result caches, and LLM prompt caches stay warm between requests. Features concurrency control, graceful drain, idle auto-shutdown, and cache warming on startup.
+### Multi-agent workflows
+Compose sequential pipelines where each agent is a named step. Each step's output is passed as the next step's prompt via a configurable `handoff` function.
+
+```ts
+import { runAgentWorkflow } from "@jaycodesx/orager";
+
+await runAgentWorkflow({
+  base: { apiKey, onEmit, cwd: process.cwd(), /* ... */ },
+  steps: [
+    { role: "researcher",   model: "deepseek/deepseek-r1",          maxTurns: 5 },
+    { role: "synthesizer",  model: "anthropic/claude-sonnet-4-6",   maxTurns: 3 },
+    { role: "code-writer",  model: "deepseek/deepseek-chat-v3-0324" },
+  ],
+}, "Analyse the auth module and propose a rewrite");
+```
+
+### Subprocess transport
+Run the agent loop in an isolated child process over JSON-RPC 2.0 (same protocol as Claude Code MCP servers). Useful when you need process isolation, memory limits, or parallel agent execution.
+
+```ts
+import { runAgentLoop } from "@jaycodesx/orager";
+
+await runAgentLoop({
+  // ...
+  subprocess: { enabled: true, timeoutMs: 60_000 },
+});
+```
+
+Or from the CLI:
+
+```bash
+orager run --subprocess "audit the codebase for security issues"
+```
 
 ### Memory system
 Three-layer hierarchical memory built on embedded SQLite. See [Memory system](#memory-system) below.
@@ -135,19 +168,9 @@ Opinionated presets: `code-review`, `bug-fix`, `research`, `refactor`, `test-wri
 Connects to external MCP servers (Streamable HTTP transport) with auto-reconnect. Auto-discovers from `~/.claude/claude_desktop_config.json`.
 
 ### Observability
-- JSON metrics — active runs, model usage, provider health, circuit breaker states, per-agent costs
-- Prometheus endpoint — `/metrics/prometheus`
-- Health checks — minimal `/health` (public) + detailed `/health/detail` (authenticated, subsystem checks)
-- Circuit breaker — per-provider OPEN/HALF_OPEN/CLOSED
+- JSON metrics via `orager serve` UI
 - Audit log — append-only NDJSON at `~/.orager/audit.log` (0600), auto-rotation at 10 MB
 - OpenTelemetry — trace/span integration
-
-### Security
-- JWT-authenticated daemon (key at `~/.orager/daemon.key`, chmod 600, auto-generated; dual-key rotation for zero-downtime changes)
-- OS sandboxing enabled by default (macOS `sandbox-exec`, Linux `bwrap`)
-- Secret redaction — regex-based stripping of API keys, tokens, passwords from streamed output
-- Schema validation at API boundary; dangerous opts stripped from daemon requests
-- Rate limiting — per-model tracking from response headers
 
 ---
 
@@ -175,20 +198,32 @@ orager --version
 ## Quick start
 
 ```bash
-# One-shot task via stdin
-echo "Refactor the auth module to use async/await" | orager --print - --model deepseek/deepseek-chat-v3-0324
+# Non-interactive: run agent once and exit
+orager run "Refactor the auth module to use async/await"
 
-# Interactive daemon mode (eliminates per-run startup overhead)
-orager --serve --port 3456
+# Use a specific model
+orager run --model deepseek/deepseek-r1 "Review the changes in src/loop.ts"
 
-# Resume a previous session
-orager --session-id <id> --print "Add error handling to what you wrote"
+# Interactive multi-turn conversation
+orager chat
 
-# Use a task profile
-orager --profile code-review --print "Review the changes in src/loop.ts"
+# Resume a previous session in chat
+orager chat --session-id <id>
 
 # Cap cost and set a turn limit
-orager --max-cost-usd 0.50 --max-turns 20 --print "Audit the auth module for security issues"
+orager run --max-cost-usd 0.50 --max-turns 20 "Audit the auth module for security issues"
+
+# Use a task profile
+orager run --profile code-review "Review PR #42"
+
+# Use a named memory namespace
+orager run --memory-key my-project "What do you remember about this codebase?"
+
+# Run agent in an isolated subprocess
+orager run --subprocess "generate the test suite for src/auth.ts"
+
+# Start the browser UI (config, logs, costs)
+orager serve
 ```
 
 ---
@@ -205,32 +240,41 @@ orager --max-cost-usd 0.50 --max-turns 20 --print "Audit the auth module for sec
 | `ORAGER_DB_PATH=none` | — | Disables SQLite; falls back to JSON session + memory files |
 | `ORAGER_SESSIONS_DIR` | `~/.orager/sessions/` | JSON session storage directory (fallback only) |
 | `ORAGER_MEMORY_DIR` | `~/.orager/memory/` | JSON memory storage directory (fallback only) |
-| `ORAGER_TLS_CERT` | — | Path to TLS certificate for daemon HTTPS |
-| `ORAGER_TLS_KEY` | — | Path to TLS private key for daemon HTTPS |
 | `ORAGER_SKIP_PID_LOCK` | — | Set to `1` to disable PID lock (useful in CI/tests) |
 
 ### CLI flags
 
+**Commands**
+
+| Command | Description |
+|---|---|
+| `orager run "prompt"` | Run agent once and exit (non-interactive) |
+| `orager chat` | Interactive multi-turn conversation |
+| `orager serve [--port n]` | Start browser UI server (default port 3457) |
+| `orager ui [--port n]` | Alias for `orager serve` |
+| `orager setup` | Run interactive setup wizard |
+| `orager memory <list\|inspect\|export\|clear>` | Manage memory namespaces |
+
+**Common flags (run & chat)**
+
 | Flag | Default | Description |
 |---|---|---|
-| `--model` | `anthropic/claude-sonnet-4-5` | LLM model identifier (OpenRouter format) |
-| `--print` | — | Run in print mode; pass prompt or `-` for stdin |
-| `--serve` | — | Start HTTP daemon server |
-| `--port` | `3456` | Daemon listen port |
-| `--session-id` | — | Resume an existing session by ID |
+| `--model <id>` | `deepseek/deepseek-chat-v3-2` | LLM model identifier (OpenRouter format) |
+| `--session-id <id>` | — | Resume an existing session by ID (alias: `--resume`) |
 | `--force-resume` | `false` | Resume even if saved CWD doesn't match current CWD |
-| `--max-turns` | unlimited | Hard cap on agent loop iterations |
-| `--max-cost-usd` | — | Hard cost limit in USD; aborts when exceeded |
-| `--max-cost-usd-soft` | — | Soft cost limit; warns and stops gracefully |
-| `--summarize-at` | `0` (off) | Summarize when prompt tokens exceed this fraction of context window (e.g. `0.8`) |
-| `--summarize-turn-interval` | `0` (off) | Summarize every N turns regardless of token count |
-| `--summarize-model` | same as `--model` | Model used for session summarization |
-| `--memory-key` | derived from CWD | Namespace key for cross-session memory |
-| `--add-dir` | — | Additional directory to load skills from |
-| `--profile` | — | Apply a named task profile |
-| `--plan-mode` | `false` | Start in read-only exploration mode |
-| `--timeout-sec` | — | Hard wall-clock timeout for the entire run |
+| `--max-turns <n>` | `20` | Hard cap on agent loop iterations |
+| `--max-cost-usd <n>` | — | Hard cost limit in USD; aborts when exceeded |
+| `--max-cost-usd-soft <n>` | — | Soft cost limit; warns and stops gracefully |
+| `--memory-key <key>` | derived from CWD | Namespace key for cross-session memory |
+| `--subprocess` | `false` | Run agent in an isolated child process (JSON-RPC 2.0 transport) |
+| `--profile <name>` | — | Apply a named task profile |
+| `--verbose` | `false` | Verbose logging |
 | `--dangerously-skip-permissions` | `false` | Bypass all tool approval prompts |
+| `--timeout-sec <n>` | — | Hard wall-clock timeout for the entire run |
+| `--summarize-at <0–1>` | off | Summarize when prompt tokens exceed this fraction of context window |
+| `--summarize-model <id>` | same as `--model` | Model used for session summarization |
+| `--add-dir <path>` | — | Additional directory to load skills from |
+| `--plan-mode` | `false` | Start in read-only exploration mode |
 
 ---
 
@@ -240,7 +284,7 @@ orager routes through [OpenRouter](https://openrouter.ai) (300+ models, one API 
 
 | Provider | Example models | Tool use | Vision | Notes |
 |---|---|---|---|---|
-| **Anthropic** | `anthropic/claude-sonnet-4-5`, `anthropic/claude-opus-4-5` | ✅ | ✅ | Direct fast-path available; prompt caching; frozen-prefix cache hits |
+| **Anthropic** | `anthropic/claude-sonnet-4-6`, `anthropic/claude-opus-4-6` | ✅ | ✅ | Direct fast-path available; prompt caching; frozen-prefix cache hits |
 | **DeepSeek** | `deepseek/deepseek-chat-v3-0324`, `deepseek/deepseek-r1` | ✅ | ❌ | Excellent for code; benefits most from the memory system |
 | **OpenAI** | `openai/gpt-4o`, `openai/o3-mini` | ✅ | ✅ | |
 | **Google** | `google/gemini-2.0-flash`, `google/gemini-2.5-pro` | ✅ | ✅ | |
@@ -261,10 +305,10 @@ Project-level facts that survive indefinitely: stack decisions, conventions, arc
 
 ```bash
 # Set the master context for the current project
-orager --print "remember set_master with content: 'Stack: Next.js 15, Postgres 16, Bun runtime. All API routes live in src/app/api/. Tests use Bun test runner. Never use console.log in production code.'"
+orager run "remember set_master with content: 'Stack: Next.js 15, Postgres 16, Bun runtime. All API routes live in src/app/api/. Tests use Bun test runner. Never use console.log in production code.'"
 
 # View the current master context
-orager --print "remember view_master"
+orager run "remember view_master"
 ```
 
 Always injected at session start before any retrieval. Maximum ~2k tokens (8,000 chars). Update it as the project evolves.
@@ -291,10 +335,21 @@ remember add — "The payment webhook uses HMAC-SHA256 with the secret in STRIPE
 
 Compressed snapshots written automatically when sessions are summarized. Prevents context loss across long multi-day runs. Raw checkpoints are written *before* summarization so a crash mid-synthesis loses nothing.
 
+### Multi-context memory
+
+An agent can read from multiple memory namespaces simultaneously. The first key is the write target; additional keys are read-only sources.
+
+```ts
+await runAgentLoop({
+  memoryKey: ["project-alpha", "shared-conventions"],
+  // ...
+});
+```
+
 ### Disabling memory
 
 ```bash
-ORAGER_DB_PATH=none orager --print "..."
+ORAGER_DB_PATH=none orager run "..."
 ```
 
 Falls back to JSON session files. No cross-session memory, but all other features work normally.
@@ -305,28 +360,73 @@ Falls back to JSON session files. No cross-session memory, but all other feature
 
 ```bash
 # List recent sessions
-orager sessions list
+orager --list-sessions
 
 # Search sessions by content
-orager sessions search "auth refactor"
+orager --search-sessions "auth refactor"
 
 # Resume a session
-orager --session-id <id> --print "continue where we left off"
+orager chat --session-id <id>
 
 # Force-resume from a different directory
-orager --session-id <id> --force-resume --print "..."
+orager run --session-id <id> --force-resume "continue where we left off"
 
 # Trash a session (soft delete, recoverable)
-orager sessions trash <id>
+orager --trash-session <id>
+
+# Restore a trashed session
+orager --restore-session <id>
 
 # Permanently delete trashed sessions
-orager sessions empty-trash
+orager --delete-trashed
 
 # Prune sessions older than 30 days
-orager sessions prune --older-than 30d
+orager --prune-sessions --older-than 30d
 ```
 
 Sessions are stored in `~/.orager/orager.db` (SQLite, concurrent-safe via advisory locking). Set `ORAGER_DB_PATH=none` to use the legacy JSON file store.
+
+---
+
+## Multi-agent workflows
+
+Use `runAgentWorkflow` to compose sequential multi-agent pipelines as a library.
+
+```ts
+import { runAgentWorkflow } from "@jaycodesx/orager";
+import type { AgentWorkflow } from "@jaycodesx/orager";
+
+const workflow: AgentWorkflow = {
+  base: {
+    apiKey: process.env.PROTOCOL_API_KEY!,
+    cwd: process.cwd(),
+    addDirs: [],
+    sessionId: null,
+    dangerouslySkipPermissions: false,
+    verbose: false,
+    onEmit: (event) => { /* stream events to your UI */ },
+  },
+  steps: [
+    {
+      role: "researcher",
+      model: "deepseek/deepseek-r1",
+      maxTurns: 5,
+    },
+    {
+      role: "synthesizer",
+      model: "anthropic/claude-sonnet-4-6",
+      maxTurns: 3,
+      appendSystemPrompt: "Be concise. Output bullet points only.",
+    },
+  ],
+  // Optional: transform output between steps
+  handoff: (stepIndex, output) => `Step ${stepIndex} result:\n${output}\n\nNow synthesize.`,
+};
+
+await runAgentWorkflow(workflow, "Analyse the auth module and suggest improvements");
+```
+
+Each step's text output is automatically passed as the next step's prompt (default pass-through). Use `handoff` to transform or augment it.
 
 ---
 
@@ -335,13 +435,16 @@ Sessions are stored in `~/.orager/orager.db` (SQLite, concurrent-safe via adviso
 | File | Responsibility |
 |---|---|
 | `src/loop.ts` | Main agent loop — prompt assembly, turn execution, summarization, memory ingestion |
-| `src/loop-helpers.ts` | Pure utilities — token estimation, summarization, `parseMemoryUpdates`, cache helpers, memory header constants |
+| `src/loop-helpers.ts` | Pure utilities — token estimation, summarization, `parseMemoryUpdates`, cache helpers |
+| `src/workflow.ts` | Sequential multi-agent orchestration (`runAgentWorkflow`) |
+| `src/subprocess.ts` | JSON-RPC 2.0 subprocess transport — orchestrator + server sides |
 | `src/openrouter.ts` | API client — SSE streaming, Anthropic cache control, direct fast-path |
 | `src/session.ts` | Session store abstraction — load/save/lock/prune |
 | `src/session-sqlite.ts` | SQLite session store — WAL, FTS5 search, advisory locking, checkpoints |
 | `src/memory-sqlite.ts` | Memory entry store — master context, FTS5 retrieval, embedding support |
 | `src/memory.ts` | File-based memory store (fallback) and shared retrieval logic |
-| `src/daemon/` | HTTP server, JWT auth, routes (`/run`, `/health`, `/metrics`, `/drain`) |
+| `src/daemon/` | Status/metrics/sessions HTTP server (health, metrics, sessions, rotate-key) |
+| `src/ui-server.ts` | Browser UI server (`orager serve`) — config, settings, logs, costs |
 | `src/tools/` | Built-in tool executors |
 
 For architectural decisions, see [`docs/adr/`](./docs/adr/).
