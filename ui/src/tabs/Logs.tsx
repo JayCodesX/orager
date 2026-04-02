@@ -22,6 +22,8 @@ interface LogsResponse {
   configured: boolean;
 }
 
+const PAGE_SIZE = 100;
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const LEVEL_COLORS: Record<string, string> = {
@@ -51,61 +53,67 @@ function LevelBadge({ level }: { level?: string }) {
   );
 }
 
-// ── Log row (used in virtual list) ────────────────────────────────────────────
+// ── Log row ───────────────────────────────────────────────────────────────────
 
 function LogRow({ entry, expanded, onToggle }: {
   entry: LogEntry;
   expanded: boolean;
   onToggle: () => void;
 }) {
-  const { ts, level, event, sessionId, model, ...rest } = entry;
-  // Remove well-known display fields from the "extra" detail
-  const extra = Object.entries(rest).filter(([k]) => !["agentId"].includes(k));
-
   return (
     <div
       style={{
         borderBottom: "1px solid var(--border)",
-        padding: "6px 12px",
-        cursor: extra.length > 0 ? "pointer" : "default",
+        cursor: "pointer",
         background: expanded ? "var(--accent-subtle)" : undefined,
       }}
-      onClick={extra.length > 0 ? onToggle : undefined}
+      onClick={onToggle}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      {/* Summary row */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 12px" }}>
         <span style={{ fontSize: 11, color: "var(--text-muted)", minWidth: 140, flexShrink: 0 }}>
-          {ts ? new Date(ts).toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit", fractionalSecondDigits: 3 }) : "—"}
+          {entry.ts
+            ? new Date(entry.ts).toLocaleTimeString([], {
+                hour12: false,
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+                fractionalSecondDigits: 3,
+              })
+            : "—"}
         </span>
-        <LevelBadge level={level} />
+        <LevelBadge level={entry.level} />
         <span style={{ fontSize: 13, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {event ?? "(no event)"}
+          {entry.event ?? "(no event)"}
         </span>
-        {sessionId && (
+        {entry.sessionId && (
           <span style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "monospace", flexShrink: 0 }}>
-            {String(sessionId).slice(0, 12)}
+            {String(entry.sessionId).slice(0, 12)}
           </span>
         )}
-        {model && (
+        {entry.model && (
           <span style={{ fontSize: 11, color: "var(--text-muted)", flexShrink: 0 }}>
-            {model}
+            {entry.model}
           </span>
         )}
-        {extra.length > 0 && (
-          <span style={{ fontSize: 10, color: "var(--text-muted)" }}>{expanded ? "▲" : "▼"}</span>
-        )}
+        <span style={{ fontSize: 10, color: "var(--text-muted)" }}>{expanded ? "▲" : "▼"}</span>
       </div>
-      {expanded && extra.length > 0 && (
+
+      {/* Expanded detail — full entry JSON so nothing is hidden */}
+      {expanded && (
         <pre style={{
-          marginTop: 8,
+          margin: "0 12px 10px",
           fontSize: 11,
           color: "var(--text-muted)",
           background: "var(--bg-input)",
           borderRadius: 4,
           padding: "8px 10px",
           overflowX: "auto",
-          lineHeight: 1.5,
+          lineHeight: 1.6,
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-all",
         }}>
-          {JSON.stringify(Object.fromEntries(extra), null, 2)}
+          {JSON.stringify(entry, null, 2)}
         </pre>
       )}
     </div>
@@ -115,61 +123,83 @@ function LogRow({ entry, expanded, onToggle }: {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function Logs() {
-  const [entries, setEntries] = useState<LogEntry[]>([]);
-  const [total, setTotal] = useState(0);
+  const [entries, setEntries]     = useState<LogEntry[]>([]);
+  const [total, setTotal]         = useState(0);
   const [configured, setConfigured] = useState(true);
-  const [loading, setLoading] = useState(false);
-  const [query, setQuery] = useState("");
-  const [level, setLevel] = useState("");
-  const [dateRange, setDateRange] = useState<DateRangePreset>("today");
-  const [liveMode, setLiveMode] = useState(false);
-  const [paused, setPaused] = useState(false);
+  const [loading, setLoading]     = useState(false);
+  const [query, setQuery]         = useState("");
+  const [level, setLevel]         = useState("");
+  const [eventFilter, setEventFilter] = useState("");
+  const [dateRange, setDateRange] = useState<DateRangePreset>("24h");
+  const [page, setPage]           = useState(0);
+  const [liveMode, setLiveMode]   = useState(false);
+  const [paused, setPaused]       = useState(false);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
 
-  const debounceRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const eventSrcRef  = useRef<EventSource | null>(null);
+  const debounceRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const eventSrcRef   = useRef<EventSource | null>(null);
   const liveBufferRef = useRef<LogEntry[]>([]);
-  const parentRef    = useRef<HTMLDivElement>(null);
+  const parentRef     = useRef<HTMLDivElement>(null);
 
   // ── Fetch (non-live) ──────────────────────────────────────────────────────
-  const fetchLogs = useCallback(async (q: string, lvl: string, range?: DateRangePreset) => {
+  const fetchLogs = useCallback(async (
+    q: string,
+    lvl: string,
+    evt: string,
+    range: DateRangePreset,
+    targetPage: number,
+  ) => {
     setLoading(true);
+    setExpandedIdx(null);
     try {
-      const params = new URLSearchParams({ limit: "200", offset: "0" });
-      if (q)   params.set("q", q);
+      const params = new URLSearchParams({
+        limit:  String(PAGE_SIZE),
+        offset: String(targetPage * PAGE_SIZE),
+      });
+      if (q)   params.set("q",     q);
       if (lvl) params.set("level", lvl);
-      const fromIso = presetToFromIso(range ?? "today");
+      if (evt) params.set("event", evt);
+      const fromIso = presetToFromIso(range);
       if (fromIso) params.set("from", fromIso);
       const r = await fetch(`/api/logs?${params}`, { headers: authHeaders() });
       const data = await r.json() as LogsResponse;
       setConfigured(data.configured);
       setEntries(data.entries ?? []);
       setTotal(data.total ?? 0);
+      setPage(targetPage);
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    void fetchLogs(query, level, dateRange);
+    void fetchLogs(query, level, eventFilter, dateRange, 0);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Debounce query changes
+  // Debounce free-text search
   const handleQueryChange = (v: string) => {
     setQuery(v);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => { void fetchLogs(v, level, dateRange); }, 300);
+    debounceRef.current = setTimeout(() => void fetchLogs(v, level, eventFilter, dateRange, 0), 300);
   };
 
   const handleLevelChange = (v: string) => {
     setLevel(v);
-    void fetchLogs(query, v, dateRange);
+    void fetchLogs(query, v, eventFilter, dateRange, 0);
+  };
+
+  const handleEventFilterChange = (v: string) => {
+    setEventFilter(v);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => void fetchLogs(query, level, v, dateRange, 0), 300);
   };
 
   const handleDateRangeChange = (v: DateRangePreset) => {
     setDateRange(v);
-    void fetchLogs(query, level, v);
+    void fetchLogs(query, level, eventFilter, v, 0);
   };
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   // ── Live mode ─────────────────────────────────────────────────────────────
   const startLive = useCallback(() => {
@@ -206,11 +236,12 @@ export default function Logs() {
     }
   };
 
-  // ── Virtual list ──────────────────────────────────────────────────────────
+  // ── Virtual list with dynamic height measurement ───────────────────────────
   const rowVirtualizer = useVirtualizer({
     count: entries.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: (i) => (expandedIdx === i ? 200 : 42),
+    estimateSize: () => 42,
+    measureElement: (el) => el.getBoundingClientRect().height,
     overscan: 10,
   });
 
@@ -220,11 +251,17 @@ export default function Logs() {
       <div className="placeholder">
         <h2>No logs yet</h2>
         <p>
-          Logs are written to <code style={{ background: "var(--bg-input)", padding: "2px 6px", borderRadius: 4 }}>~/.orager/orager.log</code> automatically.
-          Run an agent to generate log entries.
+          Logs are written to{" "}
+          <code style={{ background: "var(--bg-input)", padding: "2px 6px", borderRadius: 4 }}>
+            ~/.orager/orager.log
+          </code>{" "}
+          automatically. Run an agent to generate log entries.
         </p>
         <p style={{ marginTop: 8, fontSize: 12 }}>
-          Override with: <code style={{ background: "var(--bg-input)", padding: "2px 6px", borderRadius: 4 }}>ORAGER_LOG_FILE=/path/to/file orager ui</code>
+          Override with:{" "}
+          <code style={{ background: "var(--bg-input)", padding: "2px 6px", borderRadius: 4 }}>
+            ORAGER_LOG_FILE=/path/to/file orager ui
+          </code>
         </p>
       </div>
     );
@@ -232,24 +269,38 @@ export default function Logs() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 120px)", gap: 12 }}>
-      {/* Controls */}
+      {/* Controls row 1: search + level + date */}
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", flexShrink: 0 }}>
         <input
           type="text"
-          placeholder="Search logs…"
+          placeholder="Search all fields…"
           value={query}
           onChange={(e) => handleQueryChange(e.target.value)}
-          style={{ flex: 1, minWidth: 200 }}
+          style={{ flex: 2, minWidth: 160 }}
         />
-        <select value={level} onChange={(e) => handleLevelChange(e.target.value)} style={{ width: 120 }}>
+        <input
+          type="text"
+          placeholder="Filter by event name…"
+          value={eventFilter}
+          onChange={(e) => handleEventFilterChange(e.target.value)}
+          style={{ flex: 1, minWidth: 160 }}
+        />
+        <select value={level} onChange={(e) => handleLevelChange(e.target.value)} style={{ width: 110 }}>
           <option value="">All levels</option>
           <option value="info">info</option>
           <option value="warn">warn</option>
           <option value="error">error</option>
           <option value="debug">debug</option>
         </select>
-        <select value={dateRange} onChange={(e) => handleDateRangeChange(e.target.value as DateRangePreset)} disabled={liveMode} style={{ width: 130 }}>
-          {DATE_RANGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        <select
+          value={dateRange}
+          onChange={(e) => handleDateRangeChange(e.target.value as DateRangePreset)}
+          disabled={liveMode}
+          style={{ width: 130 }}
+        >
+          {DATE_RANGE_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
         </select>
         <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-muted)", cursor: "pointer", whiteSpace: "nowrap" }}>
           <input type="checkbox" checked={liveMode} onChange={(e) => setLiveMode(e.target.checked)} style={{ accentColor: "var(--accent)" }} />
@@ -266,13 +317,10 @@ export default function Logs() {
           </button>
         )}
         {!liveMode && (
-          <button className="btn-ghost" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => fetchLogs(query, level, dateRange)}>
+          <button className="btn-ghost" style={{ fontSize: 12, padding: "4px 10px" }} onClick={() => void fetchLogs(query, level, eventFilter, dateRange, page)}>
             Refresh
           </button>
         )}
-        <span style={{ fontSize: 11, color: "var(--text-muted)", whiteSpace: "nowrap" }}>
-          {loading ? "Loading…" : `${total} entries`}
-        </span>
       </div>
 
       {/* Virtual log list */}
@@ -294,7 +342,9 @@ export default function Logs() {
           <div style={{ height: rowVirtualizer.getTotalSize(), position: "relative" }}>
             {rowVirtualizer.getVirtualItems().map((virtualRow) => (
               <div
-                key={virtualRow.index}
+                key={virtualRow.key}
+                data-index={virtualRow.index}
+                ref={rowVirtualizer.measureElement}
                 style={{
                   position: "absolute",
                   top: 0,
@@ -307,9 +357,7 @@ export default function Logs() {
                   entry={entries[virtualRow.index]!}
                   expanded={expandedIdx === virtualRow.index}
                   onToggle={() =>
-                    setExpandedIdx((prev) =>
-                      prev === virtualRow.index ? null : virtualRow.index,
-                    )
+                    setExpandedIdx((prev) => prev === virtualRow.index ? null : virtualRow.index)
                   }
                 />
               </div>
@@ -317,6 +365,31 @@ export default function Logs() {
           </div>
         )}
       </div>
+
+      {/* Pagination footer */}
+      {!liveMode && (
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0, fontSize: 12, color: "var(--text-muted)" }}>
+          <button
+            className="btn-ghost"
+            style={{ fontSize: 12, padding: "4px 10px" }}
+            disabled={page === 0 || loading}
+            onClick={() => void fetchLogs(query, level, eventFilter, dateRange, page - 1)}
+          >
+            ← Prev
+          </button>
+          <span>
+            {loading ? "Loading…" : `Page ${page + 1} of ${totalPages} · ${total} entries`}
+          </span>
+          <button
+            className="btn-ghost"
+            style={{ fontSize: 12, padding: "4px 10px" }}
+            disabled={(page + 1) >= totalPages || loading}
+            onClick={() => void fetchLogs(query, level, eventFilter, dateRange, page + 1)}
+          >
+            Next →
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -23,6 +23,13 @@ import { mintJwt, KEY_PATH } from "./jwt.js";
 import { getSpanBuffer, type BufferedSpan } from "./telemetry.js";
 import { isBlockedHost } from "./tools/web-fetch.js";
 import { formatDiscordPayload } from "./loop-helpers.js";
+import {
+  isDailyRotation,
+  getLogDir,
+  dailyLogPath,
+  getTodayDateStr,
+  DAILY_LOG_PATTERN,
+} from "./logger.js";
 import split2 from "split2";
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
@@ -398,34 +405,20 @@ interface LogEntry {
   [key: string]: unknown;
 }
 
-async function handleGetLogs(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
+/**
+ * Stream a single log file through the filter pipeline, pushing matching
+ * entries into `out`. Resolves when the file is fully read.
+ */
+async function streamLogFile(
+  filePath: string,
+  out: LogEntry[],
+  filters: { q: string; level: string; event: string; from: string; to: string },
 ): Promise<void> {
-  const logFile = process.env["ORAGER_LOG_FILE"] ?? DEFAULT_LOG_PATH;
-  if (!fsSync.existsSync(logFile)) {
-    jsonResponse(res, 200, { entries: [], total: 0, configured: true, logFile });
-    return;
-  }
-
-  const url = new URL(req.url ?? "/", "http://localhost");
-  const q      = url.searchParams.get("q")?.toLowerCase() ?? "";
-  const level  = url.searchParams.get("level") ?? "";
-  const from   = url.searchParams.get("from") ?? "";
-  const to     = url.searchParams.get("to") ?? "";
-  const limit  = Math.min(parseInt(url.searchParams.get("limit") ?? "200", 10), 500);
-  const offset = parseInt(url.searchParams.get("offset") ?? "0", 10);
-
-  const entries: LogEntry[] = [];
-
   await new Promise<void>((resolve, reject) => {
     let readStream: fsSync.ReadStream;
     try {
-      readStream = fsSync.createReadStream(logFile, { encoding: "utf8" });
-    } catch (err) {
-      reject(err);
-      return;
-    }
+      readStream = fsSync.createReadStream(filePath, { encoding: "utf8" });
+    } catch (err) { reject(err); return; }
 
     const splitter = split2();
     readStream.pipe(splitter);
@@ -436,20 +429,88 @@ async function handleGetLogs(
       let entry: LogEntry;
       try { entry = JSON.parse(trimmed) as LogEntry; } catch { return; }
 
-      if (level && entry.level !== level) return;
-      if (from && entry.ts && entry.ts < from) return;
-      if (to   && entry.ts && entry.ts > to)   return;
-      if (q) {
+      if (filters.level && entry.level !== filters.level) return;
+      if (filters.event && (!entry.event || !entry.event.toLowerCase().includes(filters.event))) return;
+      if (filters.from && entry.ts && entry.ts < filters.from) return;
+      if (filters.to   && entry.ts && entry.ts > filters.to)   return;
+      if (filters.q) {
         const haystack = JSON.stringify(entry).toLowerCase();
-        if (!haystack.includes(q)) return;
+        if (!haystack.includes(filters.q)) return;
       }
-      entries.push(entry);
+      out.push(entry);
     });
 
     splitter.on("end",   resolve);
     splitter.on("error", reject);
     readStream.on("error", reject);
-  }).catch(() => { /* file read errors → return what we have */ });
+  }).catch(() => { /* non-fatal — return whatever was collected */ });
+}
+
+/**
+ * Returns the list of daily log files that fall within the query's time
+ * range, sorted oldest → newest. Includes one day of buffer on each side
+ * to handle local-timezone vs UTC boundary edge cases; the entry-level
+ * timestamp filter is always the authoritative filter.
+ */
+function dailyFilesInRange(logDir: string, from: string, to: string): string[] {
+  let files: string[];
+  try { files = fsSync.readdirSync(logDir); }
+  catch { return []; }
+
+  // Compute inclusive file-date bounds with ±1 day buffer for tz safety.
+  const fromFileBound = from
+    ? (() => { const d = new Date(from); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); })()
+    : "";
+  const toFileBound = to
+    ? (() => { const d = new Date(to);   d.setDate(d.getDate() + 1); return d.toISOString().slice(0, 10); })()
+    : "";
+
+  return files
+    .map((f) => { const m = DAILY_LOG_PATTERN.exec(f); return m ? { file: f, date: m[1]! } : null; })
+    .filter((x): x is { file: string; date: string } => x !== null)
+    .filter(({ date }) => (!fromFileBound || date >= fromFileBound) && (!toFileBound || date <= toFileBound))
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map(({ file }) => path.join(logDir, file));
+}
+
+async function handleGetLogs(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  const url    = new URL(req.url ?? "/", "http://localhost");
+  const q      = url.searchParams.get("q")?.toLowerCase() ?? "";
+  const level  = url.searchParams.get("level") ?? "";
+  const event  = url.searchParams.get("event")?.toLowerCase() ?? "";
+  const from   = url.searchParams.get("from") ?? "";
+  const to     = url.searchParams.get("to") ?? "";
+  const limit  = Math.min(parseInt(url.searchParams.get("limit") ?? "200", 10), 500);
+  const offset = parseInt(url.searchParams.get("offset") ?? "0", 10);
+
+  const filters = { q, level, event, from, to };
+  const entries: LogEntry[] = [];
+
+  if (isDailyRotation()) {
+    // ── Daily rotation: read across multiple dated files ──────────────────────
+    const logDir = getLogDir();
+    const files  = dailyFilesInRange(logDir, from, to);
+
+    if (files.length === 0) {
+      jsonResponse(res, 200, { entries: [], total: 0, configured: true });
+      return;
+    }
+
+    for (const filePath of files) {
+      await streamLogFile(filePath, entries, filters);
+    }
+  } else {
+    // ── Legacy: single named file ─────────────────────────────────────────────
+    const logFile = process.env["ORAGER_LOG_FILE"] ?? DEFAULT_LOG_PATH;
+    if (!fsSync.existsSync(logFile)) {
+      jsonResponse(res, 200, { entries: [], total: 0, configured: true });
+      return;
+    }
+    await streamLogFile(logFile, entries, filters);
+  }
 
   const total = entries.length;
   const page  = entries.slice(offset, offset + limit);
@@ -465,18 +526,6 @@ async function handleLogStream(
   _req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<void> {
-  const logFile = process.env["ORAGER_LOG_FILE"] ?? DEFAULT_LOG_PATH;
-  if (!fsSync.existsSync(logFile)) {
-    res.writeHead(200, {
-      "Content-Type": "text/event-stream; charset=utf-8",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-    });
-    res.write("data: " + JSON.stringify({ configured: true, entries: [] }) + "\n\n");
-    res.end();
-    return;
-  }
-
   res.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache",
@@ -485,33 +534,39 @@ async function handleLogStream(
   });
   res.write(": connected\n\n");
 
-  // Tail: watch for file changes, read new bytes since last position
+  // Resolve the initial file to tail.
+  const resolveCurrentFile = (): string =>
+    isDailyRotation()
+      ? dailyLogPath(getTodayDateStr())
+      : (process.env["ORAGER_LOG_FILE"] ?? DEFAULT_LOG_PATH);
+
+  let watchedFile = resolveCurrentFile();
   let filePos = 0;
   try {
-    const stat = await fs.stat(logFile);
-    filePos = stat.size; // start from end of file (only new lines)
+    const stat = await fs.stat(watchedFile);
+    filePos = stat.size; // start from the end — only stream new lines
   } catch { /* file may not exist yet */ }
 
   let closed = false;
-  res.on("close", () => { closed = true; fsSync.unwatchFile(logFile); });
+  res.on("close", () => {
+    closed = true;
+    fsSync.unwatchFile(watchedFile);
+  });
 
-  fsSync.watchFile(logFile, { interval: 500 }, async () => {
-    if (closed) return;
+  /** Read and emit any new bytes appended to watchedFile since filePos. */
+  const readNewBytes = async (): Promise<void> => {
     try {
-      const stat = await fs.stat(logFile);
-      if (stat.size <= filePos) return; // truncated or unchanged
+      const stat = await fs.stat(watchedFile);
+      if (stat.size <= filePos) return; // unchanged
       const buf = Buffer.alloc(stat.size - filePos);
-      const fd  = fsSync.openSync(logFile, "r");
+      const fd  = fsSync.openSync(watchedFile, "r");
       try {
         fsSync.readSync(fd, buf, 0, buf.length, filePos);
       } finally {
-        // L-08: Ensure fd is closed even if readSync throws.
         fsSync.closeSync(fd);
       }
       filePos = stat.size;
-
-      const lines = buf.toString("utf8").split("\n");
-      for (const line of lines) {
+      for (const line of buf.toString("utf8").split("\n")) {
         const trimmed = line.trim();
         if (!trimmed) continue;
         try {
@@ -519,8 +574,27 @@ async function handleLogStream(
           res.write("data: " + JSON.stringify(entry) + "\n\n");
         } catch { /* skip malformed lines */ }
       }
-    } catch { /* ignore */ }
-  });
+    } catch { /* non-fatal */ }
+  };
+
+  let onFileChange: () => Promise<void>;
+  onFileChange = async () => {
+    if (closed) return;
+
+    // Midnight rollover: if the expected file path has changed, switch to it.
+    const expectedFile = resolveCurrentFile();
+    if (expectedFile !== watchedFile) {
+      fsSync.unwatchFile(watchedFile);
+      watchedFile = expectedFile;
+      filePos = 0; // read from the start of the new daily file
+      fsSync.watchFile(watchedFile, { interval: 500 }, onFileChange);
+      // Fall through to read any lines already written to the new file.
+    }
+
+    await readNewBytes();
+  };
+
+  fsSync.watchFile(watchedFile, { interval: 500 }, onFileChange);
 }
 
 // ── Telemetry API ─────────────────────────────────────────────────────────────

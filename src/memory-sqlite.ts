@@ -382,6 +382,43 @@ export async function searchMemoryFts(
 }
 
 /**
+ * FTS5 full-text search across multiple memoryKeys simultaneously.
+ * Returns non-expired entries matching the query from any of the given keys,
+ * up to `limit` total results. When `keys` has exactly one element this is
+ * semantically identical to `searchMemoryFts`.
+ */
+export async function searchMemoryFtsMulti(
+  keys: string[],
+  query: string,
+  limit = 20,
+): Promise<MemoryEntry[]> {
+  if (keys.length === 0) return [];
+  if (keys.length === 1) return searchMemoryFts(keys[0], query, limit);
+
+  const db = await getDb();
+  const now = new Date().toISOString();
+
+  const sanitized = query.replace(/["*^()[\]{}]/g, " ").trim();
+  if (!sanitized) return [];
+  const ftsQuery = `"${sanitized.replace(/"/g, '""')}"`;
+
+  const placeholders = keys.map(() => "?").join(",");
+  const rows = db.prepare(`
+    SELECT m.id, m.memory_key, m.content, m.tags, m.created_at, m.expires_at,
+           m.run_id, m.importance, m.embedding, m.embedding_model
+    FROM memory_entries_fts f
+    JOIN memory_entries m ON m.rowid = f.rowid
+    WHERE memory_entries_fts MATCH ?
+      AND m.memory_key IN (${placeholders})
+      AND (m.expires_at IS NULL OR m.expires_at > ?)
+    ORDER BY rank
+    LIMIT ?
+  `).all(ftsQuery, ...keys, now, limit) as unknown as MemoryRow[];
+
+  return rows.map(rowToEntry);
+}
+
+/**
  * Returns all distinct memory_key values in the database.
  */
 export async function listMemoryKeysSqlite(): Promise<string[]> {

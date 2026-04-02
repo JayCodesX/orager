@@ -20,7 +20,7 @@ import { makeTodoTools } from "./tools/todo.js";
 import { makeRememberTool } from "./tools/remember.js";
 import { makeWriteMemoryTool, makeReadMemoryTool, loadAutoMemory } from "./tools/auto-memory.js";
 import { loadMemoryStoreAny, saveMemoryStoreAny, addMemoryEntry, pruneExpired, renderMemoryBlock, renderRetrievedBlock, retrieveEntries, retrieveEntriesWithEmbeddings, memoryKeyFromCwd, buildMemoryKeyFromRepo, shouldUseFtsRetrieval } from "./memory.js";
-import { isSqliteMemoryEnabled, searchMemoryFts, loadMasterContext, addMemoryEntrySqlite, getMemoryEntryCount, getEntriesForDistillation, deleteMemoryEntriesByIds } from "./memory-sqlite.js";
+import { isSqliteMemoryEnabled, searchMemoryFts, searchMemoryFtsMulti, loadMasterContext, addMemoryEntrySqlite, getMemoryEntryCount, getEntriesForDistillation, deleteMemoryEntriesByIds } from "./memory-sqlite.js";
 import { fireHooks } from "./hooks.js";
 import type { HookConfig, HookPayload } from "./hooks.js";
 import { loadSettings, mergeSettings, loadClaudeDesktopMcpServers } from "./settings.js";
@@ -566,11 +566,19 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     : 6000;
   // Use provided memoryKey, or derive from repoUrl (stable across workspace moves),
   // or fall back to CWD-based keying for standalone use.
-  const effectiveMemoryKey = (typeof opts.memoryKey === "string" && opts.memoryKey.trim())
-    ? opts.memoryKey.trim()
-    : opts.repoUrl
-      ? buildMemoryKeyFromRepo(opts.agentId ?? "default", opts.repoUrl)
-      : memoryKeyFromCwd(cwd);
+  // When memoryKey is an array: index 0 is the primary write target; all elements are
+  // read sources. A single-element array is treated identically to a plain string.
+  const _resolvedDefault = opts.repoUrl
+    ? buildMemoryKeyFromRepo(opts.agentId ?? "default", opts.repoUrl)
+    : memoryKeyFromCwd(cwd);
+  const effectiveMemoryKeys: string[] = Array.isArray(opts.memoryKey)
+    ? opts.memoryKey.map((k) => k.trim()).filter(Boolean)
+    : (typeof opts.memoryKey === "string" && opts.memoryKey.trim())
+      ? [opts.memoryKey.trim()]
+      : [_resolvedDefault];
+  if (effectiveMemoryKeys.length === 0) effectiveMemoryKeys.push(_resolvedDefault);
+  // Primary key: write target + master context + checkpoints + distillation.
+  const effectiveMemoryKey = effectiveMemoryKeys[0]!;
   // ── Layer 1: Master context (always loaded when SQLite is available) ─────────
   // Injected as the first memory block so it anchors every session with stable
   // product/project context. Non-fatal — failure must never abort a run.
@@ -604,6 +612,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       // Phase 7: track which retrieval path fired for observability logging.
       let _retrievalPath = "full_store";
       let _retrievalCount = 0;
+      const _retrievalStartMs = Date.now();
       if (retrieval === "embedding" && opts.memoryEmbeddingModel && apiKey) {
         try {
           // Check in-memory cache before calling the embeddings API
@@ -617,7 +626,11 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             });
             setCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt, queryVec);
           }
-          const embEntries = retrieveEntriesWithEmbeddings(memStore, queryVec ?? [], { topK: 12 });
+          const embEntries = await withSpan("memory.retrieve_embeddings", {
+            totalEntries: memStore.entries.length,
+            topK: 12,
+            path: "embedding",
+          }, async () => retrieveEntriesWithEmbeddings(memStore, queryVec ?? [], { topK: 12 }));
           memBlock = renderRetrievedBlock(embEntries, memoryMaxChars);
           _retrievalPath = "embedding"; _retrievalCount = embEntries.length;
         } catch {
@@ -629,7 +642,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         }
       } else if (shouldUseFtsRetrieval(opts.memoryRetrieval)) {
         // SQLite + local retrieval: use FTS5 for efficient full-text search
-        const ftsResults = await searchMemoryFts(effectiveMemoryKey, prompt, 12);
+        // searchMemoryFtsMulti searches across all read-source namespaces in one query.
+        const ftsResults = await searchMemoryFtsMulti(effectiveMemoryKeys, prompt, 12);
         // Deduplicate by id and render
         const seen = new Set<string>();
         const deduped = ftsResults.filter((e) => {
@@ -658,7 +672,11 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
               }
             }
             const embResults = queryVec && queryVec.length > 0
-              ? retrieveEntriesWithEmbeddings(memStore, queryVec, { topK: 12 })
+              ? await withSpan("memory.retrieve_embeddings", {
+                  totalEntries: memStore.entries.length,
+                  topK: 12,
+                  path: "fts_embedding_fallback",
+                }, async () => retrieveEntriesWithEmbeddings(memStore, queryVec!, { topK: 12 }))
               : [];
             if (embResults.length > 0) {
               onLog?.("stderr", `[orager] FTS miss — embedding fallback retrieved ${embResults.length} entries\n`);
@@ -697,6 +715,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         path: _retrievalPath,
         count: _retrievalCount,
         totalEntries: memStore.entries.length,
+        durationMs: Date.now() - _retrievalStartMs,
       });
     } catch { /* non-fatal — memory load failure must never abort a run */ }
     allTools.push(makeRememberTool(
@@ -705,7 +724,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       opts.memoryRetrieval === "embedding" && opts.memoryEmbeddingModel
         ? { apiKey, model: opts.memoryEmbeddingModel }
         : null,
-      effectiveMemoryKey, // contextId — same namespace as memoryKey
+      effectiveMemoryKey, // contextId — same namespace as primary memoryKey
+      effectiveMemoryKeys.length > 1 ? effectiveMemoryKeys : undefined,
     ));
   }
 
