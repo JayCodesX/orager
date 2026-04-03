@@ -39,6 +39,8 @@ export interface BaseModelSpec {
   isDefault?: boolean;
   /** Note shown to users when selecting this model. */
   note?: string;
+  /** Input modalities this model supports. Default: ["text"]. */
+  modalities?: Array<"text" | "vision">;
 }
 
 /**
@@ -101,6 +103,39 @@ export const SUPPORTED_BASE_MODELS: BaseModelSpec[] = [
     requiresApiKey: false,
     note: "Reasoning-optimised distillation of DeepSeek-R1. Best for multi-step problem solving tasks.",
   },
+  {
+    id: "meta-llama/Llama-3.2-11B-Vision-Instruct",
+    label: "Llama 3.2 Vision 11B Instruct",
+    size: "11B",
+    minVramGb: 12,
+    appleSilicon: true,
+    nvidia: true,
+    requiresApiKey: false,
+    modalities: ["text", "vision"],
+    note: "Meta's multimodal Llama. Supports image+text prompts. Uses mlx-vlm on Apple Silicon.",
+  },
+  {
+    id: "Qwen/Qwen2-VL-7B-Instruct",
+    label: "Qwen2-VL 7B Instruct",
+    size: "7B",
+    minVramGb: 10,
+    appleSilicon: true,
+    nvidia: true,
+    requiresApiKey: false,
+    modalities: ["text", "vision"],
+    note: "Strong vision-language model. Handles documents, charts, and natural images well.",
+  },
+  {
+    id: "microsoft/Phi-3.5-vision-instruct",
+    label: "Phi-3.5 Vision Instruct",
+    size: "4B",
+    minVramGb: 6,
+    appleSilicon: true,
+    nvidia: true,
+    requiresApiKey: false,
+    modalities: ["text", "vision"],
+    note: "Compact multimodal model. Best for resource-constrained devices that need vision support.",
+  },
 ];
 
 /** The default base model ID used when none is configured. */
@@ -121,6 +156,14 @@ export function isSupportedBaseModel(modelId: string): boolean {
  */
 export function getBaseModelSpec(modelId: string): BaseModelSpec | undefined {
   return SUPPORTED_BASE_MODELS.find((m) => m.id === modelId);
+}
+
+/**
+ * Returns true if the given base model supports vision (image) inputs.
+ */
+export function modelSupportsVision(modelId: string): boolean {
+  const spec = getBaseModelSpec(modelId);
+  return spec?.modalities?.includes("vision") ?? false;
 }
 
 // ── Teacher model registry ────────────────────────────────────────────────────

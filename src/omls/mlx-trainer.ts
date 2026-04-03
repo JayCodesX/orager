@@ -21,6 +21,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { TrainingBatch } from "./trajectory-buffer.js";
+import { modelSupportsVision } from "./supported-models.js";
 
 export interface MLXTrainOptions {
   baseModel: string;
@@ -96,13 +97,20 @@ async function writeMlxTrainData(batch: TrainingBatch, outPath: string): Promise
 // ── Training script ───────────────────────────────────────────────────────────
 
 /**
- * Generate the mlx_lm.lora command arguments.
+ * Generate the MLX training command arguments.
+ *
+ * Vision models (Llama 3.2 Vision, Qwen2-VL, Phi-3.5-Vision) use mlx_vlm.lora
+ * instead of mlx_lm.lora — same flag surface, different module.
+ * Text-only models continue to use mlx_lm.lora.
  */
 function buildMlxArgs(opts: MLXTrainOptions, dataFile: string): string[] {
   const iters = Math.max(100, (opts.epochs ?? 1) * 200); // approximate: 200 iters per epoch
+  const isVision = modelSupportsVision(opts.baseModel);
+  // mlx_vlm.lora for vision models; mlx_lm.lora for text-only
+  const module = isVision ? "mlx_vlm.lora" : "mlx_lm.lora";
 
   return [
-    "-m", "mlx_lm.lora",
+    "-m", module,
     "--model", opts.baseModel,
     "--train",
     "--data", path.dirname(dataFile),
@@ -153,8 +161,11 @@ export async function trainWithMLX(opts: MLXTrainOptions): Promise<MLXTrainResul
   // ── Dry-run path ────────────────────────────────────────────────────────────
   if (opts.dryRun) {
     const iters = Math.max(100, (opts.epochs ?? 1) * 200);
+    const isVision = modelSupportsVision(opts.baseModel);
+    const pkg = isVision ? "mlx-vlm" : "mlx-lm";
     log(`[mlx] dry-run: would train ${opts.baseModel} for ${iters} iters on ${sampleCount} samples\n`);
     log(`[mlx] dry-run: adapter output → ${opts.adapterDir}\n`);
+    log(`[mlx] dry-run: package: ${pkg} (pip install ${pkg})\n`);
     log(`[mlx] dry-run: estimated duration: 15–30 min on M1 Pro 16 GB\n`);
     return { success: true, durationMs: Date.now() - startMs };
   }
@@ -184,10 +195,11 @@ export async function trainWithMLX(opts: MLXTrainOptions): Promise<MLXTrainResul
     });
 
     proc.on("error", (err) => {
+      const pkg = modelSupportsVision(opts.baseModel) ? "mlx-vlm" : "mlx-lm";
       resolve({
         success: false,
         durationMs: Date.now() - startMs,
-        error: `failed to spawn python3: ${err.message}. Run: pip install mlx-lm`,
+        error: `failed to spawn python3: ${err.message}. Run: pip install ${pkg}`,
       });
     });
   });
