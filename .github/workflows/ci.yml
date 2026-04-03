@@ -87,3 +87,35 @@ jobs:
 
       - name: Smoke test — help flag
         run: ./bin/orager-linux-x64 --help || true
+
+  # Quality gates — enforced by branch protection
+  pr-checks:
+    name: PR quality gates
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check PR title length
+        run: |
+          TITLE="${{ github.event.pull_request.title }}"
+          if [ ${#TITLE} -gt 72 ]; then
+            echo "::error::PR title exceeds 72 characters (${#TITLE})"
+            exit 1
+          fi
+
+      - name: Check for version bump on src/ changes
+        run: |
+          # Only require version bump if source code changed
+          if git diff --name-only origin/main...HEAD | grep -q "^src/"; then
+            if ! git diff origin/main...HEAD -- package.json | grep -q '"version"'; then
+              echo "::warning::Source code changed but package.json version was not bumped"
+            fi
+          fi

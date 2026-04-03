@@ -1,0 +1,98 @@
+name: Docs
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/**"
+      - "src/types.ts"
+      - "README.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build docs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Generate API docs
+        run: |
+          npx typedoc src/types.ts \
+            --out docs-site/api \
+            --name "orager API" \
+            --readme none \
+            --excludePrivate \
+            --excludeInternal
+
+      - name: Build docs site
+        run: |
+          mkdir -p docs-site
+
+          # Copy ADRs
+          cp -r docs/adr docs-site/adr 2>/dev/null || true
+
+          # Generate index page
+          cat > docs-site/index.html <<'INDEXEOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <title>orager docs</title>
+            <style>
+              body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; }
+              a { color: #0066cc; }
+              code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; }
+              h1 { border-bottom: 2px solid #eee; padding-bottom: 0.5rem; }
+            </style>
+          </head>
+          <body>
+            <h1>orager</h1>
+            <p>Production-grade AI agent runtime.</p>
+            <ul>
+              <li><a href="api/">API Reference</a> — generated from <code>types.ts</code></li>
+              <li><a href="adr/">Architecture Decision Records</a></li>
+            </ul>
+            <p><a href="https://github.com/JayCodesX/orager">GitHub</a> |
+               <a href="https://www.npmjs.com/package/@orager/core">npm</a></p>
+          </body>
+          </html>
+          INDEXEOF
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs-site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

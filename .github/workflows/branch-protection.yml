@@ -1,0 +1,75 @@
+name: Branch Protection
+
+on:
+  workflow_dispatch:
+    inputs:
+      require_approvals:
+        description: "Number of required PR approvals (0 to disable)"
+        required: false
+        default: "0"
+      require_signed_commits:
+        description: "Require signed commits"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: read
+
+jobs:
+  configure:
+    name: Set branch protection rules
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Apply branch protection to main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          OWNER="${{ github.repository_owner }}"
+          REPO="${{ github.event.repository.name }}"
+          APPROVALS=${{ inputs.require_approvals || '0' }}
+          SIGNED=${{ inputs.require_signed_commits || 'false' }}
+
+          # Build the review requirement block
+          if [ "$APPROVALS" -gt 0 ]; then
+            REVIEW_BLOCK='"required_pull_request_reviews": {
+              "required_approving_review_count": '"$APPROVALS"',
+              "dismiss_stale_reviews": true,
+              "require_code_owner_reviews": false
+            },'
+          else
+            REVIEW_BLOCK='"required_pull_request_reviews": null,'
+          fi
+
+          # Apply protection rules via GitHub API
+          gh api \
+            --method PUT \
+            "repos/${OWNER}/${REPO}/branches/main/protection" \
+            --input - <<EOF
+          {
+            "required_status_checks": {
+              "strict": true,
+              "contexts": ["Typecheck + Test"]
+            },
+            ${REVIEW_BLOCK}
+            "enforce_admins": true,
+            "restrictions": null,
+            "required_linear_history": true,
+            "allow_force_pushes": false,
+            "allow_deletions": false,
+            "required_signatures": ${SIGNED}
+          }
+          EOF
+
+          echo "✅ Branch protection applied to main"
+          echo "   - Required checks: Typecheck + Test (must be up-to-date)"
+          echo "   - Required approvals: ${APPROVALS}"
+          echo "   - Force push: blocked"
+          echo "   - Branch deletion: blocked"
+          echo "   - Linear history: required"
+          echo "   - Signed commits: ${SIGNED}"
+          echo "   - Admin enforcement: yes"
