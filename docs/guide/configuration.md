@@ -51,6 +51,15 @@ The primary configuration file. All fields are optional — omitting a field use
   "telemetry": {
     "enabled": false,
     "endpoint": "http://localhost:4318"
+  },
+  "providers": {
+    "openrouter": {
+      "siteUrl": "https://myapp.com",
+      "siteName": "MyApp"
+    },
+    "ollama": {
+      "enabled": false
+    }
   }
 }
 ```
@@ -159,6 +168,86 @@ Configure OpenTelemetry trace and metric export. Disabled by default.
 |-------|------|---------|-------------|
 | `enabled` | `boolean` | `false` | Enable OTLP trace/metric export |
 | `endpoint` | `string` | — | OTLP HTTP endpoint (e.g. `http://localhost:4318`). Overrides `OTEL_EXPORTER_OTLP_ENDPOINT` |
+
+---
+
+### `providers`
+
+Scopes provider-specific configuration to its own namespace instead of polluting the root config (ADR-0010). All fields are optional — when absent, flat config fields (`apiKey`, `siteUrl`, `--ollama`, etc.) are used as fallback.
+
+```json
+{
+  "providers": {
+    "openrouter": {
+      "apiKey": "sk-or-...",
+      "apiKeys": ["sk-or-backup1", "sk-or-backup2"],
+      "siteUrl": "https://myapp.com",
+      "siteName": "MyApp",
+      "preset": "my-preset",
+      "transforms": ["middle-out"],
+      "zdr": true,
+      "dataCollection": "deny",
+      "sort": "price",
+      "quantizations": ["fp8"],
+      "require_parameters": false
+    },
+    "anthropic": {
+      "apiKey": "sk-ant-..."
+    },
+    "ollama": {
+      "enabled": true,
+      "baseUrl": "http://localhost:11434",
+      "model": "qwen2.5:7b",
+      "checkModel": true
+    }
+  }
+}
+```
+
+#### `providers.openrouter`
+
+OpenRouter-specific routing and attribution fields. Only relevant when using the OpenRouter gateway.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `apiKey` | `string` | OpenRouter API key (lowest priority — env var and CLI flag override) |
+| `apiKeys` | `string[]` | Additional keys for rotation on rate limits |
+| `siteUrl` | `string` | Sent as `HTTP-Referer` for dashboard attribution |
+| `siteName` | `string` | Sent as `X-Title` for dashboard display |
+| `preset` | `string` | Named server-side config preset slug |
+| `transforms` | `string[]` | Context transforms (e.g. `["middle-out"]`) |
+| `zdr` | `boolean` | Zero Data Retention mode |
+| `dataCollection` | `"allow" \| "deny"` | Data collection preference |
+| `sort` | `"price" \| "throughput" \| "latency"` | Sort providers by this metric |
+| `quantizations` | `string[]` | Allowed quantization levels |
+| `require_parameters` | `boolean` | Only route to providers supporting all specified parameters |
+| `provider` | `object` | Provider routing object (`order`, `ignore`, `only`, etc.) |
+
+#### `providers.anthropic`
+
+Anthropic Direct API configuration. When `apiKey` is set (or `ANTHROPIC_API_KEY` env var), requests for `anthropic/*` models bypass OpenRouter for lower latency and cost.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `apiKey` | `string` | Anthropic API key (or use `ANTHROPIC_API_KEY` env var) |
+
+#### `providers.ollama`
+
+Ollama local inference backend. Routes LLM calls to a local Ollama server — no API key required.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `boolean` | `false` | Enable Ollama backend |
+| `baseUrl` | `string` | `http://localhost:11434` | Ollama server URL (or `ORAGER_OLLAMA_BASE_URL` env var) |
+| `model` | `string` | auto-mapped | Explicit Ollama model tag (overrides automatic HuggingFace→Ollama mapping) |
+| `checkModel` | `boolean` | `true` | Verify model is pulled before starting a run |
+
+::: tip Provider priority
+When multiple providers are configured, orager resolves in this order:
+1. **Ollama** — when explicitly enabled
+2. **Anthropic Direct** — when model is `anthropic/*` and API key is set
+3. **OpenRouter** — universal fallback
+:::
 
 ---
 

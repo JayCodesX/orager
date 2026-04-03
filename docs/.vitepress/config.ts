@@ -30,6 +30,7 @@ export default defineConfig({
         { text: 'ADR-0007: OMLS Training', link: '/adr/0007-omls-opportunistic-rl-training' },
         { text: 'ADR-0008: Storage Overhaul', link: '/adr/0008-storage-architecture-overhaul' },
         { text: 'ADR-0009: Local-First Inference', link: '/adr/0009-local-first-inference-client-architecture' },
+        { text: 'ADR-0010: Provider Adapters', link: '/adr/0010-provider-adapter-system' },
       ]
     },
     socialLinks: [
