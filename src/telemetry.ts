@@ -13,7 +13,7 @@
  * render the Telemetry tab without requiring an external collector.
  */
 import crypto from "node:crypto";
-import { trace, SpanStatusCode, type Span, type Tracer } from "@opentelemetry/api";
+import { trace, context as otelContext, SpanStatusCode, type Span, type Tracer } from "@opentelemetry/api";
 
 export const TRACER_NAME = "orager";
 
@@ -22,6 +22,7 @@ export const TRACER_NAME = "orager";
 export interface BufferedSpan {
   traceId: string;
   spanId: string;
+  /** Set when this span is a child of another span (e.g. sub-agent inside agent_loop). */
   parentSpanId?: string;
   name: string;
   startTimeMs: number;
@@ -128,6 +129,13 @@ export async function withSpan<T>(
   const tracer = getTracer();
   const startTimeMs = Date.now();
 
+  // Capture the parent span ID before entering the new span's context.
+  const parentSpanId = (() => {
+    const parentCtx = trace.getSpanContext(otelContext.active());
+    const isRealId = (id: string) => /^[1-9a-f][0-9a-f]*$/.test(id);
+    return parentCtx && isRealId(parentCtx.spanId) ? parentCtx.spanId : undefined;
+  })();
+
   return tracer.startActiveSpan(name, { attributes }, async (span) => {
     let status: BufferedSpan["status"] = "unset";
     let errorMessage: string | undefined;
@@ -151,6 +159,7 @@ export async function withSpan<T>(
       _spanBuffer.push({
         traceId:      isRealId(ctx.traceId) ? ctx.traceId : crypto.randomUUID().replace(/-/g, ""),
         spanId:       isRealId(ctx.spanId)  ? ctx.spanId  : crypto.randomBytes(8).toString("hex"),
+        parentSpanId,
         name,
         startTimeMs,
         endTimeMs,

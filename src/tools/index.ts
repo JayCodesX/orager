@@ -39,4 +39,5 @@ export function getToolByName(name: string): ToolExecutor | undefined {
   return ALL_TOOLS.find((t) => t.definition.function.name === name);
 }
 
+export { makeAgentTool, buildAgentsSystemPrompt } from "./agent.js";
 export { bashTool, readFileTool, writeFileTool, strReplaceTool, editFileTool, editFilesTool, listDirTool, globTool, grepTool, webFetchTool, webSearchTool, deleteFileTool, moveFileTool, createDirTool, finishTool, notebookReadTool, notebookEditTool, toolAliases, BROWSER_TOOLS };

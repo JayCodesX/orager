@@ -39,7 +39,7 @@ import { getCurrentEndpoint } from "./omls/together-hosting.js";
 import { resolveLocalAdapterServer } from "./omls/local-adapter-server.js";
 import { processInput, detectModalitiesFromBlocks } from "./input-processor.js";
 import type { RouterSignal } from "./types.js";
-import { ALL_TOOLS, finishTool, BROWSER_TOOLS } from "./tools/index.js";
+import { ALL_TOOLS, finishTool, BROWSER_TOOLS, makeAgentTool, buildAgentsSystemPrompt } from "./tools/index.js";
 import { FINISH_TOOL_NAME } from "./tools/finish.js";
 import { promptApproval } from "./approval.js";
 import { getAgentCircuitBreaker } from "./circuit-breaker.js";
@@ -566,6 +566,13 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     if (commandsSection) systemPrompt += "\n\n" + commandsSection;
   }
 
+  // ── Available sub-agents ──────────────────────────────────────────────────
+  // Injected before the frozen boundary so it's part of the stable cached prefix.
+  if (opts.agents && Object.keys(opts.agents).length > 0) {
+    const agentsSection = buildAgentsSystemPrompt(opts.agents);
+    if (agentsSection) systemPrompt += "\n\n" + agentsSection;
+  }
+
   // Phase 4: inject autonomous memory update instruction into the frozen section
   // when memory is enabled.  Placed here (before the frozen boundary) so it is
   // part of the cached stable prefix and does not change between sessions.
@@ -657,7 +664,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   }
 
   // Merge: built-in tools + skill tools + finish tool (opt-in) + browser tools (opt-in) + caller-supplied extra tools
-  const allTools = [
+  let allTools = [
     ...ALL_TOOLS,
     ...buildSkillTools(
       skills,
@@ -671,6 +678,25 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     ...(opts.enableBrowserTools ? BROWSER_TOOLS : []),
     ...(opts.extraTools ?? []),
   ];
+
+  // ── _allowedTools filter (sub-agents) ────────────────────────────────────
+  // When spawned as a sub-agent, opts._allowedTools restricts the tool set to
+  // the names listed in the AgentDefinition. The Agent tool is never passed
+  // through (sub-agents cannot spawn further sub-agents).
+  const _allowedToolNames = (opts as { _allowedTools?: string[] })._allowedTools;
+  if (_allowedToolNames && _allowedToolNames.length > 0) {
+    const allowed = new Set(_allowedToolNames.map((n) => n.toLowerCase()));
+    allTools = allTools.filter((t) =>
+      allowed.has((t.definition.function.name ?? "").toLowerCase())
+    );
+  }
+
+  // ── Agent tool (dynamic spawning) ────────────────────────────────────────
+  // Only added when agents are configured AND we're not already inside a
+  // sub-agent (depth > 0 with no agents map means we stripped it intentionally).
+  if (opts.agents && Object.keys(opts.agents).length > 0) {
+    allTools.push(makeAgentTool(opts.agents, opts));
+  }
 
   // ── Todo tools (session-scoped) ───────────────────────────────────────────
   // Note: sessionId is set above in the session load/create block
@@ -2017,7 +2043,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       // validated payload to memory_entries.  Non-fatal — a write failure must
       // never abort the agent run.  Also save a raw checkpoint so the current
       // turn state is durably recorded whenever the model emits memory updates.
-      if (memoryEnabled && response.content) {
+      if (memoryEnabled && !opts._suppressMemoryWrite && response.content) {
         const memUpdates = parseMemoryUpdates(response.content);
         if (memUpdates.length > 0) {
           let ingested = 0;
