@@ -97,10 +97,8 @@ export async function initTelemetry(serviceName = "orager"): Promise<void> {
       // Metrics exporter not available — traces still work.
     }
 
-    // @ts-expect-error — NodeSDK constructor accepts Record<string,unknown> at runtime
-    // but its TS overload requires the concrete NodeSDKConfiguration type which
-    // doesn't expose metricReader in all SDK versions. The cast is intentional.
-    const sdk = new NodeSDK(sdkConfig);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sdk = new NodeSDK(sdkConfig as any);
     sdk.start();
     _tracer = trace.getTracer(TRACER_NAME);
     // Flush both traces and metrics on clean exit.

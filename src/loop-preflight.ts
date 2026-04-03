@@ -39,7 +39,7 @@ export async function runPreflight(
   opts: AgentLoopOptions,
   sessionId: string,
   promptContentBlocks: Array<{ type: string }> | undefined,
-  onLog?: (level: string, msg: string) => void,
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => void,
 ): Promise<PreflightResult> {
   // ── Model metadata fetch ─────────────────────────────────────────────────────
   // Skipped for the direct Anthropic path — the OpenRouter /models endpoint requires an

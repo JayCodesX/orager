@@ -48,11 +48,11 @@ export interface ToolExecCtx {
   /** Per-tool call metrics accumulated across all turns. */
   toolMetrics: Map<string, ToolMetric>;
   /** Hook call options (timeout + error mode). */
-  _hookOpts: { timeoutMs?: number; errorMode?: string };
+  _hookOpts: { timeoutMs?: number; errorMode?: "ignore" | "warn" | "fail" };
   /** Per-tool effective timeout, capped by remaining run budget. */
   _effectiveToolTimeout: (toolName: string) => number | undefined;
-  /** Log callback (stderr for warnings/errors). */
-  onLog?: (level: string, msg: string) => void;
+  /** Log callback (stdout/stderr for warnings/errors). */
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => void;
 }
 
 // ── Result type ───────────────────────────────────────────────────────────────

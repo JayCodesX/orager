@@ -22,6 +22,11 @@ import { runAgentLoop } from "./loop.js";
 import { log } from "./logger.js";
 import type { AgentLoopOptions, EmitEvent } from "./types.js";
 
+// ── Safety limit ─────────────────────────────────────────────────────────────
+// Reject any single JSON-RPC line exceeding this size to prevent OOM on a
+// runaway LLM response or malformed message. 50 MB is generous for real payloads.
+const MAX_LINE_BYTES = 50 * 1024 * 1024; // 50 MB
+
 // ── JSON-RPC 2.0 wire types ───────────────────────────────────────────────────
 
 interface JsonRpcRequest {
@@ -113,6 +118,10 @@ export async function runAgentLoopSubprocess(opts: AgentLoopOptions): Promise<vo
     rl.on("line", (line) => {
       const trimmed = line.trim();
       if (!trimmed) return;
+      if (Buffer.byteLength(trimmed) > MAX_LINE_BYTES) {
+        process.stderr.write(`[orager/subprocess] dropping oversized message from child (${Buffer.byteLength(trimmed)} bytes > ${MAX_LINE_BYTES} limit)\n`);
+        return;
+      }
       let msg: JsonRpcMessage;
       try {
         msg = JSON.parse(trimmed) as JsonRpcMessage;
@@ -211,6 +220,10 @@ export async function startSubprocessServer(): Promise<void> {
       if (received) return;
       const trimmed = line.trim();
       if (!trimmed) return;
+      if (Buffer.byteLength(trimmed) > MAX_LINE_BYTES) {
+        reject(new Error(`JSON-RPC request exceeds max size (${Buffer.byteLength(trimmed)} bytes > ${MAX_LINE_BYTES} limit)`));
+        return;
+      }
       received = true;
       try {
         const msg = JSON.parse(trimmed) as JsonRpcRequest;

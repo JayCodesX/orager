@@ -382,6 +382,7 @@ async function _fileList(opts?: { offset?: number; limit?: number }): Promise<Se
       turnCount: data.turnCount,
       cwd: data.cwd,
       trashed: data.trashed === true,
+      cumulativeCostUsd: data.cumulativeCostUsd,
     });
   }
 
