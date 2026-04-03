@@ -36,6 +36,7 @@ import { loadSkillsFromDirs, buildSkillsSystemPrompt, buildSkillTools } from "./
 import { retrieveSkills, buildSkillsPromptSection, updateSkillOutcomes } from "./skillbank.js";
 import { routeRequest, checkConfidenceToken, selectTeachers } from "./omls/confidence-router.js";
 import { getCurrentEndpoint } from "./omls/together-hosting.js";
+import { resolveLocalAdapterServer } from "./omls/local-adapter-server.js";
 import type { RouterSignal } from "./types.js";
 import { ALL_TOOLS, finishTool, BROWSER_TOOLS } from "./tools/index.js";
 import { FINISH_TOOL_NAME } from "./tools/finish.js";
@@ -601,13 +602,44 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   }
 
   // ── OMLS: load RL endpoint + select teachers (ADR-0007) ─────────────────
-  // Non-fatal — any failure leaves _rlEndpoint null (use base model).
+  // Preference order: local adapter server > Together AI cloud endpoint > base model.
+  // All failures are non-fatal — leaves _rlEndpoint null (use base model).
   let _rlEndpoint: string | null = null;
+  let _localAdapterBaseUrl: string | undefined;
   const _omlsEnabled = opts.omls?.enabled === true;
   if (_omlsEnabled) {
-    try {
-      _rlEndpoint = await getCurrentEndpoint();
-    } catch { /* non-fatal */ }
+    // 1. Try local adapter (MLX server, Apple Silicon)
+    const localEnabled = opts.omls?.localTraining?.enabled !== false;
+    if (localEnabled) {
+      try {
+        const { detectHardware } = await import("./omls/hardware-detector.js");
+        const hw = await detectHardware();
+        if (hw.recommendedBackend) {
+          const cfgBackend = opts.omls?.localTraining?.backend;
+          const backend = (cfgBackend && cfgBackend !== "auto")
+            ? cfgBackend as import("./omls/hardware-detector.js").LocalBackend
+            : hw.recommendedBackend;
+          const memKey = opts.memoryKey ?? "default";
+          const baseModelId = opts.omls?.rl?.training?.baseModel ?? "unsloth/Meta-Llama-3.1-8B-Instruct";
+          const serverInfo = await resolveLocalAdapterServer(
+            typeof memKey === "string" ? memKey : memKey[0] ?? "default",
+            baseModelId,
+            backend,
+            (msg) => onLog?.("stderr", msg),
+          );
+          if (serverInfo) {
+            _rlEndpoint = serverInfo.modelId;
+            _localAdapterBaseUrl = serverInfo.baseUrl;
+          }
+        }
+      } catch { /* non-fatal */ }
+    }
+    // 2. Fall back to Together AI cloud endpoint
+    if (!_rlEndpoint) {
+      try {
+        _rlEndpoint = await getCurrentEndpoint();
+      } catch { /* non-fatal */ }
+    }
   }
 
   // Validate extraTools names before merging
@@ -1792,8 +1824,9 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           // Per-agent user identifier for OpenRouter attribution/abuse detection.
           // Falls back to sessionId (stable UUID) when no explicit agentId is set.
           user: opts.agentId ?? sessionId,
-          // Ollama routing — when set, retry.ts dispatches to the local backend
-          _ollamaBaseUrl,
+          // Ollama routing — when set, retry.ts dispatches to the local backend.
+          // Local adapter server takes precedence over Ollama when both are active.
+          _ollamaBaseUrl: _localAdapterBaseUrl ?? _ollamaBaseUrl,
           // Stream partial tokens to consumers in real time.
           // Each delta is emitted as a separate event so the adapter can
           // forward it to Paperclip / other UIs without buffering the full turn.
