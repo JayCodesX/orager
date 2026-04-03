@@ -252,6 +252,19 @@ export async function runLocalTrainingPipeline(
 
   try {
     const version = await readAdapterVersion(memoryKey, configuredBaseModel);
+    const adapterFile = resolveAdapterPath(memoryKey, configuredBaseModel);
+
+    // Archive current adapter before overwriting (enables rollback)
+    try {
+      await fs.access(adapterFile);
+      const prevVersion = version - 1;
+      if (prevVersion >= 1) {
+        const versionedPath = path.join(adapterDir, `adapter.v${prevVersion}.safetensors`);
+        await fs.copyFile(adapterFile, versionedPath);
+        log(`[local] archived adapter v${prevVersion} → ${path.basename(versionedPath)}\n`);
+      }
+    } catch { /* no existing adapter to archive */ }
+
     const meta: AdapterMeta = {
       version,
       baseModel: configuredBaseModel,

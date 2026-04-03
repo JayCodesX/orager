@@ -193,6 +193,7 @@ COMMON OPTIONS (run & chat)
   --max-turns <n>           Maximum agent turns (default: 20)
   --max-cost-usd <n>        Hard stop when cost exceeds this value (USD)
   --memory-key <key>        Memory namespace for this run
+  --file <path>             Attach a file (image, PDF, audio, text) — repeatable
   --subprocess              Run agent in an isolated subprocess (JSON-RPC transport)
   --verbose                 Verbose logging
   --dangerously-skip-permissions  Skip all tool-use permission checks
@@ -978,7 +979,7 @@ const _FLAGS_WITH_VALUE = new Set([
   "--vision-model", "--profile", "--tools-file", "--system-prompt-file",
   "--sandbox-root", "--approval-mode", "--settings-file", "--hook-error-mode",
   "--max-spawn-depth", "--agent-id", "--repo-url", "--preset", "--transforms",
-  "--model-fallback", "--summarize-keep-recent-turns", "--stop",
+  "--model-fallback", "--summarize-keep-recent-turns", "--stop", "--file",
 ]);
 
 function collectPositionals(argv: string[]): string[] {

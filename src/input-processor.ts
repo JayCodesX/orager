@@ -7,7 +7,7 @@
  * Supported attachment types:
  *   Images (JPEG, PNG, GIF, WebP, SVG) → image_url block (base64 data URL)
  *   PDFs                               → text block (pdftotext if available, else notice)
- *   Audio (MP3, WAV, M4A, OGG, etc.)  → text block noting transcription is not yet supported
+ *   Audio (MP3, WAV, M4A, OGG, etc.)  → text block (Whisper transcription if available, else stub)
  *   Text / code / other                → text block with file contents
  *
  * The returned `ProcessedInput.modalities` set tells the confidence router
@@ -16,6 +16,7 @@
  */
 
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -108,11 +109,45 @@ async function encodePdf(filePath: string): Promise<UserMessageContentBlock> {
   }
 }
 
-function encodeAudioStub(filePath: string): UserMessageContentBlock {
+let _whisperAvailable: boolean | null = null;
+
+async function isWhisperAvailable(): Promise<boolean> {
+  if (_whisperAvailable !== null) return _whisperAvailable;
+  try {
+    await execFileAsync("which", ["whisper"], { timeout: 5_000 });
+    _whisperAvailable = true;
+  } catch {
+    _whisperAvailable = false;
+  }
+  return _whisperAvailable;
+}
+
+async function encodeAudio(filePath: string): Promise<UserMessageContentBlock> {
+  if (await isWhisperAvailable()) {
+    try {
+      const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "orager-whisper-"));
+      await execFileAsync("whisper", [filePath, "--output_format", "txt", "--output_dir", tmpDir], {
+        timeout: 120_000,
+      });
+      // Whisper outputs <basename>.txt
+      const baseName = path.basename(filePath, path.extname(filePath));
+      const txtPath = path.join(tmpDir, `${baseName}.txt`);
+      const transcript = (await fs.readFile(txtPath, "utf8")).trim();
+      // Clean up temp files
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      if (transcript) {
+        return {
+          type: "text",
+          text: `[Audio transcription: ${path.basename(filePath)}]\n${transcript}`,
+        };
+      }
+    } catch { /* Whisper failed — fall through to stub */ }
+  }
+
   return {
     type: "text",
-    text: `[Audio attachment: ${path.basename(filePath)}]\nAudio transcription is not yet supported. `
-      + `To process audio, transcribe it first with Whisper: \`pip install openai-whisper && whisper ${path.basename(filePath)}\``,
+    text: `[Audio attachment: ${path.basename(filePath)}]\nAudio transcription is not available. `
+      + `Install Whisper to enable it: \`pip install openai-whisper\``,
   };
 }
 
@@ -169,8 +204,13 @@ export async function processInput(
         break;
       }
       case "audio": {
-        blocks.push(encodeAudioStub(filePath));
-        modalities.add("audio");
+        const block = await encodeAudio(filePath);
+        blocks.push(block);
+        // If Whisper transcribed successfully, modality downgrades to text (no "audio" flag)
+        // Otherwise keep "audio" so the confidence router knows it's unprocessed
+        if (block.type !== "text" || !block.text.startsWith("[Audio transcription:")) {
+          modalities.add("audio");
+        }
         break;
       }
       case "pdf": {

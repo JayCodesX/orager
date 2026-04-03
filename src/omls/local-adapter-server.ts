@@ -228,6 +228,60 @@ export async function resolveLocalAdapterServer(
 }
 
 /**
+ * Roll back the local adapter to the previous version.
+ *
+ * Finds the highest `adapter.v<N>.safetensors` file with N < current version,
+ * swaps it back to `adapter.safetensors`, and updates `adapter.meta.json`.
+ *
+ * Returns true if rollback succeeded, false if no previous version exists.
+ */
+export async function rollbackLocalAdapter(
+  memoryKey: string,
+  baseModel: string,
+): Promise<boolean> {
+  const meta = await loadLocalAdapterMeta(memoryKey, baseModel);
+  if (!meta || meta.version <= 1) return false;
+
+  const adapterDir = resolveAdapterDir(memoryKey, baseModel);
+  const adapterFile = resolveAdapterPath(memoryKey, baseModel);
+
+  // Find the highest versioned file lower than current
+  let targetVersion: number | null = null;
+  for (let v = meta.version - 1; v >= 1; v--) {
+    const vPath = path.join(adapterDir, `adapter.v${v}.safetensors`);
+    try {
+      await fs.access(vPath);
+      targetVersion = v;
+      break;
+    } catch { /* version not found, try lower */ }
+  }
+
+  if (targetVersion === null) return false;
+
+  const versionedPath = path.join(adapterDir, `adapter.v${targetVersion}.safetensors`);
+
+  // Swap: copy versioned file back to adapter.safetensors
+  await fs.copyFile(versionedPath, adapterFile);
+
+  // Update metadata
+  const updatedMeta: AdapterMeta = {
+    ...meta,
+    version: targetVersion,
+    trainedAt: new Date().toISOString(),
+  };
+  await fs.writeFile(
+    resolveAdapterMetaPath(memoryKey, baseModel),
+    JSON.stringify(updatedMeta, null, 2) + "\n",
+    "utf8",
+  );
+
+  // Stop the running server so it picks up the rolled-back adapter on next resolve
+  await stopLocalAdapterServer(memoryKey, baseModel);
+
+  return true;
+}
+
+/**
  * Stop a running local adapter server for the given memoryKey + baseModel.
  * Reads the PID file and sends SIGTERM. Non-fatal.
  */
