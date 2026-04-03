@@ -1,4 +1,15 @@
 #!/usr/bin/env node
+/**
+ * orager CLI entry point (refactored Sprint 7).
+ *
+ * Large blocks extracted to:
+ *   src/commands/session-commands.ts  — session management handlers
+ *   src/commands/memory-command.ts    — `orager memory` subcommand
+ *   src/commands/run-command.ts       — `orager run` subcommand
+ *   src/commands/chat-command.ts      — `orager chat` subcommand
+ *   src/commands/cli-helpers.ts       — shared emit/positional helpers
+ *   src/cli/config-file-expansion.ts  — --config-file globalThis expansion
+ */
 import process from "node:process";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -7,39 +18,23 @@ import { fileURLToPath } from "node:url";
 import { runAgentLoop } from "./loop.js";
 import { emit } from "./emit.js";
 import { loadToolsFromFile } from "./tools/load-tools.js";
-import {
-  pruneOldSessions,
-  deleteTrashedSessions,
-  trashSession,
-  restoreSession,
-  deleteSession,
-  listSessions,
-  rollbackSession,
-  searchSessions,
-  compactSession,
-  forkSession,
-  loadLatestCheckpointByContextId,
-} from "./session.js";
-import type { CliOptions, EmitResultEvent, TurnModelRule, UserMessageContentBlock, AgentLoopOptions } from "./types.js";
-
+import type { EmitResultEvent, TurnModelRule, UserMessageContentBlock, AgentLoopOptions } from "./types.js";
 import { applyProfileAsync } from "./profiles.js";
 import { initTelemetry } from "./telemetry.js";
 import { runSetupWizard } from "./setup.js";
 import { startUiServer } from "./ui-server.js";
 import { createRequire } from "node:module";
-import { loadMemoryStoreAny, MEMORY_DIR } from "./memory.js";
 import { parseArgs, readStdin } from "./cli/parse-args.js";
-import { loadConfigFile, loadUserConfig } from "./cli/config-loading.js";
-import { createTrajectoryLogger, pruneOldTrajectories } from "./trajectory-logger.js";
-import { extractSkillFromTrajectory, trajectoryPath, DEFAULT_SKILLBANK_CONFIG } from "./skillbank.js";
+import { loadUserConfig } from "./cli/config-loading.js";
+import { applyConfigFileExpansion, hadConfigFile } from "./cli/config-file-expansion.js";
 import {
-  isSqliteMemoryEnabled,
-  listMemoryKeysSqlite,
-  clearMemoryStoreSqlite,
-  loadMasterContext,
-  getMemoryEntryCount,
-} from "./memory-sqlite.js";
-import readline from "node:readline";
+  handleListSessions, handleTrashSession, handleRestoreSession, handleDeleteSession,
+  handleRollbackSession, handleForkSession, handleSearchSessions, handleCompactSession,
+  handleDeleteTrashed, handleAbandonedSessions, handlePrune, handleSessionsCommand,
+} from "./commands/session-commands.js";
+import { handleMemorySubcommand } from "./commands/memory-command.js";
+import { handleRunCommand } from "./commands/run-command.js";
+import { handleChatCommand } from "./commands/chat-command.js";
 
 // ── Node.js version gate ──────────────────────────────────────────────────────
 {
@@ -62,11 +57,7 @@ const _ORAGER_VERSION: string = (() => {
   }
 })();
 
-// ── Arg parsing + stdin — see ./cli/parse-args.ts ────────────────────────────
-// parseArgs and readStdin are imported at the top of this file.
-
-
-// ── Global CLI instance lock ────────────────────────────────────────────────
+// ── Global CLI instance lock ──────────────────────────────────────────────────
 // Prevents multiple orager CLI processes from running simultaneously.
 // Skipped when spawned by the adapter (--config-file) or the daemon,
 // or when ORAGER_SKIP_PID_LOCK=1 (testing).
@@ -78,7 +69,6 @@ async function acquireCliPidLock(): Promise<void> {
   const pidData = JSON.stringify({ pid: process.pid, startedAt: Date.now() });
   await fs.mkdir(path.dirname(CLI_PID_FILE), { recursive: true });
 
-  // Try exclusive create
   try {
     await fs.writeFile(CLI_PID_FILE, pidData, { encoding: "utf8", mode: 0o600, flag: "wx" });
     _cliLockHeld = true;
@@ -87,13 +77,11 @@ async function acquireCliPidLock(): Promise<void> {
     if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
   }
 
-  // File exists — check if the holding process is still alive
   try {
     const existing = await fs.readFile(CLI_PID_FILE, "utf8");
     const parsed = JSON.parse(existing) as { pid: number };
     try {
       process.kill(parsed.pid, 0);
-      // Process is alive — reject
       process.stderr.write(
         `[orager] another instance is already running (PID ${parsed.pid}).\n` +
         `Stop it first with: kill ${parsed.pid}\n`,
@@ -112,7 +100,6 @@ async function acquireCliPidLock(): Promise<void> {
     // Can't read/parse — treat as stale
   }
 
-  // Stale lock — unlink and retry (narrow TOCTOU with exclusive create)
   for (let retry = 0; retry < 3; retry++) {
     await fs.unlink(CLI_PID_FILE).catch(() => {});
     try {
@@ -120,7 +107,6 @@ async function acquireCliPidLock(): Promise<void> {
       _cliLockHeld = true;
       return;
     } catch {
-      // Another process won the race — check if alive
       const raw = await fs.readFile(CLI_PID_FILE, "utf8").catch(() => "{}");
       const p = JSON.parse(raw) as { pid?: number };
       if (p.pid && p.pid !== process.pid) {
@@ -144,7 +130,7 @@ async function releaseCliPidLock(): Promise<void> {
   await fs.unlink(CLI_PID_FILE).catch(() => {});
 }
 
-// ── Signal handling ──────────────────────────────────────────────────────────
+// ── Signal handling ───────────────────────────────────────────────────────────
 
 let interruptSessionId = "";
 let interruptUsage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 };
@@ -170,9 +156,7 @@ function handleInterrupt(signal: string): void {
 process.on("SIGINT", () => handleInterrupt("SIGINT"));
 process.on("SIGTERM", () => handleInterrupt("SIGTERM"));
 
-// ── Main ─────────────────────────────────────────────────────────────────────
-
-// ── Help command ─────────────────────────────────────────────────────────────
+// ── Help command ──────────────────────────────────────────────────────────────
 
 function handleHelp(): void {
   process.stdout.write(`orager ${_ORAGER_VERSION} — autonomous AI agent runner
@@ -255,11 +239,8 @@ DOCS
   process.exit(0);
 }
 
-// ── Status command ────────────────────────────────────────────────────────────
+// ── Status command (no-op stub — ADR-0003) ────────────────────────────────────
 
-// ADR-0003: The always-on daemon has been removed. --status is kept as a no-op
-// stub so existing scripts that call `orager --status` get a clear message
-// rather than an unrecognised flag error.
 async function handleStatus(jsonMode = false): Promise<void> {
   const msg = "orager daemon has been removed (ADR-0003). Use `orager serve` to start the UI server.";
   if (jsonMode) {
@@ -270,7 +251,7 @@ async function handleStatus(jsonMode = false): Promise<void> {
   process.exit(1);
 }
 
-// ── Clear model cache command ─────────────────────────────────────────────────
+// ── Clear model cache ─────────────────────────────────────────────────────────
 
 async function handleClearModelCache(): Promise<void> {
   const cacheFiles = [
@@ -297,750 +278,20 @@ async function handleClearModelCache(): Promise<void> {
   process.exit(0);
 }
 
-// ── Session management subcommands ───────────────────────────────────────────
-
-async function handleListSessions(): Promise<void> {
-  const sessions = await listSessions();
-  if (sessions.length === 0) {
-    process.stdout.write("No sessions found.\n");
-    process.exit(0);
-  }
-
-  const active = sessions.filter((s) => !s.trashed);
-  const trashed = sessions.filter((s) => s.trashed);
-
-  const fmt = (s: (typeof sessions)[0]) =>
-    `  ${s.sessionId}  ${s.model.slice(0, 40).padEnd(40)}  turns:${String(s.turnCount).padStart(3)}  ${s.updatedAt.slice(0, 16).replace("T", " ")}  ${s.trashed ? "[TRASHED]" : ""}`;
-
-  if (active.length > 0) {
-    process.stdout.write(`Active sessions (${active.length}):\n`);
-    for (const s of active) process.stdout.write(fmt(s) + "\n");
-  }
-  if (trashed.length > 0) {
-    process.stdout.write(`\nTrashed sessions (${trashed.length}):\n`);
-    for (const s of trashed) process.stdout.write(fmt(s) + "\n");
-  }
-  process.exit(0);
-}
-
-async function handleTrashSession(argv: string[]): Promise<void> {
-  const idx = argv.indexOf("--trash-session");
-  const sessionId = argv[idx + 1] ?? "";
-  if (!sessionId) {
-    process.stderr.write("orager: --trash-session requires a session ID.\n");
-    process.exit(1);
-  }
-  const ok = await trashSession(sessionId);
-  if (ok) {
-    process.stdout.write(`Session ${sessionId} marked as trashed.\n`);
-  } else {
-    process.stderr.write(`Session ${sessionId} not found.\n`);
-    process.exit(1);
-  }
-  process.exit(0);
-}
-
-async function handleRestoreSession(argv: string[]): Promise<void> {
-  const idx = argv.indexOf("--restore-session");
-  const sessionId = argv[idx + 1] ?? "";
-  if (!sessionId) {
-    process.stderr.write("orager: --restore-session requires a session ID.\n");
-    process.exit(1);
-  }
-  const ok = await restoreSession(sessionId);
-  if (ok) {
-    process.stdout.write(`Session ${sessionId} restored.\n`);
-  } else {
-    process.stderr.write(`Session ${sessionId} not found.\n`);
-    process.exit(1);
-  }
-  process.exit(0);
-}
-
-async function handleDeleteSession(argv: string[]): Promise<void> {
-  const idx = argv.indexOf("--delete-session");
-  const sessionId = argv[idx + 1] ?? "";
-  if (!sessionId) {
-    process.stderr.write("orager: --delete-session requires a session ID.\n");
-    process.exit(1);
-  }
-  await deleteSession(sessionId);
-  process.stdout.write(`Session ${sessionId} deleted.\n`);
-  process.exit(0);
-}
-
-async function handleRollbackSession(argv: string[]): Promise<void> {
-  const idx = argv.indexOf("--rollback-session");
-  const sessionId = argv[idx + 1] ?? "";
-  if (!sessionId) {
-    process.stderr.write("orager: --rollback-session requires a session ID.\n");
-    process.exit(1);
-  }
-  const toIdx = argv.indexOf("--to-turn");
-  if (toIdx === -1) {
-    process.stderr.write("orager: --rollback-session requires --to-turn <n>.\n");
-    process.exit(1);
-  }
-  const toTurn = parseInt(argv[toIdx + 1] ?? "", 10);
-  if (isNaN(toTurn) || toTurn < 0) {
-    process.stderr.write("orager: --to-turn must be a non-negative integer.\n");
-    process.exit(1);
-  }
-  const result = await rollbackSession(sessionId, toTurn);
-  if (!result.ok) {
-    process.stderr.write(`Session ${sessionId} not found.\n`);
-    process.exit(1);
-  }
-  if (result.newTurnCount === result.originalTurnCount) {
-    process.stdout.write(
-      `Session ${sessionId} unchanged (already at ${result.originalTurnCount} turn(s), requested to-turn=${toTurn}).\n`,
-    );
-  } else {
-    process.stdout.write(
-      `Session ${sessionId} rolled back from turn ${result.originalTurnCount} to turn ${result.newTurnCount}.\n`,
-    );
-  }
-  process.exit(0);
-}
-
-// P-09: Fork a session — creates a new session branched from an existing one.
-async function handleForkSession(argv: string[]): Promise<{ sessionId: string; resume: boolean } | never> {
-  const idx = argv.indexOf("--fork-session");
-  const sourceId = argv[idx + 1] ?? "";
-  if (!sourceId) {
-    process.stderr.write("orager: --fork-session requires a session ID.\n");
-    process.exit(1);
-  }
-
-  const atTurnIdx = argv.indexOf("--at-turn");
-  const atTurn = atTurnIdx !== -1
-    ? parseInt(argv[atTurnIdx + 1] ?? "", 10)
-    : undefined;
-  if (atTurn !== undefined && (isNaN(atTurn) || atTurn < 0)) {
-    process.stderr.write("orager: --at-turn must be a non-negative integer.\n");
-    process.exit(1);
-  }
-
-  const shouldResume = argv.includes("--resume");
-
-  try {
-    const result = await forkSession(sourceId, atTurn !== undefined ? { atTurn } : undefined);
-    process.stdout.write(
-      `Forked session ${result.forkedFrom} → ${result.sessionId} (at turn ${result.atTurn}).\n`,
-    );
-    if (shouldResume) {
-      // Return the new session ID so the caller can resume it
-      return { sessionId: result.sessionId, resume: true };
-    }
-    process.exit(0);
-  } catch (err) {
-    process.stderr.write(`orager: fork failed: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
-  }
-}
-
-async function handleSearchSessions(argv: string[]): Promise<void> {
-  const idx = argv.indexOf("--search-sessions");
-  const query = argv[idx + 1] ?? "";
-  if (!query) {
-    process.stderr.write("orager: --search-sessions requires a query string.\n");
-    process.exit(1);
-  }
-  const limitIdx = argv.indexOf("--limit");
-  const limit = Math.min(
-    Math.max(1, parseInt((limitIdx !== -1 && argv[limitIdx + 1]) ? argv[limitIdx + 1]! : "20", 10) || 20),
-    100,
-  );
-  const offsetIdx = argv.indexOf("--offset");
-  const offset = Math.max(0, parseInt((offsetIdx !== -1 && argv[offsetIdx + 1]) ? argv[offsetIdx + 1]! : "0", 10) || 0);
-  const results = await searchSessions(query, limit, offset);
-  if (results.length === 0) {
-    process.stdout.write(`No sessions found matching: ${query}${offset > 0 ? ` (offset: ${offset})` : ""}\n`);
-  } else {
-    process.stdout.write(`Found ${results.length} session(s) matching "${query}" (limit: ${limit}, offset: ${offset}):\n`);
-    for (const s of results) {
-      process.stdout.write(`  ${s.sessionId}  ${s.model.slice(0, 40).padEnd(40)}  turns:${String(s.turnCount).padStart(3)}  ${s.updatedAt.slice(0, 16).replace("T", " ")}  ${s.cwd}\n`);
-    }
-  }
-  process.exit(0);
-}
-
-async function handleCompactSession(argv: string[]): Promise<void> {
-  const idx = argv.indexOf("--compact-session");
-  const sessionId = argv[idx + 1] ?? "";
-  if (!sessionId) {
-    process.stderr.write("orager: --compact-session requires a session ID.\n");
-    process.exit(1);
-  }
-  const apiKey = (process.env["PROTOCOL_API_KEY"] ?? "").trim();
-  if (!apiKey) {
-    process.stderr.write("orager: --compact-session requires PROTOCOL_API_KEY to be set.\n");
-    process.exit(1);
-  }
-  // Optional: --model <id> or --summarize-model <id> for the summarization call
-  const modelIdx = argv.indexOf("--model");
-  const model = (modelIdx !== -1 && argv[modelIdx + 1]) ? argv[modelIdx + 1]! : "deepseek/deepseek-chat-v3-2";
-  const sumModelIdx = argv.indexOf("--summarize-model");
-  const summarizeModel = (sumModelIdx !== -1 && argv[sumModelIdx + 1]) ? argv[sumModelIdx + 1]! : undefined;
-
-  process.stderr.write(`[orager] compacting session ${sessionId} using ${summarizeModel ?? model}…\n`);
-  try {
-    const result = await compactSession(sessionId, apiKey, model, { summarizeModel });
-    process.stdout.write(`Session ${result.sessionId} compacted (${result.turnCount} turn(s) summarized).\n`);
-    process.stdout.write(`Summary: ${result.summary}\n`);
-  } catch (err) {
-    process.stderr.write(`orager: compact failed: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
-  }
-  process.exit(0);
-}
-
-async function handleDeleteTrashed(): Promise<void> {
-  const result = await deleteTrashedSessions();
-  process.stdout.write(
-    `Deleted ${result.deleted} trashed session(s). Active sessions kept: ${result.kept}. Errors: ${result.errors}.\n`,
-  );
-  process.exit(0);
-}
-
-// ── Abandoned sessions subcommand ────────────────────────────────────────────
-
-async function handleAbandonedSessions(): Promise<void> {
-  const recoveryPath = path.join(os.homedir(), ".orager", "recovery.json");
-  let raw: string;
-  try {
-    raw = await fs.readFile(recoveryPath, "utf8");
-  } catch {
-    process.stdout.write("No abandoned session record found.\n");
-    return;
-  }
-  let recovery: { abandonedAt?: string; runs?: Array<{ runId?: string; abandonedAt?: string }> };
-  try {
-    recovery = JSON.parse(raw) as typeof recovery;
-  } catch {
-    process.stderr.write(`[orager] error: recovery file at ${recoveryPath} is corrupt\n`);
-    process.exit(1);
-    return;
-  }
-  const runs = recovery.runs ?? [];
-  if (runs.length === 0) {
-    process.stdout.write(`Abandoned at: ${recovery.abandonedAt ?? "unknown"} — no run details recorded.\n`);
-  } else {
-    process.stdout.write(`${runs.length} run(s) abandoned at ${recovery.abandonedAt ?? "unknown"}:\n`);
-    for (const run of runs) {
-      process.stdout.write(`  runId: ${run.runId ?? "unknown"}  abandonedAt: ${run.abandonedAt ?? recovery.abandonedAt ?? "unknown"}\n`);
-    }
-  }
-  process.stdout.write(`\nTo resume an abandoned session, pass the session ID with --session <id>.\n`);
-  process.stdout.write(`To clear this record: rm ${recoveryPath}\n`);
-}
-
-// ── Prune subcommand ──────────────────────────────────────────────────────────
-
-async function handlePrune(argv: string[]): Promise<void> {
-  // Parse --older-than <value> where value is e.g. "30d", "7d", "24h", "1h"
-  let olderThanMs = 30 * 24 * 60 * 60 * 1000; // default: 30 days
-  const idx = argv.indexOf("--older-than");
-  if (idx !== -1) {
-    const raw = argv[idx + 1] ?? "";
-    const match = /^(\d+(?:\.\d+)?)(d|h|m)$/.exec(raw);
-    if (match) {
-      const n = parseFloat(match[1]);
-      const unit = match[2];
-      if (unit === "d") olderThanMs = n * 24 * 60 * 60 * 1000;
-      else if (unit === "h") olderThanMs = n * 60 * 60 * 1000;
-      else if (unit === "m") olderThanMs = n * 60 * 1000;
-    } else {
-      process.stderr.write(
-        `orager: invalid --older-than value "${raw}". Use e.g. 30d, 7d, 24h, 1h.\n`
-      );
-      process.exit(1);
-    }
-  }
-
-  const days = (olderThanMs / (24 * 60 * 60 * 1000)).toFixed(1);
-  process.stderr.write(`[orager] pruning sessions older than ${days} day(s)...\n`);
-
-  const result = await pruneOldSessions(olderThanMs);
-  process.stdout.write(
-    `Pruned ${result.deleted} session(s). Kept ${result.kept}. Errors: ${result.errors}.\n`
-  );
-  process.exit(0);
-}
-
-// ── Sessions table command ───────────────────────────────────────────────────
-
-// ADR-0003: --sessions now queries the local SQLite store directly instead of
-// proxying to the removed daemon. Equivalent to --list-sessions but with a
-// richer cost-aware table format.
-async function handleSessionsCommand(argv: string[]): Promise<void> {
-  const jsonMode = argv.includes("--json");
-  const sessions = (await listSessions()).slice(0, 20);
-
-  if (jsonMode) {
-    const result = sessions.map((s) => ({
-      sessionId: s.sessionId,
-      lastRunAt: s.updatedAt,
-      cumulativeCostUsd: s.cumulativeCostUsd ?? 0,
-      runCount: s.turnCount,
-    }));
-    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
-    process.exit(0);
-  }
-
-  const header = `${"SESSION ID".padEnd(22)} ${"LAST RUN AT".padEnd(20)} ${"COST USD".padStart(10)} ${"TURNS".padStart(6)}`;
-  process.stdout.write(header + "\n");
-  process.stdout.write("-".repeat(header.length) + "\n");
-  for (const s of sessions) {
-    const id = s.sessionId.slice(0, 20).padEnd(22);
-    const lastRun = (s.updatedAt ?? "").slice(0, 16).replace("T", " ").padEnd(20);
-    const cost = `$${((s.cumulativeCostUsd ?? 0)).toFixed(4)}`.padStart(10);
-    const turns = String(s.turnCount).padStart(6);
-    process.stdout.write(`${id} ${lastRun} ${cost} ${turns}\n`);
-  }
-  process.exit(0);
-}
-
-// ── Memory subcommand ─────────────────────────────────────────────────────────
-
-async function handleMemorySubcommand(argv: string[]): Promise<void> {
-  const subIdx = argv.indexOf("memory");
-  const subArgs = argv.slice(subIdx + 1);
-  const sub = subArgs[0];
-
-  if (sub === "export") {
-    const keyIdx = subArgs.indexOf("--key");
-    const memoryKey = keyIdx !== -1 ? (subArgs[keyIdx + 1] ?? "") : "";
-    if (!memoryKey) {
-      process.stderr.write("orager memory export --key <memoryKey>\n");
-      process.exit(1);
-    }
-    const store = await loadMemoryStoreAny(memoryKey);
-    process.stdout.write(JSON.stringify(store, null, 2) + "\n");
-    process.exit(0);
-  }
-
-  if (sub === "list") {
-    if (isSqliteMemoryEnabled()) {
-      const keys = await listMemoryKeysSqlite();
-      for (const k of keys) process.stdout.write(k + "\n");
-    } else {
-      // List files in MEMORY_DIR, strip .json suffix
-      try {
-        const entries = await fs.readdir(MEMORY_DIR);
-        for (const entry of entries) {
-          if (entry.endsWith(".json")) {
-            process.stdout.write(entry.slice(0, -5) + "\n");
-          }
-        }
-      } catch {
-        // Directory doesn't exist — no memory keys
-      }
-    }
-    process.exit(0);
-  }
-
-  if (sub === "clear") {
-    const keyIdx = subArgs.indexOf("--key");
-    const memoryKey = keyIdx !== -1 ? (subArgs[keyIdx + 1] ?? "") : "";
-    if (!memoryKey) {
-      process.stderr.write("orager memory clear --key <memoryKey> [--yes]\n");
-      process.exit(1);
-    }
-    const skipConfirm = subArgs.includes("--yes");
-    if (!skipConfirm) {
-      // Interactive confirmation
-      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-      const answer = await new Promise<string>((resolve) => {
-        rl.question(`Clear all memory entries for key "${memoryKey}"? [y/N] `, resolve);
-      });
-      rl.close();
-      if (answer.trim().toLowerCase() !== "y") {
-        process.stdout.write("Aborted.\n");
-        process.exit(0);
-      }
-    }
-    if (isSqliteMemoryEnabled()) {
-      const deleted = await clearMemoryStoreSqlite(memoryKey);
-      process.stdout.write(`Cleared ${deleted} entry/entries for key "${memoryKey}".\n`);
-    } else {
-      const { MEMORY_DIR: memDir } = await import("./memory.js");
-      const sanitized = memoryKey.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 128);
-      const filePath = path.join(memDir, `${sanitized}.json`);
-      try {
-        await fs.unlink(filePath);
-        process.stdout.write(`Cleared memory for key "${memoryKey}".\n`);
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-          process.stdout.write(`No memory found for key "${memoryKey}".\n`);
-        } else {
-          process.stderr.write(`Error: ${(err as Error).message}\n`);
-          process.exit(1);
-        }
-      }
-    }
-    process.exit(0);
-  }
-
-  if (sub === "inspect") {
-    const keyIdx = subArgs.indexOf("--key");
-    const memoryKey = keyIdx !== -1 ? (subArgs[keyIdx + 1] ?? "") : "";
-    if (!memoryKey) {
-      process.stderr.write("Usage: orager memory inspect --key <memoryKey>\n");
-      process.exit(1);
-    }
-
-    const store = await loadMemoryStoreAny(memoryKey);
-    const sortedEntries = [...store.entries].sort(
-      (a, b) => b.importance - a.importance || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-    );
-
-    process.stdout.write(`Memory key:  ${memoryKey}\n`);
-    process.stdout.write(`Entries:     ${store.entries.length}\n`);
-
-    if (isSqliteMemoryEnabled()) {
-      const count = await getMemoryEntryCount(memoryKey);
-      const master = await loadMasterContext(memoryKey);
-      const checkpoint = await loadLatestCheckpointByContextId(memoryKey);
-
-      process.stdout.write(`Non-expired: ${count}\n`);
-      process.stdout.write(`Master ctx:  ${master ? `${master.length} chars` : "none"}\n`);
-      process.stdout.write(
-        `Checkpoint:  ${checkpoint
-          ? `session ${checkpoint.threadId.slice(0, 8)}… turn ${checkpoint.lastTurn}`
-          : "none"}\n`,
-      );
-
-      if (master) {
-        process.stdout.write(`\n── Master context ──────────────────────────────────\n`);
-        process.stdout.write(master.slice(0, 600) + (master.length > 600 ? "\n[...]" : "") + "\n");
-      }
-
-      if (checkpoint?.summary) {
-        process.stdout.write(`\n── Last session summary ────────────────────────────\n`);
-        process.stdout.write(
-          checkpoint.summary.slice(0, 600) + (checkpoint.summary.length > 600 ? "\n[...]" : "") + "\n",
-        );
-      }
-    }
-
-    if (sortedEntries.length > 0) {
-      process.stdout.write(`\n── Top entries (by importance) ─────────────────────\n`);
-      for (const e of sortedEntries.slice(0, 10)) {
-        const tags = e.tags?.length ? ` [${e.tags.join(",")}]` : "";
-        const preview = e.content.length > 100 ? e.content.slice(0, 100) + "…" : e.content;
-        process.stdout.write(`  imp:${e.importance}${tags}  ${preview}\n`);
-      }
-      if (sortedEntries.length > 10) {
-        process.stdout.write(`  … and ${sortedEntries.length - 10} more\n`);
-      }
-    } else {
-      process.stdout.write("No entries found.\n");
-    }
-
-    process.exit(0);
-  }
-
-  process.stderr.write("Usage: orager memory <export|list|clear|inspect> [options]\n");
-  process.exit(1);
-}
-
-// ── Config file loading + user config — see ./cli/config-loading.ts ───────────
-// loadConfigFile and loadUserConfig are imported at the top of this file.
-export { loadConfigFile }; // re-export for backward compatibility (tests import from index)
+// ── Re-exports ────────────────────────────────────────────────────────────────
+// loadConfigFile re-exported for backward compatibility (tests import from index)
+export { loadConfigFile } from "./cli/config-loading.js";
 export { runAgentWorkflow } from "./workflow.js";
 export type { AgentConfig, AgentWorkflow, AgentDefinition } from "./types.js";
 
-// ── Shared CLI helpers ────────────────────────────────────────────────────────
-
-/** Wrap a base emit fn with turn-count and cost summary written to stderr. */
-function makeCliOnEmit(baseEmit: typeof emit): (event: Parameters<typeof emit>[0]) => void {
-  const runStart = Date.now();
-  let cliTurn = 0;
-  let cliTurnStart = runStart;
-
-  return (event) => {
-    baseEmit(event);
-
-    if (event.type === "assistant") {
-      cliTurnStart = Date.now();
-    }
-    if (event.type === "tool") {
-      const elapsed = ((Date.now() - cliTurnStart) / 1000).toFixed(1);
-      process.stderr.write(`\r[turn ${cliTurn + 1} | ${elapsed}s]\x1b[K\n`);
-      cliTurn++;
-      cliTurnStart = Date.now();
-    }
-    if (event.type === "result") {
-      const totalElapsedS = Math.round((Date.now() - runStart) / 1000);
-      const { input_tokens, output_tokens, cache_read_input_tokens } = event.usage;
-      const totalTokens = input_tokens + output_tokens;
-      const cachedPct = totalTokens > 0
-        ? Math.round((cache_read_input_tokens / totalTokens) * 100)
-        : 0;
-      process.stderr.write(
-        `\r\x1b[K` +
-        `─────────────────────────────────────\n` +
-        `  Turns:    ${event.turnCount ?? cliTurn}\n` +
-        `  Tokens:   ${input_tokens.toLocaleString()} prompt / ${output_tokens.toLocaleString()} completion\n` +
-        `  Cached:   ${cache_read_input_tokens.toLocaleString()} (${cachedPct}%)\n` +
-        `  Cost:     ~$${event.total_cost_usd.toFixed(4)}\n` +
-        `  Duration: ${totalElapsedS}s\n` +
-        `  Session:  ${event.session_id.slice(0, 8)}...\n` +
-        `─────────────────────────────────────\n`,
-      );
-    }
-  };
-}
-
-// Flags that consume the next token — used when extracting positional args.
-const _FLAGS_WITH_VALUE = new Set([
-  "--model", "--resume", "--session-id", "--max-turns", "--max-cost-usd",
-  "--memory-key", "--timeout-sec", "--max-retries", "--add-dir", "--temperature",
-  "--reasoning-effort", "--reasoning-max-tokens", "--cwd", "--site-name",
-  "--site-url", "--output-format", "--summarize-at", "--summarize-model",
-  "--vision-model", "--profile", "--tools-file", "--system-prompt-file",
-  "--sandbox-root", "--approval-mode", "--settings-file", "--hook-error-mode",
-  "--max-spawn-depth", "--agent-id", "--repo-url", "--preset", "--transforms",
-  "--model-fallback", "--summarize-keep-recent-turns", "--stop", "--file",
-]);
-
-function collectPositionals(argv: string[]): string[] {
-  const positionals: string[] = [];
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
-    if (arg.startsWith("--")) {
-      if (_FLAGS_WITH_VALUE.has(arg)) i++; // skip value token
-    } else {
-      positionals.push(arg);
-    }
-  }
-  return positionals;
-}
-
-function extractFlag(argv: string[], flag: string): string | undefined {
-  const idx = argv.indexOf(flag);
-  return idx !== -1 && idx + 1 < argv.length ? argv[idx + 1] : undefined;
-}
-
-// ── orager run ────────────────────────────────────────────────────────────────
-
-/**
- * orager run [OPTIONS] "prompt"
- *
- * Non-interactive: run the agent once with the given prompt and exit.
- * Supports --model, --session-id/--resume, --max-turns, --max-cost-usd,
- * --memory-key, --subprocess, --verbose, --dangerously-skip-permissions.
- */
-async function handleRunCommand(runArgv: string[]): Promise<void> {
-  const apiKey = (process.env["PROTOCOL_API_KEY"] ?? "").trim();
-  if (!apiKey) {
-    process.stderr.write("orager: API key not set. Export PROTOCOL_API_KEY.\n");
-    process.exit(1);
-  }
-
-  const opts = parseArgs(runArgv);
-  const memoryKey = extractFlag(runArgv, "--memory-key");
-  const subprocessEnabled = runArgv.includes("--subprocess");
-
-  // Collect positional args joined as the prompt.
-  const positionals = collectPositionals(runArgv);
-  let prompt = positionals.join(" ").trim();
-
-  if (!prompt) {
-    if (!process.stdin.isTTY) {
-      prompt = await readStdin();
-    } else {
-      process.stderr.write(
-        "orager run: provide a prompt argument or pipe it via stdin\n" +
-        "  Example: orager run \"write a hello world script\"\n",
-      );
-      process.exit(1);
-    }
-  }
-
-  prompt = prompt.trim();
-  if (!prompt) {
-    process.stderr.write("orager run: empty prompt\n");
-    process.exit(1);
-  }
-
-  if (opts.sessionId) interruptSessionId = opts.sessionId;
-
-  // ── Trajectory logging (ADR-0006) ─────────────────────────────────────────
-  // Create a trajectory logger that will capture all emit events for this run.
-  // The logger is non-fatal — errors are swallowed and never abort a run.
-  const trajLogger = createTrajectoryLogger(prompt, opts.model, process.cwd());
-  const baseOnEmit = makeCliOnEmit(emit);
-  const wrappedOnEmit = (event: Parameters<typeof baseOnEmit>[0]) => {
-    trajLogger.onEvent(event);
-    baseOnEmit(event);
-  };
-
-  // Track result subtype for post-run skill extraction decision
-  let _runSubtype = "unknown";
-  let _runSessionId: string | null = opts.sessionId;
-  const resultTrackingEmit = (event: Parameters<typeof baseOnEmit>[0]) => {
-    if (event.type === "result") {
-      _runSubtype = event.subtype;
-      _runSessionId = event.session_id;
-    } else if (event.type === "system" && event.subtype === "init") {
-      _runSessionId = event.session_id;
-    }
-    wrappedOnEmit(event);
-  };
-
-  // Prune old trajectories opportunistically (non-blocking)
-  const retentionDays = DEFAULT_SKILLBANK_CONFIG.retentionDays;
-  pruneOldTrajectories(retentionDays).catch(() => { /* non-fatal */ });
-
-  try {
-    await runAgentLoop({
-      prompt,
-      model: opts.model,
-      apiKey,
-      sessionId: opts.sessionId,
-      addDirs: opts.addDirs,
-      maxTurns: opts.maxTurns,
-      maxRetries: opts.maxRetries,
-      cwd: process.cwd(),
-      dangerouslySkipPermissions: opts.dangerouslySkipPermissions,
-      verbose: opts.verbose,
-      maxCostUsd: opts.maxCostUsd,
-      memoryKey,
-      onEmit: resultTrackingEmit,
-      subprocess: subprocessEnabled ? { enabled: true } : undefined,
-      // OMLS: mark trajectory as distillable when teacher is used (ADR-0007)
-      onOmlsEscalation: (teacherModel, signal) => {
-        trajLogger.markDistillable(teacherModel, signal);
-      },
-    });
-  } finally {
-    // Finalize trajectory (flush .jsonl + .meta.json) — non-blocking
-    await trajLogger.finalize().catch(() => { /* non-fatal */ });
-
-    // Auto-extract skill on failed runs (ADR-0006)
-    const skillbank = DEFAULT_SKILLBANK_CONFIG;
-    const isFailed = _runSubtype !== "success" && _runSubtype !== "interrupted" && _runSubtype !== "unknown";
-    const _embeddingModel = process.env["ORAGER_EMBEDDING_MODEL"] ?? "";
-    if (skillbank.autoExtract && isFailed && _runSessionId && _embeddingModel) {
-      const embeddingModel = _embeddingModel;
-      const model = opts.model;
-      const sid = _runSessionId;
-      // Fire-and-forget: extraction happens after the run completes
-      extractSkillFromTrajectory(
-        trajectoryPath(sid),
-        sid,
-        model,
-        apiKey,
-        embeddingModel,
-      ).catch(() => { /* non-fatal */ });
-    }
-
-    await releaseCliPidLock();
-  }
-}
-
-// ── orager chat ───────────────────────────────────────────────────────────────
-
-/**
- * orager chat [OPTIONS]
- *
- * Interactive multi-turn conversation. Reads user messages from stdin and
- * runs the agent loop for each, preserving session context between turns.
- * Supports --model, --session-id/--resume, --max-turns, --max-cost-usd,
- * --memory-key, --verbose.
- */
-async function handleChatCommand(chatArgv: string[]): Promise<void> {
-  const apiKey = (process.env["PROTOCOL_API_KEY"] ?? "").trim();
-  if (!apiKey) {
-    process.stderr.write("orager: API key not set. Export PROTOCOL_API_KEY.\n");
-    process.exit(1);
-  }
-
-  const opts = parseArgs(chatArgv);
-  const memoryKey = extractFlag(chatArgv, "--memory-key");
-
-  let sessionId: string | null = opts.sessionId;
-  let forceResume = !!sessionId;
-
-  const isInteractive = process.stdin.isTTY;
-
-  if (isInteractive) {
-    process.stderr.write(`orager chat — model: ${opts.model}\n`);
-    if (sessionId) process.stderr.write(`Resuming session: ${sessionId}\n`);
-    process.stderr.write(`Type your message and press Enter. Ctrl+D or "exit" to quit.\n\n`);
-  }
-
-  const rl = readline.createInterface({ input: process.stdin, terminal: false });
-
-  const showPrompt = () => {
-    if (isInteractive) process.stderr.write("you> ");
-  };
-
-  showPrompt();
-
-  for await (const line of rl) {
-    const userPrompt = line.trim();
-    if (!userPrompt) { showPrompt(); continue; }
-    if (userPrompt === "exit" || userPrompt === "quit") break;
-
-    if (sessionId) interruptSessionId = sessionId;
-
-    let capturedSessionId: string | null = null;
-
-    // Chat output: write assistant text directly to stdout for readability.
-    const chatOnEmit = (event: Parameters<typeof emit>[0]) => {
-      if (event.type === "assistant") {
-        for (const block of event.message.content) {
-          if (block.type === "text") process.stdout.write(block.text);
-        }
-      } else if (event.type === "result") {
-        capturedSessionId = event.session_id;
-        process.stdout.write("\n");
-      } else {
-        emit(event);
-      }
-    };
-
-    try {
-      await runAgentLoop({
-        prompt: userPrompt,
-        model: opts.model,
-        apiKey,
-        sessionId,
-        forceResume,
-        addDirs: opts.addDirs,
-        maxTurns: opts.maxTurns,
-        maxRetries: opts.maxRetries,
-        cwd: process.cwd(),
-        dangerouslySkipPermissions: opts.dangerouslySkipPermissions,
-        verbose: opts.verbose,
-        maxCostUsd: opts.maxCostUsd,
-        memoryKey,
-        onEmit: chatOnEmit,
-      });
-    } catch (err) {
-      process.stderr.write(`\norager: error: ${err instanceof Error ? err.message : String(err)}\n`);
-    }
-
-    if (capturedSessionId) {
-      sessionId = capturedSessionId;
-      forceResume = true;
-    }
-
-    showPrompt();
-  }
-
-  if (isInteractive) process.stderr.write("\nGoodbye!\n");
-}
-
-// ── Main ─────────────────────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
   await initTelemetry();
 
   let argv = process.argv.slice(2);
+  // Track whether --config-file was present before expansion (used to skip PID lock)
+  const _hadConfigFile = hadConfigFile(argv);
 
   // ── Version ──────────────────────────────────────────────────────────────────
   if (argv.includes("--version") || argv.includes("-v")) {
@@ -1048,19 +299,19 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  // ── Help ─────────────────────────────────────────────────────────────────────
+  // ── Help ──────────────────────────────────────────────────────────────────────
   if (argv.includes("--help") || argv.includes("-h")) {
     handleHelp();
     return;
   }
 
-  // ── Setup wizard ─────────────────────────────────────────────────────────────
+  // ── Setup wizard ──────────────────────────────────────────────────────────────
   if (argv[0] === "setup") {
     await runSetupWizard(argv.slice(1));
     return;
   }
 
-  // ── UI server ─────────────────────────────────────────────────────────────
+  // ── UI server ─────────────────────────────────────────────────────────────────
   if (argv[0] === "ui") {
     const portIdx = argv.indexOf("--port");
     const port = portIdx !== -1 ? parseInt(argv[portIdx + 1] ?? "3457", 10) : 3457;
@@ -1068,50 +319,51 @@ async function main(): Promise<void> {
     return;
   }
 
-  // ── Memory subcommand ─────────────────────────────────────────────────────
+  // ── Memory subcommand ─────────────────────────────────────────────────────────
   if (argv[0] === "memory") {
     await handleMemorySubcommand(argv);
     return;
   }
 
-  // ── skills subcommand (ADR-0006) ─────────────────────────────────────────
+  // ── skills subcommand (ADR-0006) ──────────────────────────────────────────────
   if (argv[0] === "skills") {
     const { handleSkillsSubcommand } = await import("./cli/skills-command.js");
     await handleSkillsSubcommand(argv.slice(1));
     return;
   }
 
-  // ── skill-train subcommand (ADR-0007) ─────────────────────────────────────
+  // ── skill-train subcommand (ADR-0007) ─────────────────────────────────────────
   if (argv[0] === "skill-train") {
     const { handleSkillTrainSubcommand } = await import("./cli/skill-train-command.js");
     await handleSkillTrainSubcommand(argv.slice(1));
     return;
   }
 
-  // ── run subcommand ────────────────────────────────────────────────────────
+  // ── run subcommand ────────────────────────────────────────────────────────────
   if (argv[0] === "run") {
-    await handleRunCommand(argv.slice(1));
+    await handleRunCommand(argv.slice(1), {
+      releaseCliPidLock,
+      setInterruptSessionId: (id) => { interruptSessionId = id; },
+    });
     return;
   }
 
-  // ── chat subcommand ───────────────────────────────────────────────────────
+  // ── chat subcommand ───────────────────────────────────────────────────────────
   if (argv[0] === "chat") {
-    await handleChatCommand(argv.slice(1));
+    await handleChatCommand(argv.slice(1), {
+      setInterruptSessionId: (id) => { interruptSessionId = id; },
+    });
     return;
   }
 
-  // ── Subprocess server mode (JSON-RPC 2.0 over stdio) ─────────────────────
-  // Invoked by runAgentLoopSubprocess when subprocess.enabled = true.
-  // Reads a single agent/run request from stdin, runs the loop, streams
-  // agent/event notifications to stdout, exits when done.
+  // ── Subprocess server mode (JSON-RPC 2.0 over stdio) ─────────────────────────
   if (argv.includes("--subprocess")) {
     const { startSubprocessServer } = await import("./subprocess.js");
     await startSubprocessServer();
     return;
   }
 
-  // ── serve — UI-only HTTP server (alias for `orager ui`) ─────────────────────
-  // Agent runs execute in-process or via subprocess transport, not via HTTP.
+  // ── serve — UI-only HTTP server ───────────────────────────────────────────────
   if (argv.includes("--serve")) {
     const portIdx = argv.indexOf("--port");
     const port = portIdx !== -1 ? parseInt(argv[portIdx + 1] ?? "3457", 10) : 3457;
@@ -1119,19 +371,19 @@ async function main(): Promise<void> {
     return;
   }
 
-  // ── Status command ────────────────────────────────────────────────────────
+  // ── Status command ────────────────────────────────────────────────────────────
   if (argv.includes("--status")) { await handleStatus(argv.includes("--json")); return; }
 
-  // ── Sessions table command ────────────────────────────────────────────────
+  // ── Sessions table command ────────────────────────────────────────────────────
   if (argv.includes("--sessions")) { await handleSessionsCommand(argv); return; }
 
-  // ── Rotate-key command (ADR-0003: daemon removed) ────────────────────────
+  // ── Rotate-key command (ADR-0003: daemon removed) ─────────────────────────────
   if (argv.includes("--rotate-key")) {
     process.stderr.write("orager: --rotate-key has been removed (ADR-0003 — daemon is gone).\n");
     process.exit(1);
   }
 
-  // Session management commands — no API key needed
+  // ── Session management commands ───────────────────────────────────────────────
   if (argv.includes("--list-sessions"))    { await handleListSessions();         return; }
   if (argv.includes("--search-sessions"))  { await handleSearchSessions(argv);  return; }
   if (argv.includes("--trash-session"))    { await handleTrashSession(argv);    return; }
@@ -1143,196 +395,63 @@ async function main(): Promise<void> {
   if (argv.includes("--fork-session")) {
     const forkResult = await handleForkSession(argv);
     if (forkResult.resume) {
-      // Strip fork-related flags and inject --resume with the new session ID
       const cleaned: string[] = [];
       for (let fi = 0; fi < argv.length; fi++) {
-        if (argv[fi] === "--fork-session" || argv[fi] === "--at-turn") { fi++; continue; } // skip flag + value
-        if (argv[fi] === "--resume") continue; // remove bare --resume (fork already handled it)
+        if (argv[fi] === "--fork-session" || argv[fi] === "--at-turn") { fi++; continue; }
+        if (argv[fi] === "--resume") continue;
         cleaned.push(argv[fi]!);
       }
       cleaned.push("--resume", forkResult.sessionId, "--force-resume");
       argv = cleaned;
     }
-    // If handleForkSession called process.exit (no --resume), we won't reach here.
   }
   if (argv.includes("--compact-session"))  { await handleCompactSession(argv);  return; }
   if (argv.includes("--prune-sessions"))   { await handlePrune(argv);           return; }
   if (argv.includes("--abandoned-sessions")) { await handleAbandonedSessions(); return; }
   if (argv.includes("--clear-model-cache")) { await handleClearModelCache(); return; }
 
-  // ── User config (~/.orager/config.json) — base defaults ──────────────────
-  // Loaded before CLI flags so that explicit args always win. The file is
-  // NOT deleted and must not contain secrets (use config-file for those).
+  // ── User config (~/.orager/config.json) — base defaults ──────────────────────
   {
     const userCfg = await loadUserConfig();
-    // Prepend so CLI flags (and --config-file expansion below) override them
     if (userCfg.args.length > 0) {
       argv = [...userCfg.args, ...argv];
     }
-    // Complex types that can't be argv tokens — set only when not already set
     const G = globalThis as Record<string, unknown>;
-    if (userCfg.turnModelRules && !G.__oragerTurnModelRules)     G.__oragerTurnModelRules = userCfg.turnModelRules;
-    if (userCfg.promptContent  && !G.__oragerPromptContent)      G.__oragerPromptContent  = userCfg.promptContent;
-    if (userCfg.mcpServers     && !G.__oragerMcpServers)         G.__oragerMcpServers     = userCfg.mcpServers;
-    if (userCfg.hooks          && !G.__oragerHooks)              G.__oragerHooks          = userCfg.hooks;
-    if (userCfg.bashPolicy     && !G.__oragerBashPolicy)         G.__oragerBashPolicy     = userCfg.bashPolicy;
-    if (userCfg.planMode   !== undefined && !G.__oragerPlanMode)   G.__oragerPlanMode   = userCfg.planMode;
-    if (userCfg.injectContext !== undefined && !G.__oragerInjectContext) G.__oragerInjectContext = userCfg.injectContext;
+    if (userCfg.turnModelRules && !G.__oragerTurnModelRules)         G.__oragerTurnModelRules = userCfg.turnModelRules;
+    if (userCfg.promptContent  && !G.__oragerPromptContent)          G.__oragerPromptContent  = userCfg.promptContent;
+    if (userCfg.mcpServers     && !G.__oragerMcpServers)             G.__oragerMcpServers     = userCfg.mcpServers;
+    if (userCfg.hooks          && !G.__oragerHooks)                  G.__oragerHooks          = userCfg.hooks;
+    if (userCfg.bashPolicy     && !G.__oragerBashPolicy)             G.__oragerBashPolicy     = userCfg.bashPolicy;
+    if (userCfg.planMode       !== undefined && !G.__oragerPlanMode)   G.__oragerPlanMode   = userCfg.planMode;
+    if (userCfg.injectContext  !== undefined && !G.__oragerInjectContext) G.__oragerInjectContext = userCfg.injectContext;
     if (userCfg.tagToolOutputs !== undefined && !G.__oragerTagToolOutputs) G.__oragerTagToolOutputs = userCfg.tagToolOutputs;
     if (userCfg.trackFileChanges !== undefined && !G.__oragerTrackFileChanges) G.__oragerTrackFileChanges = userCfg.trackFileChanges;
     if (userCfg.enableBrowserTools !== undefined && !G.__oragerEnableBrowserTools) G.__oragerEnableBrowserTools = userCfg.enableBrowserTools;
-    if (userCfg.memory !== undefined && !G.__oragerMemory) G.__oragerMemory = userCfg.memory;
-    if (userCfg.memoryKey && !G.__oragerMemoryKey)         G.__oragerMemoryKey = userCfg.memoryKey;
+    if (userCfg.memory  !== undefined && !G.__oragerMemory)          G.__oragerMemory = userCfg.memory;
+    if (userCfg.memoryKey && !G.__oragerMemoryKey)                   G.__oragerMemoryKey = userCfg.memoryKey;
     if (userCfg.memoryMaxChars !== undefined && !G.__oragerMemoryMaxChars) G.__oragerMemoryMaxChars = userCfg.memoryMaxChars;
-    if (userCfg.apiKeys && !G.__oragerApiKeys)             G.__oragerApiKeys = userCfg.apiKeys;
-    if (userCfg.webhookUrl && !G.__oragerWebhookUrl)             G.__oragerWebhookUrl = userCfg.webhookUrl;
-    if (userCfg.webhookFormat && !G.__oragerWebhookFormat)       G.__oragerWebhookFormat = userCfg.webhookFormat;
-    if (userCfg.webhookSecret && !G.__oragerWebhookSecret)       G.__oragerWebhookSecret = userCfg.webhookSecret;
+    if (userCfg.apiKeys && !G.__oragerApiKeys)                       G.__oragerApiKeys = userCfg.apiKeys;
+    if (userCfg.webhookUrl && !G.__oragerWebhookUrl)                 G.__oragerWebhookUrl = userCfg.webhookUrl;
+    if (userCfg.webhookFormat && !G.__oragerWebhookFormat)           G.__oragerWebhookFormat = userCfg.webhookFormat;
+    if (userCfg.webhookSecret && !G.__oragerWebhookSecret)           G.__oragerWebhookSecret = userCfg.webhookSecret;
     if (userCfg.maxCostUsdSoft !== undefined && !G.__oragerMaxCostUsdSoft) G.__oragerMaxCostUsdSoft = userCfg.maxCostUsdSoft;
   }
 
-  // ── Config file expansion ──────────────────────────────────────────────────
-  // If --config-file <path> is present, load the JSON config, delete the file,
-  // and expand its contents into argv. This replaces the 50+ CLI args that
-  // the adapter used to pass; the file is deleted before any further processing
-  // so secrets are not left on disk.
-  const cfIdx = argv.indexOf("--config-file");
-  if (cfIdx !== -1) {
-    const cfPath = argv[cfIdx + 1];
-    if (!cfPath) {
-      process.stderr.write("orager: --config-file requires a path argument\n");
-      process.exit(1);
-    }
-    // Remove --config-file and its path from argv, then inject the expanded flags
-    const remaining = [...argv.slice(0, cfIdx), ...argv.slice(cfIdx + 2)];
-    const cfResult = await loadConfigFile(cfPath);
-    argv = [...remaining, ...cfResult.args];
-    // Store extras for later — they can't be represented as argv tokens
-    if (cfResult.turnModelRules) {
-      (globalThis as Record<string, unknown>).__oragerTurnModelRules = cfResult.turnModelRules;
-    }
-    if (cfResult.promptContent) {
-      (globalThis as Record<string, unknown>).__oragerPromptContent = cfResult.promptContent;
-    }
-    if (cfResult.approvalAnswer !== undefined) {
-      (globalThis as Record<string, unknown>).__oragerApprovalAnswer = cfResult.approvalAnswer;
-    }
-    if (cfResult.approvalMode !== undefined) {
-      (globalThis as Record<string, unknown>).__oragerApprovalMode = cfResult.approvalMode;
-    }
-    if (cfResult.mcpServers) {
-      (globalThis as Record<string, unknown>).__oragerMcpServers = cfResult.mcpServers;
-    }
-    if (cfResult.requireMcpServers) {
-      (globalThis as Record<string, unknown>).__oragerRequireMcpServers = cfResult.requireMcpServers;
-    }
-    if (cfResult.toolTimeouts) {
-      (globalThis as Record<string, unknown>).__oragerToolTimeouts = cfResult.toolTimeouts;
-    }
-    if (cfResult.maxSpawnDepth !== undefined) {
-      (globalThis as Record<string, unknown>).__oragerMaxSpawnDepth = cfResult.maxSpawnDepth;
-    }
-    if (cfResult.maxIdenticalToolCallTurns !== undefined) {
-      (globalThis as Record<string, unknown>).__oragerMaxIdenticalToolCallTurns = cfResult.maxIdenticalToolCallTurns;
-    }
-    if (cfResult.toolErrorBudgetHardStop !== undefined) {
-      (globalThis as Record<string, unknown>).__oragerToolErrorBudgetHardStop = cfResult.toolErrorBudgetHardStop;
-    }
-    if (cfResult.response_format) {
-      (globalThis as Record<string, unknown>).__oragerResponseFormat = cfResult.response_format;
-    }
-    if (cfResult.hooks) {
-      (globalThis as Record<string, unknown>).__oragerHooks = cfResult.hooks;
-    }
-    if (cfResult.planMode !== undefined) {
-      (globalThis as Record<string, unknown>).__oragerPlanMode = cfResult.planMode;
-    }
-    if (cfResult.injectContext !== undefined) {
-      (globalThis as Record<string, unknown>).__oragerInjectContext = cfResult.injectContext;
-    }
-    if (cfResult.tagToolOutputs !== undefined) {
-      (globalThis as Record<string, unknown>).__oragerTagToolOutputs = cfResult.tagToolOutputs;
-    }
-    if (cfResult.readProjectInstructions !== undefined) {
-      (globalThis as Record<string, unknown>).__oragerReadProjectInstructions = cfResult.readProjectInstructions;
-    }
-    if (cfResult.summarizePrompt) {
-      (globalThis as Record<string, unknown>).__oragerSummarizePrompt = cfResult.summarizePrompt;
-    }
-    if (cfResult.summarizeFallbackKeep !== undefined) {
-      (globalThis as Record<string, unknown>).__oragerSummarizeFallbackKeep = cfResult.summarizeFallbackKeep;
-    }
-    if (cfResult.webhookUrl) {
-      (globalThis as Record<string, unknown>).__oragerWebhookUrl = cfResult.webhookUrl;
-    }
-    if (cfResult.webhookFormat) {
-      (globalThis as Record<string, unknown>).__oragerWebhookFormat = cfResult.webhookFormat;
-    }
-    if (cfResult.webhookSecret) {
-      (globalThis as Record<string, unknown>).__oragerWebhookSecret = cfResult.webhookSecret;
-    }
-    if (cfResult.bashPolicy) {
-      (globalThis as Record<string, unknown>).__oragerBashPolicy = cfResult.bashPolicy;
-    }
-    if (cfResult.trackFileChanges !== undefined) {
-      (globalThis as Record<string, unknown>).__oragerTrackFileChanges = cfResult.trackFileChanges;
-    }
-    if (cfResult.enableBrowserTools !== undefined) {
-      (globalThis as Record<string, unknown>).__oragerEnableBrowserTools = cfResult.enableBrowserTools;
-    }
-    if (cfResult.maxCostUsdSoft !== undefined) {
-      (globalThis as Record<string, unknown>).__oragerMaxCostUsdSoft = cfResult.maxCostUsdSoft;
-    }
-    if (cfResult.approvalTimeoutMs !== undefined) {
-      (globalThis as Record<string, unknown>).__oragerApprovalTimeoutMs = cfResult.approvalTimeoutMs;
-    }
-    if (cfResult.hookTimeoutMs !== undefined) {
-      (globalThis as Record<string, unknown>).__oragerHookTimeoutMs = cfResult.hookTimeoutMs;
-    }
-    if (cfResult.hookErrorMode !== undefined) {
-      (globalThis as Record<string, unknown>).__oragerHookErrorMode = cfResult.hookErrorMode;
-    }
-    if (cfResult.apiKeys && cfResult.apiKeys.length > 0) {
-      (globalThis as Record<string, unknown>).__oragerApiKeys = cfResult.apiKeys;
-    }
-    if (cfResult.memory !== undefined) {
-      (globalThis as Record<string, unknown>).__oragerMemory = cfResult.memory;
-    }
-    if (cfResult.memoryKey) {
-      (globalThis as Record<string, unknown>).__oragerMemoryKey = cfResult.memoryKey;
-    }
-    if (cfResult.memoryMaxChars !== undefined) {
-      (globalThis as Record<string, unknown>).__oragerMemoryMaxChars = cfResult.memoryMaxChars;
-    }
-    if (cfResult.agentApiKey) {
-      (globalThis as Record<string, unknown>).__oragerAgentApiKey = cfResult.agentApiKey;
-    }
-    if (cfResult.memoryRetrieval !== undefined) {
-      (globalThis as Record<string, unknown>).__oragerMemoryRetrieval = cfResult.memoryRetrieval;
-    }
-    if (cfResult.memoryEmbeddingModel) {
-      (globalThis as Record<string, unknown>).__oragerMemoryEmbeddingModel = cfResult.memoryEmbeddingModel;
-    }
-  }
+  // ── Config file expansion ─────────────────────────────────────────────────────
+  argv = await applyConfigFileExpansion(argv);
 
-  // ── Acquire global CLI instance lock ──────────────────────────────────────
-  // Skip when spawned by the adapter (--config-file), when running under the
-  // daemon (ORAGER_DAEMON_MODE=1), or when testing (ORAGER_SKIP_PID_LOCK=1).
-  const _skipPidLock = cfIdx !== -1
+  // ── Acquire global CLI instance lock ──────────────────────────────────────────
+  const _skipPidLock = _hadConfigFile
     || process.env["ORAGER_DAEMON_MODE"] === "1"
     || process.env["ORAGER_SKIP_PID_LOCK"] === "1";
   if (!_skipPidLock) {
     await acquireCliPidLock();
   }
 
-  // Resolve API key
-  const apiKey =
-    process.env["PROTOCOL_API_KEY"] ?? "";
-
+  // ── Resolve API key ───────────────────────────────────────────────────────────
+  const apiKey = process.env["PROTOCOL_API_KEY"] ?? "";
   if (!apiKey) {
-    process.stderr.write(
-      "orager: API key not set. Export PROTOCOL_API_KEY.\n"
-    );
+    process.stderr.write("orager: API key not set. Export PROTOCOL_API_KEY.\n");
     process.exit(1);
   }
 
@@ -1370,7 +489,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // Keep session ID available for interrupt handler
   if (opts.sessionId) {
     interruptSessionId = opts.sessionId;
   }
@@ -1397,7 +515,7 @@ async function main(): Promise<void> {
       }
     : undefined;
 
-  // ── CLI output tracking ─────────────────────────────────────────────────────
+  // ── CLI output tracking ───────────────────────────────────────────────────────
   const runStart = Date.now();
   let cliTurn = 0;
   let cliTurnStart = Date.now();
@@ -1407,18 +525,13 @@ async function main(): Promise<void> {
       baseEmit(event);
 
       if (event.type === "assistant") {
-        // Start timing this turn
         if (cliTurn === 0) cliTurnStart = Date.now();
         else cliTurnStart = Date.now();
       }
 
       if (event.type === "tool") {
-        // A turn completed (tool calls were executed)
         const elapsed = ((Date.now() - cliTurnStart) / 1000).toFixed(1);
-        // We don't have per-turn cost here — show what we have from result
-        process.stderr.write(
-          `\r[turn ${cliTurn + 1} | ${elapsed}s]\x1b[K\n`,
-        );
+        process.stderr.write(`\r[turn ${cliTurn + 1} | ${elapsed}s]\x1b[K\n`);
         cliTurn++;
         cliTurnStart = Date.now();
       }
@@ -1450,6 +563,8 @@ async function main(): Promise<void> {
     };
   }
 
+  // ── Build loop options ────────────────────────────────────────────────────────
+  const G = globalThis as Record<string, unknown>;
   let loopOpts: AgentLoopOptions = {
     prompt,
     model: opts.model,
@@ -1496,46 +611,46 @@ async function main(): Promise<void> {
     summarizeModel: opts.summarizeModel,
     summarizeKeepRecentTurns: opts.summarizeKeepRecentTurns,
     visionModel: opts.visionModel,
-    turnModelRules: (globalThis as Record<string, unknown>).__oragerTurnModelRules as TurnModelRule[] | undefined,
-    promptContent: (globalThis as Record<string, unknown>).__oragerPromptContent as UserMessageContentBlock[] | undefined,
-    approvalAnswer: ((globalThis as Record<string, unknown>).__oragerApprovalAnswer as { choiceKey: string; toolCallId: string } | null | undefined) ?? opts.approvalAnswer ?? null,
-    approvalMode: ((globalThis as Record<string, unknown>).__oragerApprovalMode as "tty" | "question" | undefined) ?? opts.approvalMode,
+    turnModelRules: G.__oragerTurnModelRules as TurnModelRule[] | undefined,
+    promptContent: G.__oragerPromptContent as UserMessageContentBlock[] | undefined,
+    approvalAnswer: (G.__oragerApprovalAnswer as { choiceKey: string; toolCallId: string } | null | undefined) ?? opts.approvalAnswer ?? null,
+    approvalMode: (G.__oragerApprovalMode as "tty" | "question" | undefined) ?? opts.approvalMode,
     settingsFile: opts.settingsFile,
-    mcpServers: (globalThis as Record<string, unknown>).__oragerMcpServers as AgentLoopOptions["mcpServers"] | undefined,
-    requireMcpServers: (globalThis as Record<string, unknown>).__oragerRequireMcpServers as string[] | undefined,
-    toolTimeouts: (globalThis as Record<string, unknown>).__oragerToolTimeouts as Record<string, number> | undefined,
-    maxSpawnDepth: (globalThis as Record<string, unknown>).__oragerMaxSpawnDepth as number | undefined ?? opts.maxSpawnDepth,
-    maxIdenticalToolCallTurns: (globalThis as Record<string, unknown>).__oragerMaxIdenticalToolCallTurns as number | undefined ?? opts.maxIdenticalToolCallTurns,
-    toolErrorBudgetHardStop: (globalThis as Record<string, unknown>).__oragerToolErrorBudgetHardStop as boolean | undefined ?? opts.toolErrorBudgetHardStop,
-    response_format: (globalThis as Record<string, unknown>).__oragerResponseFormat as AgentLoopOptions["response_format"] | undefined,
-    hooks: (globalThis as Record<string, unknown>).__oragerHooks as AgentLoopOptions["hooks"] | undefined,
-    planMode: (globalThis as Record<string, unknown>).__oragerPlanMode as boolean | undefined ?? opts.planMode,
-    injectContext: (globalThis as Record<string, unknown>).__oragerInjectContext as boolean | undefined ?? opts.injectContext,
-    tagToolOutputs: (globalThis as Record<string, unknown>).__oragerTagToolOutputs as boolean | undefined ?? opts.tagToolOutputs,
-    readProjectInstructions: (globalThis as Record<string, unknown>).__oragerReadProjectInstructions as boolean | undefined,
-    summarizePrompt: (globalThis as Record<string, unknown>).__oragerSummarizePrompt as string | undefined,
-    summarizeFallbackKeep: (globalThis as Record<string, unknown>).__oragerSummarizeFallbackKeep as number | undefined,
-    webhookUrl: (globalThis as Record<string, unknown>).__oragerWebhookUrl as string | undefined,
-    webhookFormat: (globalThis as Record<string, unknown>).__oragerWebhookFormat as "discord" | undefined,
-    webhookSecret: (globalThis as Record<string, unknown>).__oragerWebhookSecret as string | undefined,
-    bashPolicy: (globalThis as Record<string, unknown>).__oragerBashPolicy as AgentLoopOptions["bashPolicy"] | undefined,
-    trackFileChanges: (globalThis as Record<string, unknown>).__oragerTrackFileChanges as boolean | undefined ?? opts.trackFileChanges,
-    enableBrowserTools: (globalThis as Record<string, unknown>).__oragerEnableBrowserTools as boolean | undefined ?? opts.enableBrowserTools,
+    mcpServers: G.__oragerMcpServers as AgentLoopOptions["mcpServers"] | undefined,
+    requireMcpServers: G.__oragerRequireMcpServers as string[] | undefined,
+    toolTimeouts: G.__oragerToolTimeouts as Record<string, number> | undefined,
+    maxSpawnDepth: (G.__oragerMaxSpawnDepth as number | undefined) ?? opts.maxSpawnDepth,
+    maxIdenticalToolCallTurns: (G.__oragerMaxIdenticalToolCallTurns as number | undefined) ?? opts.maxIdenticalToolCallTurns,
+    toolErrorBudgetHardStop: (G.__oragerToolErrorBudgetHardStop as boolean | undefined) ?? opts.toolErrorBudgetHardStop,
+    response_format: G.__oragerResponseFormat as AgentLoopOptions["response_format"] | undefined,
+    hooks: G.__oragerHooks as AgentLoopOptions["hooks"] | undefined,
+    planMode: (G.__oragerPlanMode as boolean | undefined) ?? opts.planMode,
+    injectContext: (G.__oragerInjectContext as boolean | undefined) ?? opts.injectContext,
+    tagToolOutputs: (G.__oragerTagToolOutputs as boolean | undefined) ?? opts.tagToolOutputs,
+    readProjectInstructions: G.__oragerReadProjectInstructions as boolean | undefined,
+    summarizePrompt: G.__oragerSummarizePrompt as string | undefined,
+    summarizeFallbackKeep: G.__oragerSummarizeFallbackKeep as number | undefined,
+    webhookUrl: G.__oragerWebhookUrl as string | undefined,
+    webhookFormat: G.__oragerWebhookFormat as "discord" | undefined,
+    webhookSecret: G.__oragerWebhookSecret as string | undefined,
+    bashPolicy: G.__oragerBashPolicy as AgentLoopOptions["bashPolicy"] | undefined,
+    trackFileChanges: (G.__oragerTrackFileChanges as boolean | undefined) ?? opts.trackFileChanges,
+    enableBrowserTools: (G.__oragerEnableBrowserTools as boolean | undefined) ?? opts.enableBrowserTools,
     autoMemory: opts.autoMemory,
     ollama: opts.ollama,
-    maxCostUsdSoft: (globalThis as Record<string, unknown>).__oragerMaxCostUsdSoft as number | undefined,
-    approvalTimeoutMs: (globalThis as Record<string, unknown>).__oragerApprovalTimeoutMs as number | undefined,
-    hookTimeoutMs: (globalThis as Record<string, unknown>).__oragerHookTimeoutMs as number | undefined,
-    hookErrorMode: (globalThis as Record<string, unknown>).__oragerHookErrorMode as AgentLoopOptions["hookErrorMode"] | undefined ?? opts.hookErrorMode,
+    maxCostUsdSoft: G.__oragerMaxCostUsdSoft as number | undefined,
+    approvalTimeoutMs: G.__oragerApprovalTimeoutMs as number | undefined,
+    hookTimeoutMs: G.__oragerHookTimeoutMs as number | undefined,
+    hookErrorMode: (G.__oragerHookErrorMode as AgentLoopOptions["hookErrorMode"] | undefined) ?? opts.hookErrorMode,
     timeoutSec: opts.timeoutSec,
-    apiKeys: (globalThis as Record<string, unknown>).__oragerApiKeys as string[] | undefined,
+    apiKeys: G.__oragerApiKeys as string[] | undefined,
     requiredEnvVars: opts.requiredEnvVars,
-    memory: (globalThis as Record<string, unknown>).__oragerMemory as boolean | undefined,
-    memoryKey: (globalThis as Record<string, unknown>).__oragerMemoryKey as string | undefined,
-    memoryMaxChars: (globalThis as Record<string, unknown>).__oragerMemoryMaxChars as number | undefined,
-    agentApiKey: (globalThis as Record<string, unknown>).__oragerAgentApiKey as string | undefined,
-    memoryRetrieval: (globalThis as Record<string, unknown>).__oragerMemoryRetrieval as "local" | "embedding" | undefined,
-    memoryEmbeddingModel: (globalThis as Record<string, unknown>).__oragerMemoryEmbeddingModel as string | undefined,
+    memory: G.__oragerMemory as boolean | undefined,
+    memoryKey: G.__oragerMemoryKey as string | undefined,
+    memoryMaxChars: G.__oragerMemoryMaxChars as number | undefined,
+    agentApiKey: G.__oragerAgentApiKey as string | undefined,
+    memoryRetrieval: G.__oragerMemoryRetrieval as "local" | "embedding" | undefined,
+    memoryEmbeddingModel: G.__oragerMemoryEmbeddingModel as string | undefined,
   };
 
   if (opts.profile) {
