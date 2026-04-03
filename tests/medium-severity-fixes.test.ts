@@ -161,16 +161,15 @@ describe("M-22: Rate limit uses socket address only", () => {
 
 // ── M-23: Health detail avoids opening a new SQLite DB ───────────────────────
 // ADR-0003: src/daemon/routes/health.ts has been removed with the daemon.
-// The ui-server /api/daemon/status endpoint is now a simple stub (no DB open).
 // ADR-0008: WASM driver removed; openDb() is the current factory.
 
 describe("M-23: Health detail DB check", () => {
-  it("ui-server daemon-status handler does not open a SQLite DB", async () => {
+  it("ui-server sessions handler does not open a SQLite DB", async () => {
     const source = await fs.readFile(
       path.join(process.cwd(), "src/ui-server.ts"),
       "utf8",
     );
-    // The stub handler must not open a new database on every call
+    // listSessions() handles DB access internally; ui-server must not open its own
     expect(source).not.toContain("openDb");
     expect(source).not.toContain("openWasmDb");
   });

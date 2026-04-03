@@ -6,8 +6,6 @@
  * Binds to 127.0.0.1 only. No authentication required (local-only).
  * Serves a React SPA from dist/ui/ and exposes /api/* routes for
  * reading and writing ~/.orager/config.json and ~/.orager/settings.json.
- *
- * The daemon (orager --serve) is a completely separate process.
  */
 import http from "node:http";
 import crypto from "node:crypto";
@@ -276,27 +274,9 @@ async function handlePostSettings(
   jsonResponse(res, 200, merged);
 }
 
-// ── Daemon API routes (ADR-0003: daemon removed — serve data directly) ────────
+// ── Sessions API ──────────────────────────────────────────────────────────────
 
-// ADR-0003: The always-on daemon has been removed. The UI server now reads
-// session data directly from the local SQLite store instead of proxying.
-
-function handleDaemonStatus(
-  _req: http.IncomingMessage,
-  res: http.ServerResponse,
-): void {
-  // Daemon is gone; report it so the UI can render an appropriate message.
-  jsonResponse(res, 200, { running: false, removed: true });
-}
-
-function handleDaemonMetrics(
-  _req: http.IncomingMessage,
-  res: http.ServerResponse,
-): void {
-  jsonResponse(res, 200, { running: false, removed: true });
-}
-
-async function handleDaemonSessions(
+async function handleSessions(
   req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<void> {
@@ -914,12 +894,8 @@ async function handleRequest(
       await handleGetSettings(req, res);
     } else if (pathname === "/api/settings" && req.method === "POST") {
       await handlePostSettings(req, res);
-    } else if (pathname === "/api/daemon/status" && req.method === "GET") {
-      await handleDaemonStatus(req, res);
-    } else if (pathname === "/api/daemon/metrics" && req.method === "GET") {
-      await handleDaemonMetrics(req, res);
-    } else if (pathname === "/api/daemon/sessions" && req.method === "GET") {
-      await handleDaemonSessions(req, res);
+    } else if (pathname === "/api/sessions" && req.method === "GET") {
+      await handleSessions(req, res);
     } else if (pathname === "/api/logs" && req.method === "GET") {
       await handleGetLogs(req, res);
     } else if (pathname === "/api/logs/stream" && req.method === "GET") {
