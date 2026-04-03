@@ -36,8 +36,11 @@ function isMcpHttpUrlSafe(raw: string): boolean {
   try { u = new URL(raw); } catch { return false; }
   if (u.protocol !== "https:" && u.protocol !== "http:") return false;
   const h = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  // Block link-local (cloud metadata services live here)
+  // Block IPv4 link-local (cloud metadata services live here)
   if (/^169\.254\./.test(h)) return false;
+  // Block IPv6 link-local (fe80::/10) — also used as metadata endpoints in
+  // some cloud environments and always outside the intended address space.
+  if (/^fe[89ab][0-9a-f]?:/i.test(h) || h.startsWith("fe80")) return false;
   // Block GCP metadata by hostname
   if (h === "metadata.google.internal" || h === "metadata.google") return false;
   // Block Azure/AWS IMDS hostname variants
@@ -155,12 +158,22 @@ export interface McpClientHandle {
 function buildHttpTransport(config: HttpMcpServerConfig, name: string): StreamableHTTPClientTransport {
   const url = new URL(config.url);
   const t = new StreamableHTTPClientTransport(url);
+
+  // Always disable automatic redirect following. The SSRF blocklist validates
+  // the configured URL but cannot inspect redirect targets at connection time.
+  // Setting redirect:"error" ensures a 3xx response from an MCP server is
+  // surfaced as an error rather than silently followed to an unvalidated host.
+  // MCP server configs must supply the final canonical URL.
+  const requestInit: RequestInit = { redirect: "error" };
+
   if (config.headers && Object.keys(config.headers).length > 0) {
     const safeHdrs = sanitizeMcpHttpHeaders(config.headers, name);
     if (Object.keys(safeHdrs).length > 0) {
-      (t as unknown as { requestInit?: RequestInit }).requestInit = { headers: safeHdrs };
+      requestInit.headers = safeHdrs;
     }
   }
+
+  (t as unknown as { requestInit?: RequestInit }).requestInit = requestInit;
   return t;
 }
 

@@ -3,6 +3,15 @@ import { resolve, isAbsolute, dirname } from "node:path";
 import type { ToolExecuteOptions, ToolExecutor, ToolResult } from "../types.js";
 import { assertPathAllowed } from "../sandbox.js";
 
+/**
+ * Maximum content size for a single write_file call (in bytes, UTF-8 encoded).
+ * Prevents agents from filling the disk with unbounded writes.
+ * Override via ORAGER_MAX_WRITE_FILE_BYTES.
+ */
+const MAX_WRITE_FILE_BYTES =
+  parseInt(process.env["ORAGER_MAX_WRITE_FILE_BYTES"] ?? "", 10) ||
+  100 * 1024 * 1024; // 100 MB default
+
 // ---------------------------------------------------------------------------
 // write_file — full file write
 // ---------------------------------------------------------------------------
@@ -44,6 +53,20 @@ export const writeFileTool: ToolExecutor = {
     }
     const inputPath = input["path"];
     const content = input["content"];
+
+    // Guard against disk exhaustion from unbounded writes.
+    // Check encoded byte length — not JS string length — because multi-byte
+    // characters in UTF-8 can make the on-disk size larger than content.length.
+    const contentBytes = Buffer.byteLength(content, "utf-8");
+    if (contentBytes > MAX_WRITE_FILE_BYTES) {
+      const fileMb = (contentBytes / (1024 * 1024)).toFixed(1);
+      const limitMb = (MAX_WRITE_FILE_BYTES / (1024 * 1024)).toFixed(0);
+      return {
+        toolCallId: "",
+        content: `Content is ${fileMb} MB which exceeds the ${limitMb} MB write limit (ORAGER_MAX_WRITE_FILE_BYTES).`,
+        isError: true,
+      };
+    }
 
     const filePath = isAbsolute(inputPath)
       ? inputPath

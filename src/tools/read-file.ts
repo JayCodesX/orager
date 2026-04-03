@@ -1,9 +1,18 @@
-import { readFile } from "node:fs/promises";
+import { stat, readFile } from "node:fs/promises";
 import { resolve, isAbsolute } from "node:path";
 import type { ToolExecuteOptions, ToolExecutor, ToolResult } from "../types.js";
 import { assertPathAllowed } from "../sandbox.js";
 
 const MAX_OUTPUT_CHARS = 50_000;
+
+/**
+ * Maximum file size allowed for a single read_file call.
+ * Prevents heap exhaustion when an agent reads a large binary or archive.
+ * Override via ORAGER_MAX_READ_FILE_BYTES (bytes).
+ */
+const MAX_READ_FILE_BYTES =
+  parseInt(process.env["ORAGER_MAX_READ_FILE_BYTES"] ?? "", 10) ||
+  50 * 1024 * 1024; // 50 MB default
 
 export const readFileTool: ToolExecutor = {
   definition: {
@@ -75,6 +84,24 @@ export const readFileTool: ToolExecutor = {
       } catch (err) {
         return { toolCallId: "", content: err instanceof Error ? err.message : String(err), isError: true };
       }
+    }
+
+    // Guard against reading excessively large files that would exhaust heap.
+    // stat() before readFile so we fail fast before allocating the buffer.
+    try {
+      const info = await stat(filePath);
+      if (info.size > MAX_READ_FILE_BYTES) {
+        const fileMb = (info.size / (1024 * 1024)).toFixed(1);
+        const limitMb = (MAX_READ_FILE_BYTES / (1024 * 1024)).toFixed(0);
+        return {
+          toolCallId: "",
+          content: `File is ${fileMb} MB which exceeds the ${limitMb} MB read limit. Use start_line/end_line to read a specific range, or increase ORAGER_MAX_READ_FILE_BYTES.`,
+          isError: true,
+        };
+      }
+    } catch {
+      // stat failed (e.g. file does not exist) — fall through to readFile
+      // which will return a clearer ENOENT error.
     }
 
     let raw: string;

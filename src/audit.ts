@@ -10,12 +10,20 @@
  *   - Tool-call entries (ToolCallEntry): event: "tool_call"
  */
 import fs from "node:fs";
-import { mkdir, stat as statAsync, rename as renameAsync } from "node:fs/promises";
+import { mkdir, stat as statAsync, rename as renameAsync, readdir, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { sanitizeInput } from "./audit-utils.js";
 
 const MAX_AUDIT_LOG_BYTES = 10 * 1024 * 1024; // 10 MB — rotate at this size
+
+/**
+ * Maximum number of timestamped backup files to keep alongside the live log.
+ * Older backups beyond this count are pruned after each rotation.
+ * Override via ORAGER_AUDIT_LOG_BACKUPS.
+ */
+const AUDIT_MAX_BACKUPS =
+  parseInt(process.env["ORAGER_AUDIT_LOG_BACKUPS"] ?? "", 10) || 10;
 
 export type ApprovalDecision = "approved" | "denied" | "timeout" | "skipped_permissions" | "delegated";
 
@@ -44,16 +52,45 @@ let _stream: fs.WriteStream | null = null;
 let _dirInit: Promise<void> | null = null;
 let _auditErrorEmitted = false;
 
+/**
+ * Prune old audit log backups, keeping only the most recent AUDIT_MAX_BACKUPS.
+ * Backup filenames sort lexicographically by their timestamp suffix, so the
+ * oldest entries appear first and are deleted first.
+ */
+async function pruneAuditBackups(logPath: string): Promise<void> {
+  try {
+    const dir = path.dirname(logPath);
+    const base = path.basename(logPath);
+    const entries = await readdir(dir);
+    // Backups have the form "<base>.<timestamp>" (e.g. audit.log.20260403T120000Z)
+    const backups = entries
+      .filter((e) => e.startsWith(base + ".") && e !== base)
+      .sort(); // lexicographic order — timestamps sort correctly
+    const excess = backups.length - AUDIT_MAX_BACKUPS;
+    for (let i = 0; i < excess; i++) {
+      await unlink(path.join(dir, backups[i]!)).catch(() => {});
+    }
+  } catch {
+    // Best-effort — pruning failures must never affect the agent.
+  }
+}
+
 async function ensureAuditDir(): Promise<void> {
+  const p = getAuditLogPath();
   // Create parent directory with restricted permissions (user-only).
-  await mkdir(path.dirname(getAuditLogPath()), { recursive: true, mode: 0o700 }).catch(() => {});
+  await mkdir(path.dirname(p), { recursive: true, mode: 0o700 }).catch(() => {});
 
   // Rotate the log file if it has grown beyond the size limit.
   try {
-    const s = await statAsync(getAuditLogPath());
+    const s = await statAsync(p);
     if (s.size >= MAX_AUDIT_LOG_BYTES) {
-      const p = getAuditLogPath();
-      await renameAsync(p, `${p}.1`).catch(() => {});
+      // Use a compact ISO timestamp as the backup suffix so that:
+      //   - Multiple rotations within a session are never clobbered
+      //   - Backups sort lexicographically by age (oldest first)
+      //   - Operators can identify when each rotation occurred
+      const ts = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "T").slice(0, 19) + "Z";
+      await renameAsync(p, `${p}.${ts}`).catch(() => {});
+      await pruneAuditBackups(p);
     }
   } catch {
     // File doesn't exist yet — no rotation needed.
