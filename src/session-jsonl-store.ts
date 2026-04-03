@@ -47,6 +47,7 @@ export class JsonlSessionStore implements SessionStore {
   // ── Schema ──────────────────────────────────────────────────────────────────
 
   private _migrate(): void {
+    try {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
         session_id  TEXT PRIMARY KEY,
@@ -117,6 +118,9 @@ export class JsonlSessionStore implements SessionStore {
     const cols = this.db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
     if (!cols.some((c) => c.name === "cumulative_cost_usd")) {
       this.db.exec("ALTER TABLE sessions ADD COLUMN cumulative_cost_usd REAL NOT NULL DEFAULT 0");
+    }
+    } catch (err) {
+      throw new Error(`JsonlSessionStore: schema migration failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -296,7 +300,7 @@ export class JsonlSessionStore implements SessionStore {
   // ── FTS search ──────────────────────────────────────────────────────────────
 
   search(query: string, limit = 20): SessionSummary[] {
-    const sanitized = query.replace(/["*^()[\]{}]/g, " ").trim();
+    const sanitized = query.replace(/["*^()[\]{}\\/]/g, " ").trim();
     if (!sanitized) return [];
     const ftsQuery = `"${sanitized.replace(/"/g, '""')}"`;
 
