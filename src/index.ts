@@ -35,6 +35,7 @@ import {
 import { handleMemorySubcommand } from "./commands/memory-command.js";
 import { handleRunCommand } from "./commands/run-command.js";
 import { handleChatCommand } from "./commands/chat-command.js";
+import { handleInitCommand } from "./commands/init-command.js";
 import { makeCliOnEmit, extractFlag } from "./commands/cli-helpers.js";
 import { requestShutdown } from "./shutdown.js";
 import { closeDb } from "./memory-sqlite.js";
@@ -259,6 +260,7 @@ OTHER
   --help, -h                Print this help and exit
   setup                     Run the interactive setup wizard
   setup --check             Validate config and test the API key
+  init                      Scaffold a project-local .orager/ directory
   ui [--port <n>]           Start the browser-based UI server (default port: 3457)
   memory <list|inspect|export|clear>  Manage memory namespaces
   skills <list|show|delete|stats|extract>  Manage learned skills (SkillBank)
@@ -355,6 +357,12 @@ async function main(): Promise<void> {
   // ── Setup wizard ──────────────────────────────────────────────────────────────
   if (argv[0] === "setup") {
     await runSetupWizard(argv.slice(1));
+    return;
+  }
+
+  // ── Init command ──────────────────────────────────────────────────────────────
+  if (argv[0] === "init") {
+    await handleInitCommand();
     return;
   }
 
