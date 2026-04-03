@@ -39,7 +39,7 @@ jobs:
         timeout-minutes: 5
 
       - name: Publish unit test results
-        uses: dorny/test-reporter@v1
+        uses: dorny/test-reporter@v3
         if: always()
         with:
           name: Unit Tests
@@ -48,7 +48,7 @@ jobs:
           fail-on-error: false
 
       - name: Publish integration test results
-        uses: dorny/test-reporter@v1
+        uses: dorny/test-reporter@v3
         if: always()
         with:
           name: Integration Tests
