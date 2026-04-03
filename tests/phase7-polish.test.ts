@@ -78,10 +78,13 @@ describe("memory header constants", () => {
 describe("memory inspect CLI", () => {
   let tmpDir: string;
   let origDbPath: string | undefined;
+  let origMemDir: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "orager-p7-"));
     origDbPath = process.env["ORAGER_DB_PATH"];
+    origMemDir = process.env["ORAGER_MEMORY_SQLITE_DIR"];
+    process.env["ORAGER_MEMORY_SQLITE_DIR"] = tmpDir;
   });
 
   afterEach(async () => {
@@ -89,6 +92,11 @@ describe("memory inspect CLI", () => {
       process.env["ORAGER_DB_PATH"] = origDbPath;
     } else {
       delete process.env["ORAGER_DB_PATH"];
+    }
+    if (origMemDir !== undefined) {
+      process.env["ORAGER_MEMORY_SQLITE_DIR"] = origMemDir;
+    } else {
+      delete process.env["ORAGER_MEMORY_SQLITE_DIR"];
     }
     const { _resetDbForTesting } = await import("../src/memory-sqlite.js");
     _resetDbForTesting();

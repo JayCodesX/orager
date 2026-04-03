@@ -280,13 +280,14 @@ describe("SQLite prune: compacted sessions use 3× retention", () => {
   });
 });
 
-// ── 4. vitest.config.ts testTimeout ───────────────────────────────────────────
+// ── 4. bun test preload configured ───────────────────────────────────────────
 
-describe("vitest.config.ts has testTimeout configured", () => {
-  it("testTimeout is set to at least 10000ms in vitest config", async () => {
-    const configPath = path.resolve(process.cwd(), "vitest.config.ts");
+describe("bunfig.toml has test preload configured", () => {
+  it("preload includes bun-setup.ts for test isolation", async () => {
+    const configPath = path.resolve(process.cwd(), "bunfig.toml");
     const contents = fs.readFileSync(configPath, "utf8");
-    // Should have a testTimeout of at least 10000
-    expect(contents).toMatch(/testTimeout\s*:\s*1[0-9]{4}/);
+    // bunfig.toml must have a [test] section with preload pointing to bun-setup
+    expect(contents).toContain("[test]");
+    expect(contents).toMatch(/preload\s*=.*bun-setup/);
   });
 });

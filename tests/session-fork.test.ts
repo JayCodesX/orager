@@ -11,6 +11,7 @@ import {
   saveSession,
   loadSession,
   newSessionId,
+  _resetStoreForTesting,
 } from "../src/session.js";
 import type { SessionData } from "../src/types.js";
 
@@ -24,9 +25,11 @@ beforeEach(async () => {
   const raw = await fs.mkdtemp(path.join(os.tmpdir(), "orager-fork-"));
   testDir = await fs.realpath(raw);
   process.env["ORAGER_SESSIONS_DIR"] = testDir;
+  _resetStoreForTesting();
 });
 
 afterEach(async () => {
+  _resetStoreForTesting();
   if (savedEnv === undefined) delete process.env["ORAGER_SESSIONS_DIR"];
   else process.env["ORAGER_SESSIONS_DIR"] = savedEnv;
   await fs.rm(testDir, { recursive: true, force: true }).catch(() => {});
