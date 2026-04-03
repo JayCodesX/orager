@@ -88,6 +88,7 @@ export async function runAgentLoopSubprocess(opts: AgentLoopOptions): Promise<vo
   });
 
   let settled = false;
+  let responseReceived = false;
 
   return new Promise<void>((resolve, reject) => {
     // ── Timeout ────────────────────────────────────────────────────────────────
@@ -124,12 +125,19 @@ export async function runAgentLoopSubprocess(opts: AgentLoopOptions): Promise<vo
         // Forward the EmitEvent to the caller's onEmit handler.
         try {
           onEmit(msg.params as EmitEvent);
-        } catch { /* caller's onEmit must not throw */ }
+        } catch (err) {
+          // onEmit errors must not propagate into the protocol loop, but they
+          // should not be silently discarded — log so operators can diagnose.
+          process.stderr.write(
+            `[orager/subprocess] onEmit handler threw (event dropped): ${err instanceof Error ? err.message : String(err)}\n`,
+          );
+        }
         return;
       }
 
       if (isResponse(msg) && msg.id === 1) {
         // Final response — resolve or reject.
+        responseReceived = true;
         cleanup();
         if (!settled) {
           settled = true;
@@ -152,7 +160,11 @@ export async function runAgentLoopSubprocess(opts: AgentLoopOptions): Promise<vo
       cleanup();
       if (!settled) {
         settled = true;
-        if (code === 0) {
+        if (code === 0 && !responseReceived) {
+          // Clean exit but the JSON-RPC result response was never sent — treat
+          // as a failure so callers don't silently succeed with no output.
+          reject(new Error("orager subprocess exited without sending a JSON-RPC response"));
+        } else if (code === 0) {
           resolve();
         } else {
           reject(new Error(`orager subprocess exited with code ${code}`));
