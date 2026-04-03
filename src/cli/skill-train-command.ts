@@ -32,29 +32,47 @@ async function handleStatus(): Promise<void> {
   const [
     { getCurrentEndpoint, listAdapterVersions },
     { countDistillableBuffer, getCurrentSkillGeneration },
+    { loadLocalAdapterMeta },
+    { DEFAULT_BASE_MODEL_ID },
+    settings,
   ] = await Promise.all([
     import("../omls/together-hosting.js"),
     import("../omls/trajectory-buffer.js"),
+    import("../omls/local-adapter-server.js"),
+    import("../omls/supported-models.js"),
+    import("../settings.js").then((m) => m.loadSettings()),
   ]);
 
-  const endpoint = await getCurrentEndpoint();
-  const versions = await listAdapterVersions();
-  const skillGen = await getCurrentSkillGeneration();
+  const baseModel = settings.omls?.rl?.training?.baseModel ?? DEFAULT_BASE_MODEL_ID;
+  const memoryKey = "default";
+
+  const [endpoint, versions, localMeta, skillGen] = await Promise.all([
+    getCurrentEndpoint().catch(() => null),
+    listAdapterVersions().catch(() => []),
+    loadLocalAdapterMeta(memoryKey, baseModel),
+    getCurrentSkillGeneration(),
+  ]);
   const bufferSize = await countDistillableBuffer(skillGen);
 
   printLine("\nOMLS / RL Training Status");
   printLine("─────────────────────────────────────────");
-  printLine(`Active RL model:     ${endpoint ?? "(none — using base model)"}`);
-  printLine(`Adapter versions:    ${versions.length}`);
+
+  if (localMeta) {
+    printLine(`Local adapter:       v${localMeta.version} (${localMeta.backend}) trained ${localMeta.trainedAt.slice(0, 10)}`);
+    printLine(`  Base model:        ${localMeta.baseModel}`);
+    printLine(`  Trajectories:      ${localMeta.trajectoryCount}`);
+  } else {
+    printLine(`Local adapter:       (none)`);
+  }
+
+  printLine(`Cloud RL endpoint:   ${endpoint ?? "(none)"}`);
+  if (versions.length > 0) {
+    printLine(`Cloud versions:      ${versions.length} (latest: v${versions[0]?.version ?? "?"})`);
+  }
+
   printLine(`Distillable buffer:  ${bufferSize} trajectory/trajectories`);
   printLine(`Current skill gen:   ${skillGen}`);
-
-  if (versions.length > 0) {
-    printLine("\nRecent versions:");
-    for (const v of versions.slice(0, 5)) {
-      printLine(`  v${v.version}  ${v.endpoint.padEnd(50)} ${v.uploadedAt.slice(0, 10)}`);
-    }
-  }
+  printLine(`Base model:          ${baseModel}`);
 
   if (bufferSize === 0) {
     printLine("\nNo distillable trajectories yet. These are collected when:");
