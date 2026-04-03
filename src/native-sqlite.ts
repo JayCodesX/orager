@@ -152,6 +152,14 @@ export class WasmCompatDb {
     this._db.close();
   }
 
+  /**
+   * Load a SQLite extension (e.g. sqlite-vec) by path.
+   * Passes through to bun:sqlite Database.loadExtension().
+   */
+  loadExtension(path: string): void {
+    this._db.loadExtension(path);
+  }
+
   /** No-op: native driver writes are always immediately durable. */
   _autoSave(): void {}
 
@@ -179,7 +187,41 @@ export async function openWasmDb(filePath: string, opts?: { readonly?: boolean }
   mkdirSync(dirname(filePath), { recursive: true });
   const db = new Database(filePath, { create: true, readwrite: true });
   db.exec(STARTUP_PRAGMAS);
-  return new WasmCompatDb(db);
+  const compat = new WasmCompatDb(db);
+  tryLoadSqliteVec(compat);
+  return compat;
+}
+
+// ── sqlite-vec extension ──────────────────────────────────────────────────────
+
+/** True once sqlite-vec has been successfully loaded into at least one DB. */
+let _sqliteVecAvailable: boolean | null = null;
+
+/**
+ * Try to load the sqlite-vec extension into an open database.
+ * Sets _sqliteVecAvailable on first attempt (succeeds or fails once, cached).
+ *
+ * Graceful degradation: if sqlite-vec is not installed or cannot be loaded,
+ * the call is a no-op and callers fall back to JS-side cosine similarity.
+ *
+ * ADR-0008 §Component 4.
+ */
+function tryLoadSqliteVec(db: WasmCompatDb): void {
+  if (_sqliteVecAvailable === false) return; // already failed — don't retry
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const sqliteVec = require("sqlite-vec") as { load: (db: WasmCompatDb) => void };
+    sqliteVec.load(db);
+    _sqliteVecAvailable = true;
+  } catch {
+    _sqliteVecAvailable = false;
+    // Non-fatal: JS cosine similarity is used as fallback.
+  }
+}
+
+/** Returns true when sqlite-vec loaded successfully (available for this process). */
+export function isSqliteVecAvailable(): boolean {
+  return _sqliteVecAvailable === true;
 }
 
 // Type alias for backward compatibility — all callers importing WasmDatabase

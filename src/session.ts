@@ -98,23 +98,23 @@ async function getStore(): Promise<SessionStore> {
   if (_storeCache) return _storeCache;
   if (_storeCachePromise) return _storeCachePromise;
 
+  // ADR-0008 Phase 3: default to JsonlSessionStore (JSONL transcripts + index.sqlite).
+  // Explicit opt-out (ORAGER_DB_PATH=none) → legacy JSON file store.
   const dbPath = resolveDbPath();
-  if (dbPath) {
-    // Ensure the parent directory exists (e.g. ~/.orager/ on first run).
-    await fs.mkdir(path.dirname(dbPath), { recursive: true });
-    _storeCachePromise = import("./session-sqlite.js")
+  if (dbPath !== null) {
+    const sessionsDir = (await import("./db.js")).resolveSessionsDir();
+    _storeCachePromise = import("./session-jsonl-store.js")
       .then(async (m) => {
-        _storeCache = await m.SqliteSessionStore.create(dbPath);
+        _storeCache = await m.JsonlSessionStore.create(sessionsDir);
         return _storeCache as SessionStore;
       })
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
-        log.error("session_store_init_failed", { dbPath, message: msg });
+        log.error("session_store_init_failed", { sessionsDir, message: msg });
         process.stderr.write(
-          `[orager] ERROR: failed to open SQLite session store at "${dbPath}": ${msg}\n` +
+          `[orager] ERROR: failed to open JSONL session store at "${sessionsDir}": ${msg}\n` +
           `[orager] Sessions will NOT be persisted. Set ORAGER_DB_PATH=none to force the file store.\n`,
         );
-        // Re-throw so callers get a clear error rather than silently losing sessions.
         throw err;
       });
     return _storeCachePromise;
@@ -147,11 +147,12 @@ export async function saveSessionCheckpoint(
   recentMessages: unknown[],
 ): Promise<void> {
   const store = await getStore();
-  const { SqliteSessionStore } = await import("./session-sqlite.js");
-  if (store instanceof SqliteSessionStore) {
-    store.saveCheckpoint(threadId, contextId, lastTurn, summary, recentMessages);
+  if ("saveCheckpoint" in store && typeof (store as { saveCheckpoint?: unknown }).saveCheckpoint === "function") {
+    (store as { saveCheckpoint: (...a: unknown[]) => void }).saveCheckpoint(
+      threadId, contextId, lastTurn, summary, recentMessages,
+    );
   }
-  // File-based store: silently skip — checkpoints require SQLite.
+  // File-based store: silently skip — checkpoints require an index DB.
 }
 
 /**
@@ -168,9 +169,8 @@ export async function loadSessionCheckpoint(
   fullState: unknown[];
 } | null> {
   const store = await getStore();
-  const { SqliteSessionStore } = await import("./session-sqlite.js");
-  if (store instanceof SqliteSessionStore) {
-    return store.loadCheckpoint(threadId);
+  if ("loadCheckpoint" in store && typeof (store as { loadCheckpoint?: unknown }).loadCheckpoint === "function") {
+    return (store as { loadCheckpoint: (id: string) => ReturnType<typeof loadSessionCheckpoint> }).loadCheckpoint(threadId);
   }
   return null;
 }
@@ -190,9 +190,13 @@ export async function loadLatestCheckpointByContextId(
   fullState: unknown[];
 } | null> {
   const store = await getStore();
-  const { SqliteSessionStore } = await import("./session-sqlite.js");
-  if (store instanceof SqliteSessionStore) {
-    return store.loadLatestCheckpointByContextId(contextId);
+  if (
+    "loadLatestCheckpointByContextId" in store &&
+    typeof (store as { loadLatestCheckpointByContextId?: unknown }).loadLatestCheckpointByContextId === "function"
+  ) {
+    return (store as {
+      loadLatestCheckpointByContextId: (id: string) => ReturnType<typeof loadLatestCheckpointByContextId>;
+    }).loadLatestCheckpointByContextId(contextId);
   }
   return null;
 }

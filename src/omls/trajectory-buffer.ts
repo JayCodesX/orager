@@ -194,13 +194,13 @@ export async function markBatchTrained(batch: TrainingBatch): Promise<void> {
  */
 export async function getCurrentSkillGeneration(): Promise<number> {
   try {
-    const { _getDb } = await import("../memory-sqlite.js");
-    const db = await _getDb();
+    const { openWasmDb } = await import("../native-sqlite.js");
+    const { resolveSkillsDbPath } = await import("../db.js");
+    const db = await openWasmDb(resolveSkillsDbPath(), { readonly: true });
     const row = db
-      .prepare(
-        "SELECT MAX(version) as v FROM skills WHERE deleted = 0",
-      )
+      .prepare("SELECT MAX(version) as v FROM skills WHERE deleted = 0")
       .get() as { v: number | null } | undefined;
+    db.close();
     return row?.v ?? 0;
   } catch {
     return 0;
