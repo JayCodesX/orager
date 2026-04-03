@@ -331,3 +331,99 @@ describe("settings.validateSettings — providers block", () => {
     expect(warnings.some(w => w.includes("providers.openrouter") && w.includes("object"))).toBe(true);
   });
 });
+
+// ── mergeSettings provider wiring ───────────────────────────────────────────
+
+describe("mergeSettings — providers config wiring", () => {
+  let mergeSettings: typeof import("../src/settings.js").mergeSettings;
+
+  beforeEach(async () => {
+    const mod = await import("../src/settings.js");
+    mergeSettings = mod.mergeSettings;
+  });
+
+  it("maps providers.openrouter fields into flat AgentLoopOptions", () => {
+    const runtime = { requireApproval: undefined, bashPolicy: undefined, hooks: undefined } as any;
+    const fileSettings = {
+      providers: {
+        openrouter: {
+          siteUrl: "https://myapp.com",
+          siteName: "MyApp",
+          preset: "custom-preset",
+          transforms: ["middle-out"],
+        },
+      },
+    };
+    const merged = mergeSettings(runtime, fileSettings);
+    expect(merged.siteUrl).toBe("https://myapp.com");
+    expect(merged.siteName).toBe("MyApp");
+    expect(merged.preset).toBe("custom-preset");
+    expect(merged.transforms).toEqual(["middle-out"]);
+  });
+
+  it("runtime opts override providers.openrouter fields", () => {
+    const runtime = {
+      siteUrl: "https://override.com",
+      requireApproval: undefined,
+      bashPolicy: undefined,
+      hooks: undefined,
+    } as any;
+    const fileSettings = {
+      providers: {
+        openrouter: {
+          siteUrl: "https://myapp.com",
+          siteName: "MyApp",
+        },
+      },
+    };
+    const merged = mergeSettings(runtime, fileSettings);
+    expect(merged.siteUrl).toBe("https://override.com");
+    expect(merged.siteName).toBe("MyApp"); // not overridden
+  });
+
+  it("maps providers.ollama into ollama config", () => {
+    const runtime = { requireApproval: undefined, bashPolicy: undefined, hooks: undefined } as any;
+    const fileSettings = {
+      providers: {
+        ollama: { enabled: true, baseUrl: "http://localhost:11434" },
+      },
+    };
+    const merged = mergeSettings(runtime, fileSettings);
+    expect(merged.ollama).toEqual({ enabled: true, baseUrl: "http://localhost:11434" });
+  });
+
+  it("runtime ollama config takes precedence over providers.ollama", () => {
+    const runtime = {
+      ollama: { enabled: false },
+      requireApproval: undefined,
+      bashPolicy: undefined,
+      hooks: undefined,
+    } as any;
+    const fileSettings = {
+      providers: {
+        ollama: { enabled: true, baseUrl: "http://localhost:11434" },
+      },
+    };
+    const merged = mergeSettings(runtime, fileSettings);
+    expect(merged.ollama.enabled).toBe(false); // runtime wins
+  });
+
+  it("maps providers.openrouter.apiKey as lowest priority", () => {
+    const runtime = { requireApproval: undefined, bashPolicy: undefined, hooks: undefined } as any;
+    const fileSettings = {
+      providers: {
+        openrouter: { apiKey: "settings-key", apiKeys: ["extra1", "extra2"] },
+      },
+    };
+    const merged = mergeSettings(runtime, fileSettings);
+    expect(merged.apiKey).toBe("settings-key");
+    expect(merged.apiKeys).toEqual(["extra1", "extra2"]);
+  });
+
+  it("does nothing when providers block is absent", () => {
+    const runtime = { requireApproval: undefined, bashPolicy: undefined, hooks: undefined } as any;
+    const merged = mergeSettings(runtime, {});
+    expect(merged.siteUrl).toBeUndefined();
+    expect(merged.ollama).toBeUndefined();
+  });
+});
