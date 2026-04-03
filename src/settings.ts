@@ -59,6 +59,177 @@ interface CachedSettings {
 const _cache = new Map<string, CachedSettings>();
 
 const KNOWN_SETTINGS_KEYS = new Set(["permissions", "bashPolicy", "hooks", "hooksEnabled", "skillbank", "omls", "memory"]);
+const KNOWN_MEMORY_KEYS = new Set(["tokenPressureThreshold", "turnInterval", "keepRecentTurns", "summarizationModel"]);
+const KNOWN_BASH_POLICY_KEYS = new Set(["blockedCommands", "stripEnvKeys", "isolateEnv", "allowedEnvKeys", "osSandbox", "allowNetwork"]);
+const KNOWN_SKILLBANK_KEYS = new Set(["enabled", "extractionModel", "maxSkills", "similarityThreshold", "deduplicationThreshold", "topK", "retentionDays", "autoExtract"]);
+
+/**
+ * Validate and sanitise a raw settings object.
+ * Invalid values are removed (falling back to defaults) rather than crashing.
+ * Returns the cleaned settings plus arrays of warnings and errors for callers
+ * to surface to the user.
+ */
+export function validateSettings(
+  raw: unknown,
+  filePath = "settings.json",
+): { settings: OragerSettings; warnings: string[]; errors: string[] } {
+  const warnings: string[] = [];
+  const errors: string[] = [];
+
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    errors.push(`${filePath}: expected a JSON object at the top level`);
+    return { settings: {}, warnings, errors };
+  }
+
+  const obj = raw as Record<string, unknown>;
+
+  // ── Unknown top-level keys ───────────────────────────────────────────────
+  for (const key of Object.keys(obj)) {
+    if (!KNOWN_SETTINGS_KEYS.has(key)) {
+      warnings.push(`unknown key '${key}' — did you mean one of: ${[...KNOWN_SETTINGS_KEYS].join(", ")}?`);
+      delete obj[key];
+    }
+  }
+
+  const settings: OragerSettings = obj as OragerSettings;
+
+  // ── permissions ──────────────────────────────────────────────────────────
+  if (settings.permissions !== undefined) {
+    if (typeof settings.permissions !== "object" || settings.permissions === null) {
+      warnings.push(`'permissions' must be an object — ignoring`);
+      delete settings.permissions;
+    } else {
+      const VALID_PERMS = new Set<string>(["allow", "deny", "ask"]);
+      const TOOL_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_]*$/;
+      for (const [tool, val] of Object.entries(settings.permissions)) {
+        if (!VALID_PERMS.has(val as string)) {
+          warnings.push(`invalid permission value '${String(val)}' for tool '${tool}' — ignoring (use "allow", "deny", or "ask")`);
+          delete (settings.permissions as Record<string, string>)[tool];
+        } else if (!TOOL_NAME_RE.test(tool)) {
+          warnings.push(`permission key '${tool}' does not look like a tool name (expected snake_case identifier) — verify spelling`);
+        }
+      }
+    }
+  }
+
+  // ── memory ───────────────────────────────────────────────────────────────
+  if (settings.memory !== undefined) {
+    if (typeof settings.memory !== "object" || settings.memory === null) {
+      warnings.push(`'memory' must be an object — ignoring`);
+      delete settings.memory;
+    } else {
+      const m = settings.memory as Record<string, unknown>;
+
+      // Unknown keys
+      for (const key of Object.keys(m)) {
+        if (!KNOWN_MEMORY_KEYS.has(key)) {
+          warnings.push(`unknown key 'memory.${key}'`);
+        }
+      }
+
+      // tokenPressureThreshold: number 0–1
+      if (m.tokenPressureThreshold !== undefined) {
+        const v = m.tokenPressureThreshold;
+        if (typeof v !== "number" || v < 0 || v > 1) {
+          warnings.push(`'memory.tokenPressureThreshold' must be a number between 0 and 1 (got ${JSON.stringify(v)}) — using default`);
+          delete m.tokenPressureThreshold;
+        }
+      }
+
+      // turnInterval: number >= 0
+      if (m.turnInterval !== undefined) {
+        const v = m.turnInterval;
+        if (typeof v !== "number" || v < 0 || !Number.isInteger(v)) {
+          warnings.push(`'memory.turnInterval' must be a non-negative integer (got ${JSON.stringify(v)}) — using default`);
+          delete m.turnInterval;
+        }
+      }
+
+      // keepRecentTurns: number >= 1
+      if (m.keepRecentTurns !== undefined) {
+        const v = m.keepRecentTurns;
+        if (typeof v !== "number" || v < 1 || !Number.isInteger(v)) {
+          warnings.push(`'memory.keepRecentTurns' must be an integer >= 1 (got ${JSON.stringify(v)}) — using default`);
+          delete m.keepRecentTurns;
+        }
+      }
+
+      // summarizationModel: string
+      if (m.summarizationModel !== undefined && typeof m.summarizationModel !== "string") {
+        warnings.push(`'memory.summarizationModel' must be a string (got ${typeof m.summarizationModel}) — ignoring`);
+        delete m.summarizationModel;
+      }
+    }
+  }
+
+  // ── bashPolicy ───────────────────────────────────────────────────────────
+  if (settings.bashPolicy !== undefined) {
+    if (typeof settings.bashPolicy !== "object" || settings.bashPolicy === null) {
+      warnings.push(`'bashPolicy' must be an object — ignoring`);
+      delete settings.bashPolicy;
+    } else {
+      for (const key of Object.keys(settings.bashPolicy as object)) {
+        if (!KNOWN_BASH_POLICY_KEYS.has(key)) {
+          warnings.push(`unknown key 'bashPolicy.${key}'`);
+        }
+      }
+    }
+  }
+
+  // ── skillbank ────────────────────────────────────────────────────────────
+  if (settings.skillbank !== undefined) {
+    if (typeof settings.skillbank !== "object" || settings.skillbank === null) {
+      warnings.push(`'skillbank' must be an object — ignoring`);
+      delete settings.skillbank;
+    } else {
+      const sb = settings.skillbank as Record<string, unknown>;
+
+      for (const key of Object.keys(sb)) {
+        if (!KNOWN_SKILLBANK_KEYS.has(key)) {
+          warnings.push(`unknown key 'skillbank.${key}'`);
+        }
+      }
+
+      // similarityThreshold: 0–1
+      if (sb.similarityThreshold !== undefined) {
+        const v = sb.similarityThreshold;
+        if (typeof v !== "number" || v < 0 || v > 1) {
+          warnings.push(`'skillbank.similarityThreshold' must be between 0 and 1 (got ${JSON.stringify(v)}) — using default`);
+          delete sb.similarityThreshold;
+        }
+      }
+
+      // deduplicationThreshold: 0–1
+      if (sb.deduplicationThreshold !== undefined) {
+        const v = sb.deduplicationThreshold;
+        if (typeof v !== "number" || v < 0 || v > 1) {
+          warnings.push(`'skillbank.deduplicationThreshold' must be between 0 and 1 (got ${JSON.stringify(v)}) — using default`);
+          delete sb.deduplicationThreshold;
+        }
+      }
+
+      // topK: integer >= 1
+      if (sb.topK !== undefined) {
+        const v = sb.topK;
+        if (typeof v !== "number" || v < 1 || !Number.isInteger(v)) {
+          warnings.push(`'skillbank.topK' must be an integer >= 1 (got ${JSON.stringify(v)}) — using default`);
+          delete sb.topK;
+        }
+      }
+
+      // maxSkills: integer >= 1
+      if (sb.maxSkills !== undefined) {
+        const v = sb.maxSkills;
+        if (typeof v !== "number" || v < 1 || !Number.isInteger(v)) {
+          warnings.push(`'skillbank.maxSkills' must be an integer >= 1 (got ${JSON.stringify(v)}) — using default`);
+          delete sb.maxSkills;
+        }
+      }
+    }
+  }
+
+  return { settings, warnings, errors };
+}
 
 export async function loadSettings(settingsPath?: string): Promise<OragerSettings> {
   const filePath = settingsPath ?? path.join(os.homedir(), ".orager", "settings.json");
@@ -67,42 +238,29 @@ export async function loadSettings(settingsPath?: string): Promise<OragerSetting
     const mtime = stat.mtimeMs;
     const cached = _cache.get(filePath);
     if (cached && cached.mtime === mtime) return cached.settings;
+
     const raw = await fs.readFile(filePath, "utf8");
-    const settings = JSON.parse(raw) as OragerSettings;
-    // Warn on unknown keys so operators catch typos early
-    for (const key of Object.keys(settings)) {
-      if (!KNOWN_SETTINGS_KEYS.has(key)) {
-        process.stderr.write(`[orager] WARNING: unknown key '${key}' in settings file ${filePath} — did you mean one of: ${[...KNOWN_SETTINGS_KEYS].join(", ")}?\n`);
-      }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (parseErr) {
+      process.stderr.write(
+        `[orager] ERROR: failed to parse ${filePath}: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}\n` +
+        `[orager] Hint: validate your JSON at https://jsonlint.com — using empty settings\n`,
+      );
+      return {};
     }
-    // Validate permissions values — only "allow", "deny", "ask" are accepted.
-    // Unknown values are dropped with a warning to prevent privilege escalation
-    // from a hand-edited or malicious settings file.
-    if (settings.permissions) {
-      const VALID_PERMS = new Set<string>(["allow", "deny", "ask"]);
-      for (const [tool, val] of Object.entries(settings.permissions)) {
-        if (!VALID_PERMS.has(val)) {
-          process.stderr.write(
-            `[orager] WARNING: invalid permission value '${String(val)}' for tool '${tool}' in settings — ignoring (use "allow", "deny", or "ask")\n`,
-          );
-          delete (settings.permissions as Record<string, string>)[tool];
-        }
-      }
+
+    const { settings, warnings, errors } = validateSettings(parsed, filePath);
+
+    for (const w of warnings) {
+      process.stderr.write(`[orager] WARNING (${filePath}): ${w}\n`);
     }
-    if (settings.permissions) {
-      // Warn on permission keys that don't look like valid tool names.
-      // Tool names should be snake_case identifiers (letters, digits, underscores).
-      // This catches common typos like "bsh" (should be "bash") and keys that are
-      // clearly not tool names (paths, URLs, multi-word phrases).
-      const TOOL_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_]*$/;
-      for (const key of Object.keys(settings.permissions)) {
-        if (!TOOL_NAME_RE.test(key)) {
-          process.stderr.write(
-            `[orager] WARNING: permission key '${key}' in settings does not look like a tool name (expected snake_case identifier) — verify spelling\n`,
-          );
-        }
-      }
+    for (const e of errors) {
+      process.stderr.write(`[orager] ERROR (${filePath}): ${e}\n`);
     }
+
     _cache.set(filePath, { mtime, settings });
     return settings;
   } catch {
