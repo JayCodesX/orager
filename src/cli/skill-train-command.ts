@@ -89,12 +89,37 @@ async function handleStatus(): Promise<void> {
 // ── --rollback ────────────────────────────────────────────────────────────────
 
 async function handleRollback(): Promise<void> {
+  // Try local adapter rollback first
+  const [
+    { rollbackLocalAdapter, loadLocalAdapterMeta },
+    { DEFAULT_BASE_MODEL_ID },
+    settings,
+  ] = await Promise.all([
+    import("../omls/local-adapter-server.js"),
+    import("../omls/supported-models.js"),
+    import("../settings.js").then((m) => m.loadSettings()),
+  ]);
+
+  const baseModel = settings.omls?.rl?.training?.baseModel ?? DEFAULT_BASE_MODEL_ID;
+  const memoryKey = "default";
+
+  const localMeta = await loadLocalAdapterMeta(memoryKey, baseModel);
+  if (localMeta) {
+    const rolledBack = await rollbackLocalAdapter(memoryKey, baseModel);
+    if (rolledBack) {
+      printLine(`Rolled back local adapter to previous version (was v${localMeta.version})`);
+      return;
+    }
+    printLine("Local adapter exists but no previous version to roll back to.");
+  }
+
+  // Fall back to cloud rollback
   const { rollbackEndpoint } = await import("../omls/together-hosting.js");
   const prev = await rollbackEndpoint();
   if (prev) {
-    printLine(`Rolled back to: ${prev}`);
+    printLine(`Rolled back cloud endpoint to: ${prev}`);
   } else {
-    printErr("No previous adapter version to roll back to.");
+    printErr("No previous adapter version to roll back to (local or cloud).");
     process.exit(1);
   }
 }
