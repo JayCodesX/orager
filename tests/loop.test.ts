@@ -569,6 +569,76 @@ describe("runAgentLoop — maxCostUsd", () => {
   });
 });
 
+// ── maxCostUsdSoft ────────────────────────────────────────────────────────────
+
+describe("runAgentLoop — maxCostUsdSoft", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("breaks the loop early (success) when soft cost limit is hit", async () => {
+    // Turn 1 costs $5 (10 tokens * $0.5 each). Soft limit = $1 → trips after turn 1.
+    const turn1: OpenRouterCallResult = {
+      ...toolResponse([bashCall("c1", "echo a")]),
+      usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
+    };
+    mocked(callOpenRouter).mockResolvedValueOnce(turn1);
+
+    const { opts, emitted } = loopOpts({
+      costPerInputToken: 0.5,
+      costPerOutputToken: 0.5,
+      maxCostUsdSoft: 1.0, // $1 soft limit
+      maxTurns: 10,
+    });
+
+    await runAgentLoop(opts);
+
+    // Soft limit exits via break — loop finishes with success subtype, not error_max_cost
+    expect(mocked(callOpenRouter)).toHaveBeenCalledTimes(1);
+    const result = resultEvent(emitted);
+    expect(result.subtype).toBe("success"); // soft limit does NOT use error_max_cost
+    expect(result.total_cost_usd).toBeGreaterThanOrEqual(1.0);
+  });
+
+  it("soft limit does not trigger when cost is below the threshold", async () => {
+    // Three cheap turns ($0.0001 total); soft limit = $1 → never trips
+    mocked(callOpenRouter)
+      .mockResolvedValueOnce(toolResponse([bashCall("c1", "echo a")]))
+      .mockResolvedValueOnce(toolResponse([bashCall("c2", "echo b")]))
+      .mockResolvedValueOnce(noToolResponse("done"));
+
+    const { opts, emitted } = loopOpts({
+      costPerInputToken: 0.000001,
+      costPerOutputToken: 0.000001,
+      maxCostUsdSoft: 1.0,
+    });
+
+    await runAgentLoop(opts);
+
+    expect(mocked(callOpenRouter)).toHaveBeenCalledTimes(3);
+    expect(resultEvent(emitted).subtype).toBe("success");
+  });
+
+  it("soft limit takes precedence over hard limit when cost is between the two", async () => {
+    // Cost = $5; soft = $1, hard = $10 → soft trips first, exits with success
+    const costlyResponse: OpenRouterCallResult = {
+      ...toolResponse([bashCall("c1", "echo a")]),
+      usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
+    };
+    mocked(callOpenRouter).mockResolvedValueOnce(costlyResponse);
+
+    const { opts, emitted } = loopOpts({
+      costPerInputToken: 0.5,
+      costPerOutputToken: 0.5,
+      maxCostUsdSoft: 1.0,  // trips first
+      maxCostUsd: 10.0,     // would use error_max_cost — should not be reached
+    });
+
+    await runAgentLoop(opts);
+
+    const result = resultEvent(emitted);
+    expect(result.subtype).toBe("success"); // soft limit, not hard
+  });
+});
+
 // ── Delegated tools (execute: false) ─────────────────────────────────────────
 
 describe("runAgentLoop — delegated tools", () => {

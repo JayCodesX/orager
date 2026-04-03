@@ -76,18 +76,19 @@ describe("--sessions command", () => {
     expect(parsed[0].lastRunAt).toBe("2024-01-15T10:30:00Z");
   });
 
-  it("--sessions when daemon not running: readDaemonPort returns null → exits with 1", async () => {
-    const daemonModule = await import("../src/daemon.js");
-    vi.spyOn(daemonModule, "readDaemonPort").mockResolvedValue(null);
+  it("--sessions (ADR-0003): reads sessions directly from SQLite, not from a daemon port", async () => {
+    // After daemon removal the --sessions command calls listSessions() directly.
+    // Verify: src/daemon.ts no longer exists so there is nothing to import.
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+    await expect(
+      fs.readFile(path.join(process.cwd(), "src/daemon.ts"), "utf8"),
+    ).rejects.toThrow(); // ENOENT — daemon is gone
 
-    const port = await daemonModule.readDaemonPort();
-
-    // When port is null, the command should print an error and exit with 1
-    expect(port).toBeNull();
-
-    // Verify exit condition logic
-    const shouldExit = port === null;
-    expect(shouldExit).toBe(true);
+    // The new implementation in index.ts must call listSessions directly.
+    const indexSrc = await fs.readFile(path.join(process.cwd(), "src/index.ts"), "utf8");
+    expect(indexSrc).toContain("listSessions");
+    expect(indexSrc).not.toContain("readDaemonPort");
   });
 
   it("table output includes session id, last run at, cost, and turns columns", () => {
