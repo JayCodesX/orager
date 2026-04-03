@@ -7,7 +7,7 @@
 [![Bun](https://img.shields.io/badge/runtime-bun-black)](https://bun.sh)
 [![Join waitlist](https://img.shields.io/badge/oragerai.com-join%20waitlist-6c63ff)](https://oragerai.com)
 
-**Production-grade AI agent runtime.** Multi-turn tool-calling, persistent memory, multimodal input, and multi-model routing — works with any model provider.
+**Production-grade AI agent runtime.** Multi-turn tool-calling, persistent memory, multimodal input, multi-agent orchestration, and multi-model routing — works with any model provider.
 
 > Built as the runtime behind [Paperclip](https://paperclipai.com) agents.
 
@@ -21,6 +21,7 @@ orager is a TypeScript library and CLI for running AI agents that:
 - **Use tools** — bash, file read/write, web search, MCP servers, and custom tools
 - **Handle multimodal input** — attach images, PDFs, audio (auto-transcribed via Whisper), and text files to any prompt
 - **Route across models** — switch between Claude, DeepSeek, GPT-4o, Gemini, and Llama without changing your code; run locally via Ollama
+- **Orchestrate agents** — spawn specialised sub-agents dynamically at runtime; run them in parallel; or compose sequential pipelines with `runAgentWorkflow`
 - **Learn from experience** — SkillBank captures successful task patterns; OMLS trains LoRA adapters locally (Apple Silicon / NVIDIA GPU) or via cloud VPS
 - **Scale safely** — token budget enforcement, auto-summarization, rate limiting, JWT auth, per-namespace session isolation
 
@@ -77,22 +78,88 @@ await runAgentLoop({
 });
 ```
 
-### Multi-agent workflows
+### Dynamic agent spawning
+
+Give the parent model a catalogue of specialised sub-agents. It decides when and what to delegate — sub-agents run concurrently and return their output as tool results.
+
+```typescript
+import { runAgentLoop } from "@orager/core";
+import type { AgentDefinition } from "@orager/core";
+
+const agents: Record<string, AgentDefinition> = {
+  researcher: {
+    description: "Searches the web and summarises findings on any topic.",
+    prompt: "You are a thorough research assistant. Always cite sources.",
+    model: "deepseek/deepseek-r1",
+  },
+  coder: {
+    description: "Writes, reviews, and refactors code. Has full file-system access.",
+    prompt: "You are an expert software engineer. Prefer clear, tested code.",
+    tools: ["Bash", "Read", "Write", "Grep", "Glob"],
+  },
+  analyst: {
+    description: "Analyses data and produces structured reports.",
+    prompt: "You are a data analyst. Always return findings in Markdown tables.",
+    memoryWrite: true, // allowed to persist insights to memory
+  },
+};
+
+await runAgentLoop({
+  prompt: "Research the top three vector databases, then write benchmark code for each.",
+  model: "anthropic/claude-sonnet-4-6",
+  apiKey: process.env.PROTOCOL_API_KEY!,
+  agents,
+  cwd: process.cwd(),
+  onEmit: (e) => console.log(e),
+});
+```
+
+The parent model reads each agent's `description` and calls the `Agent` tool to delegate. Multiple `Agent` calls in the same turn execute concurrently. Sub-agents:
+
+- receive a **fresh context** (no session history) with the parent's prompt as their task
+- **inherit** the parent's memory namespace (read-only by default), skills, model, and tool set
+- are **depth-limited** (default: 3 levels) to prevent runaway recursion
+- emit events tagged with `_subagentType` so consumers can filter or display per-agent output
+
+#### `AgentDefinition` options
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `description` | `string` | — | **Required.** Shown to the parent model to aid delegation decisions |
+| `prompt` | `string` | — | System prompt prepended to the delegated task |
+| `model` | `string` | parent model | Model override for this sub-agent |
+| `tools` | `string[]` | all tools | Restrict the sub-agent to this tool allow-list |
+| `memoryKey` | `string` | parent key | Memory namespace override |
+| `memoryWrite` | `boolean` | `false` | Allow sub-agent to write `<memory_update>` blocks |
+| `skills` | `boolean` | `true` | Inject SkillBank skills into the sub-agent |
+| `maxTurns` | `number` | parent value | Turn limit override |
+| `maxCostUsd` | `number` | — | Per-spawn cost cap in USD |
+
+### Sequential multi-agent workflows
+
+`runAgentWorkflow` chains agents in order, piping each step's output as the next step's prompt:
 
 ```typescript
 import { runAgentWorkflow } from "@orager/core";
 import type { AgentWorkflow } from "@orager/core";
 
 const workflow: AgentWorkflow = {
+  base: {
+    apiKey: process.env.PROTOCOL_API_KEY!,
+    cwd: process.cwd(),
+    onEmit: (e) => console.log(e),
+  },
   steps: [
     { role: "researcher", model: "deepseek/deepseek-r1" },
-    { role: "writer",     model: "anthropic/claude-sonnet-4-5" },
+    { role: "writer",     model: "anthropic/claude-sonnet-4-6" },
     { role: "reviewer",   model: "deepseek/deepseek-chat" },
   ],
 };
 
 await runAgentWorkflow(workflow, "Investigate and write a report on...");
 ```
+
+> **Dynamic spawning vs. sequential workflows:** Use dynamic spawning (`agents` option) when you want the model to reason about delegation and run tasks in parallel. Use `runAgentWorkflow` for deterministic, ordered pipelines where each step builds on the last.
 
 ---
 
@@ -109,6 +176,8 @@ orager maintains three memory layers per agent namespace, stored in per-namespac
 | **Short-term episodic** | Within-session | Last N turns + condensed summary; auto-compresses at 70% token pressure or every 6 turns |
 
 Retrieval uses FTS5 full-text search by default, with optional ANN vector search via `sqlite-vec` for embedding-based retrieval.
+
+Sub-agents inherit the parent's memory namespace for reads. Writes are suppressed by default; opt in per-agent with `memoryWrite: true` on the `AgentDefinition`.
 
 ```bash
 orager memory list             # see all stored memories
@@ -199,7 +268,7 @@ Switch models mid-session or use turn-based escalation rules:
 await runAgentLoop({
   model: "deepseek/deepseek-chat",
   turnModelRules: [
-    { afterTurn: 5, model: "anthropic/claude-sonnet-4-5" },
+    { afterTurn: 5, model: "anthropic/claude-sonnet-4-6" },
   ],
 });
 ```
@@ -226,6 +295,17 @@ await runAgentLoop({
 });
 ```
 
+### OpenTelemetry tracing
+
+orager emits OTEL traces when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Sub-agent spans are automatically nested under their parent's `agent_loop` span via AsyncLocalStorage — no manual wiring needed.
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+orager run "..."
+```
+
+A built-in span buffer (last 2,000 spans) is always populated and exposed in the browser UI's **Telemetry** tab, regardless of whether an external collector is configured.
+
 ---
 
 ## Configuration
@@ -244,6 +324,7 @@ await runAgentLoop({
 | `ORAGER_MAX_COST_USD` | — | Hard cost cap in USD |
 | `ORAGER_PROFILES_DIR` | `~/.orager/profiles` | Custom profiles directory |
 | `ORAGER_SETTINGS_ALLOWED_ROOTS` | — | Colon-separated roots for `--settings-file` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | Enable OTEL tracing (any OTLP/HTTP collector) |
 
 ### `~/.orager/settings.json`
 
@@ -305,7 +386,7 @@ The UI provides:
 - **Dashboard** — live cost tracking, session list, OMLS adapter status
 - **Configuration** — settings editor, Ollama and OMLS setup
 - **Logs** — structured agent logs with filtering
-- **Telemetry** — token usage and cost breakdown over time
+- **Telemetry** — span waterfall view, token usage, and cost breakdown over time
 
 ---
 
@@ -330,37 +411,39 @@ Build from source: `bun run build:binary`
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────┐
-│              Your code / CLI                         │
-│  orager run · orager chat · orager serve             │
-│  runAgentLoop()  ·  runAgentWorkflow()               │
-└──────────────┬───────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│              Your code / CLI                                 │
+│  orager run · orager chat · orager serve                     │
+│  runAgentLoop()  ·  runAgentWorkflow()                       │
+└──────────────┬───────────────────────────────────────────────┘
                │ in-process (default)
                │ or subprocess JSON-RPC 2.0
                ▼
-┌──────────────────────────────────────────────────────┐
-│                  loop.ts — Agent Loop                │
-│                                                      │
-│  Input processing                                    │
-│  ├─ Text prompt + --file attachments                 │
-│  │  (images, PDFs, audio/Whisper, text)              │
-│  └─ Modality routing (vision / audio / document)     │
-│                                                      │
-│  System prompt assembly                              │
-│  ├─ [FROZEN]  base rules · skills · CLAUDE.md        │
-│  │            ← cache_control breakpoint             │
-│  └─ [DYNAMIC] master context · memories · checkpoint │
-│                                                      │
-│  ┌─────────── Turn Loop ──────────────┐              │
-│  │  callOpenRouter / Ollama           │              │
-│  │  Parse text + tool calls + memory  │              │
-│  │  Execute tools (10 concurrent max) │              │
-│  │  Ingest <memory_update> blocks     │              │
-│  │  Summarize at 70% token pressure   │              │
-│  └────────────────────────────────────┘              │
-│                                                      │
-│  Session checkpoints · cost tracking · webhooks      │
-└──────┬───────────────────────┬───────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                  loop.ts — Agent Loop                        │
+│                                                              │
+│  Input processing                                            │
+│  ├─ Text prompt + --file attachments                         │
+│  │  (images, PDFs, audio/Whisper, text)                      │
+│  └─ Modality routing (vision / audio / document)             │
+│                                                              │
+│  System prompt assembly                                      │
+│  ├─ [FROZEN]  base rules · skills · CLAUDE.md · agents       │
+│  │            ← cache_control breakpoint                     │
+│  └─ [DYNAMIC] master context · memories · checkpoint         │
+│                                                              │
+│  ┌─────────── Turn Loop ──────────────────────────────┐      │
+│  │  callOpenRouter / Ollama                           │      │
+│  │  Parse text + tool calls + memory                 │      │
+│  │  Execute tools (10 concurrent max)                │      │
+│  │    └─ Agent tool → spawn sub-agent loops          │      │
+│  │         (concurrent, depth-limited, OTEL-traced)  │      │
+│  │  Ingest <memory_update> blocks                    │      │
+│  │  Summarize at 70% token pressure                  │      │
+│  └────────────────────────────────────────────────────┘      │
+│                                                              │
+│  Session checkpoints · cost tracking · webhooks              │
+└──────┬───────────────────────┬───────────────────────────────┘
        │                       │
        ▼                       ▼
 ┌─────────────────┐   ┌──────────────────────────────┐
