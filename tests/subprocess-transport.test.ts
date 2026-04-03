@@ -160,27 +160,104 @@ describe("orchestrator protocol parsing", () => {
   });
 });
 
-// ── runAgentLoopSubprocess: child process that exits with non-zero ────────────
+// ── runAgentLoopSubprocess: child process edge cases ─────────────────────────
+//
+// The transport spawns:  binaryPath ["--subprocess"]
+// We write small Node.js shebang scripts to a temp file so we can control
+// exactly what stdout/stderr the child emits and what exit code it returns.
 
 import { runAgentLoopSubprocess } from "../src/subprocess.js";
 
+/**
+ * Write a temporary script and return the path to a shell wrapper that runs
+ * it via process.execPath (bun or node, whichever is executing the tests).
+ * The transport calls: spawn(binaryPath, ["--subprocess"]) — the shell wrapper
+ * forwards all args to the JS file so the script can ignore them if desired.
+ */
+async function writeTempScript(body: string): Promise<string> {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "orager-sp-test-"));
+  const scriptPath = path.join(tmpDir, "child.js");
+  const wrapperPath = path.join(tmpDir, "child.sh");
+  await fs.writeFile(scriptPath, `${body}\n`);
+  // Shell wrapper: exec the right interpreter with the JS file + all forwarded args
+  await fs.writeFile(
+    wrapperPath,
+    `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(scriptPath)} "$@"\n`,
+    { mode: 0o755 },
+  );
+  return wrapperPath;
+}
+
+function baseOpts(binaryPath: string) {
+  return {
+    prompt: "p", model: "m", apiKey: "k", sessionId: null, addDirs: [],
+    maxTurns: 1, cwd: "/tmp", dangerouslySkipPermissions: false, verbose: false,
+    onEmit: vi.fn(),
+    subprocess: { enabled: true, binaryPath },
+  } as const;
+}
+
 describe("runAgentLoopSubprocess", () => {
   it("rejects when child exits with non-zero code and no JSON-RPC response", async () => {
-    // node -e "process.exit(1)" — hangs no longer, exits immediately with code 1.
-    // runAgentLoopSubprocess gets no response line, child closes with code 1.
-    await expect(
-      runAgentLoopSubprocess({
-        prompt: "p", model: "m", apiKey: "k", sessionId: null, addDirs: [],
-        maxTurns: 1, cwd: "/tmp", dangerouslySkipPermissions: false, verbose: false,
-        onEmit: vi.fn(),
-        subprocess: {
-          enabled: true,
-          // Use node to run -e script. The --subprocess arg is passed but node
-          // ignores unrecognised args after -e "script" (treats them as argv).
-          binaryPath: "/usr/local/bin/node",
-        },
-      }),
-    ).rejects.toThrow();
-    // Any rejection is acceptable — the child exited without a valid response.
+    const scriptPath = await writeTempScript(`process.exit(1);`);
+    await expect(runAgentLoopSubprocess(baseOpts(scriptPath))).rejects.toThrow();
+    await fs.rm(path.dirname(scriptPath), { recursive: true, force: true });
+  }, 5000);
+
+  it("rejects when child exits cleanly (code 0) without sending a JSON-RPC response", async () => {
+    // Before the responseReceived fix, a clean exit with no response resolved()
+    // silently — the caller had no output and no indication of failure.
+    const scriptPath = await writeTempScript([
+      // Drain stdin so the transport's stdin.end() doesn't cause EPIPE.
+      `process.stdin.resume();`,
+      `process.stdin.on("end", () => {`,
+      `  // Write a notification but deliberately omit the final JSON-RPC result.`,
+      `  const n = { jsonrpc:"2.0", method:"agent/event", params:{ type:"system" } };`,
+      `  process.stdout.write(JSON.stringify(n) + "\\n");`,
+      `  process.exit(0);  // clean exit — no result response written`,
+      `});`,
+    ].join("\n"));
+
+    await expect(runAgentLoopSubprocess(baseOpts(scriptPath)))
+      .rejects.toThrow("without sending a JSON-RPC response");
+
+    await fs.rm(path.dirname(scriptPath), { recursive: true, force: true });
+  }, 5000);
+
+  it("resolves and logs a stderr warning when child emits malformed JSON before the final response", async () => {
+    // The orchestrator must survive garbage lines and continue processing.
+    // After the malformed line the child sends a valid final response — the
+    // call should resolve, and the garbage should have been written to stderr.
+    const scriptPath = await writeTempScript([
+      `process.stdin.resume();`,
+      `process.stdin.on("end", () => {`,
+      `  process.stdout.write("this is not JSON at all\\n");`,
+      `  const r = { jsonrpc:"2.0", id:1, result:{ done:true } };`,
+      `  process.stdout.write(JSON.stringify(r) + "\\n");`,
+      `});`,
+    ].join("\n"));
+
+    const stderrLines: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    // Capture stderr writes without suppressing them.
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation(
+      (chunk: unknown, ...rest: unknown[]) => {
+        if (typeof chunk === "string") stderrLines.push(chunk);
+        return (origWrite as (...a: unknown[]) => boolean)(chunk, ...rest);
+      },
+    );
+
+    try {
+      // Should resolve — valid final response arrives after the garbage line.
+      await expect(runAgentLoopSubprocess(baseOpts(scriptPath))).resolves.toBeUndefined();
+    } finally {
+      spy.mockRestore();
+    }
+
+    // The orchestrator must have logged the malformed line.
+    const logged = stderrLines.join("");
+    expect(logged).toContain("malformed JSON");
+
+    await fs.rm(path.dirname(scriptPath), { recursive: true, force: true });
   }, 5000);
 });

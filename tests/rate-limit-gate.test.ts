@@ -116,4 +116,39 @@ describe("waitIfRateLimited", () => {
     await waitIfRateLimited(state, (msg) => logs.push(msg));
     expect(logs).toHaveLength(0);
   });
+
+  it("falls back to 2 000 ms conservative back-off when reset header is a malformed date string", async () => {
+    // Without the parseResetDate fix in RateLimitTracker, new Date("not-a-date")
+    // would be stored as-is and propagate NaN into the gate:
+    //   Math.min(NaN) → NaN → setTimeout(fn, NaN) → fires at 0 ms (no wait).
+    // After the fix, parseResetDate returns null for invalid strings, so
+    // resetRequestsAt is null and the gate falls back to the 2 s conservative backoff.
+    const { RateLimitTracker } = await import("../src/rate-limit-tracker.js");
+    const tracker = new RateLimitTracker();
+    tracker.updateFromHeaders({
+      "x-ratelimit-limit-requests": "100",
+      "x-ratelimit-remaining-requests": "2",   // < 5% — triggers gate
+      "x-ratelimit-limit-tokens": "0",
+      "x-ratelimit-remaining-tokens": "0",
+      "x-ratelimit-reset-requests": "not-a-date", // malformed — must not produce NaN
+    });
+    const state = tracker.getState()!;
+    expect(state.resetRequestsAt).toBeNull(); // fix: stored as null, not Invalid Date
+
+    let resolved = false;
+    const p = waitIfRateLimited(state).then(() => { resolved = true; });
+
+    // Must NOT resolve immediately — that would mean the gate fired at 0 ms
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+
+    // Should resolve after the 2 000 ms conservative back-off
+    vi.advanceTimersByTime(1_999);
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+
+    vi.advanceTimersByTime(2);
+    await p;
+    expect(resolved).toBe(true);
+  });
 });

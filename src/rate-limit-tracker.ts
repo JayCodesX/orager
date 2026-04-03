@@ -25,6 +25,17 @@ export interface RateLimitState {
 
 const WARNING_THRESHOLD_PCT = 0.1; // warn at 10% remaining
 
+/**
+ * Parse a reset-timestamp string from a rate-limit header into a Date.
+ * Returns null if the string is absent or not a valid date — guards against
+ * malformed / proxy-modified headers propagating NaN into downstream math.
+ */
+function parseResetDate(s: string | null): Date | null {
+  if (!s) return null;
+  const d = new Date(s);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
 export class RateLimitTracker {
   private _state: RateLimitState | null = null;
 
@@ -50,8 +61,8 @@ export class RateLimitTracker {
       remainingRequests: remainReq,
       limitTokens:       limitTok,
       remainingTokens:   remainTok,
-      resetRequestsAt:   resetReqStr ? new Date(resetReqStr) : null,
-      resetTokensAt:     resetTokStr ? new Date(resetTokStr) : null,
+      resetRequestsAt:   parseResetDate(resetReqStr),
+      resetTokensAt:     parseResetDate(resetTokStr),
       updatedAt:         new Date(),
     };
   }

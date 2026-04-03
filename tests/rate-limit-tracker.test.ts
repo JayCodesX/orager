@@ -145,3 +145,50 @@ describe("rateLimitSummary", () => {
     expect(summary).toContain("50%");
   });
 });
+
+describe("invalid reset-date header handling", () => {
+  it("stores null for resetRequestsAt when header value is not a valid date", async () => {
+    const { updateRateLimitState, getRateLimitState } = await import("../src/rate-limit-tracker.js");
+    updateRateLimitState({
+      "x-ratelimit-limit-requests": "1000",
+      "x-ratelimit-remaining-requests": "10",
+      "x-ratelimit-limit-tokens": "500000",
+      "x-ratelimit-remaining-tokens": "5000",
+      "x-ratelimit-reset-requests": "not-a-date",
+      "x-ratelimit-reset-tokens":   "also-invalid",
+    });
+    const state = getRateLimitState();
+    expect(state).not.toBeNull();
+    expect(state!.resetRequestsAt).toBeNull();
+    expect(state!.resetTokensAt).toBeNull();
+  });
+
+  it("stores null for resetRequestsAt when header value is an empty string", async () => {
+    const { updateRateLimitState, getRateLimitState } = await import("../src/rate-limit-tracker.js");
+    updateRateLimitState({
+      "x-ratelimit-limit-requests": "100",
+      "x-ratelimit-remaining-requests": "5",
+      "x-ratelimit-limit-tokens": "0",
+      "x-ratelimit-remaining-tokens": "0",
+      "x-ratelimit-reset-requests": "",
+    });
+    const state = getRateLimitState();
+    expect(state!.resetRequestsAt).toBeNull();
+  });
+
+  it("still stores a valid date alongside an invalid one", async () => {
+    const { updateRateLimitState, getRateLimitState } = await import("../src/rate-limit-tracker.js");
+    const validDate = "2026-04-03T12:00:00.000Z";
+    updateRateLimitState({
+      "x-ratelimit-limit-requests": "1000",
+      "x-ratelimit-remaining-requests": "10",
+      "x-ratelimit-limit-tokens": "500000",
+      "x-ratelimit-remaining-tokens": "5000",
+      "x-ratelimit-reset-requests": validDate,
+      "x-ratelimit-reset-tokens":   "garbage",
+    });
+    const state = getRateLimitState();
+    expect(state!.resetRequestsAt?.toISOString()).toBe(validDate);
+    expect(state!.resetTokensAt).toBeNull();
+  });
+});
