@@ -33,6 +33,14 @@ const SETTINGS_JSON_TEMPLATE = `{
   },
   "bashPolicy": {
     "blockedCommands": []
+  },
+  "providers": {
+    "openrouter": {},
+    "anthropic": {},
+    "ollama": {
+      "enabled": false,
+      "baseUrl": "http://localhost:11434"
+    }
   }
 }
 `;

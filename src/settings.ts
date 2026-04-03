@@ -22,6 +22,7 @@ import os from "node:os";
 import type { BashPolicy } from "./types.js";
 import type { HookConfig } from "./hooks.js";
 import type { McpServerConfig } from "./mcp-client.js";
+import type { ProvidersConfig } from "./providers/types.js";
 
 /**
  * Structured memory configuration block in settings.json.
@@ -68,6 +69,12 @@ export interface OragerSettings {
   memory?: MemoryConfig;
   /** OpenTelemetry export configuration. Disabled by default. */
   telemetry?: TelemetryConfig;
+  /**
+   * Provider-specific configuration blocks (ADR-0010).
+   * Scopes provider-only fields to their namespace instead of polluting the root config.
+   * When absent, flat config fields (apiKey, siteUrl, ollama, etc.) are used as fallback.
+   */
+  providers?: ProvidersConfig;
 }
 
 interface CachedSettings {
@@ -77,7 +84,7 @@ interface CachedSettings {
 
 const _cache = new Map<string, CachedSettings>();
 
-const KNOWN_SETTINGS_KEYS = new Set(["permissions", "bashPolicy", "hooks", "hooksEnabled", "skillbank", "omls", "memory"]);
+const KNOWN_SETTINGS_KEYS = new Set(["permissions", "bashPolicy", "hooks", "hooksEnabled", "skillbank", "omls", "memory", "telemetry", "providers"]);
 const KNOWN_MEMORY_KEYS = new Set(["tokenPressureThreshold", "turnInterval", "keepRecentTurns", "summarizationModel"]);
 const KNOWN_BASH_POLICY_KEYS = new Set(["blockedCommands", "stripEnvKeys", "isolateEnv", "allowedEnvKeys", "osSandbox", "allowNetwork"]);
 const KNOWN_SKILLBANK_KEYS = new Set(["enabled", "extractionModel", "maxSkills", "similarityThreshold", "deduplicationThreshold", "topK", "retentionDays", "autoExtract"]);
@@ -273,6 +280,74 @@ export function validateSettings(
           delete t.endpoint;
         } else if (!t.endpoint.startsWith("http://") && !t.endpoint.startsWith("https://")) {
           warnings.push(`'telemetry.endpoint' should be an HTTP/HTTPS URL (got '${t.endpoint}')`);
+        }
+      }
+    }
+  }
+
+  // ── providers ────────────────────────────────────────────────────────────
+  if (settings.providers !== undefined) {
+    if (typeof settings.providers !== "object" || settings.providers === null) {
+      warnings.push(`'providers' must be an object — ignoring`);
+      delete settings.providers;
+    } else {
+      const p = settings.providers as Record<string, unknown>;
+      const KNOWN_PROVIDER_NAMES = new Set(["openrouter", "anthropic", "ollama"]);
+      const KNOWN_OPENROUTER_KEYS = new Set(["apiKey", "apiKeys", "siteUrl", "siteName", "provider", "preset", "transforms", "dataCollection", "zdr", "sort", "quantizations", "require_parameters"]);
+      const KNOWN_ANTHROPIC_KEYS = new Set(["apiKey"]);
+      const KNOWN_OLLAMA_PROVIDER_KEYS = new Set(["enabled", "baseUrl", "model", "checkModel"]);
+
+      for (const providerName of Object.keys(p)) {
+        if (!KNOWN_PROVIDER_NAMES.has(providerName)) {
+          warnings.push(`unknown provider 'providers.${providerName}' — supported: ${[...KNOWN_PROVIDER_NAMES].join(", ")}`);
+          delete p[providerName];
+          continue;
+        }
+
+        const cfg = p[providerName];
+        if (typeof cfg !== "object" || cfg === null) {
+          warnings.push(`'providers.${providerName}' must be an object — ignoring`);
+          delete p[providerName];
+          continue;
+        }
+
+        const cfgObj = cfg as Record<string, unknown>;
+        const knownKeys = providerName === "openrouter" ? KNOWN_OPENROUTER_KEYS
+          : providerName === "anthropic" ? KNOWN_ANTHROPIC_KEYS
+          : KNOWN_OLLAMA_PROVIDER_KEYS;
+
+        for (const key of Object.keys(cfgObj)) {
+          if (!knownKeys.has(key)) {
+            warnings.push(`unknown key 'providers.${providerName}.${key}'`);
+          }
+        }
+
+        // Validate Ollama-specific fields
+        if (providerName === "ollama") {
+          if (cfgObj.enabled !== undefined && typeof cfgObj.enabled !== "boolean") {
+            warnings.push(`'providers.ollama.enabled' must be a boolean — ignoring`);
+            delete cfgObj.enabled;
+          }
+          if (cfgObj.baseUrl !== undefined && typeof cfgObj.baseUrl !== "string") {
+            warnings.push(`'providers.ollama.baseUrl' must be a string — ignoring`);
+            delete cfgObj.baseUrl;
+          }
+        }
+
+        // Validate OpenRouter-specific fields
+        if (providerName === "openrouter") {
+          if (cfgObj.zdr !== undefined && typeof cfgObj.zdr !== "boolean") {
+            warnings.push(`'providers.openrouter.zdr' must be a boolean — ignoring`);
+            delete cfgObj.zdr;
+          }
+          if (cfgObj.dataCollection !== undefined && !["allow", "deny"].includes(cfgObj.dataCollection as string)) {
+            warnings.push(`'providers.openrouter.dataCollection' must be "allow" or "deny" — ignoring`);
+            delete cfgObj.dataCollection;
+          }
+          if (cfgObj.sort !== undefined && !["price", "throughput", "latency"].includes(cfgObj.sort as string)) {
+            warnings.push(`'providers.openrouter.sort' must be "price", "throughput", or "latency" — ignoring`);
+            delete cfgObj.sort;
+          }
         }
       }
     }
