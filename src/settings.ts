@@ -38,6 +38,23 @@ export interface MemoryConfig {
   summarizationModel?: string;
 }
 
+/**
+ * Telemetry / OpenTelemetry configuration.
+ * Disabled by default — no spans are exported unless `enabled` is true.
+ */
+export interface TelemetryConfig {
+  /**
+   * Enable OTLP trace/metric export. Default: false.
+   * When true, requires either `endpoint` here or OTEL_EXPORTER_OTLP_ENDPOINT env var.
+   */
+  enabled?: boolean;
+  /**
+   * OTLP HTTP endpoint to export to (e.g. "http://localhost:4318").
+   * Overrides the OTEL_EXPORTER_OTLP_ENDPOINT environment variable.
+   */
+  endpoint?: string;
+}
+
 export interface OragerSettings {
   permissions?: Record<string, "allow" | "deny" | "ask">;
   bashPolicy?: BashPolicy;
@@ -49,6 +66,8 @@ export interface OragerSettings {
   omls?: import("./types.js").OmlsConfig;
   /** Memory system configuration — summarization thresholds, model overrides. */
   memory?: MemoryConfig;
+  /** OpenTelemetry export configuration. Disabled by default. */
+  telemetry?: TelemetryConfig;
 }
 
 interface CachedSettings {
@@ -62,6 +81,7 @@ const KNOWN_SETTINGS_KEYS = new Set(["permissions", "bashPolicy", "hooks", "hook
 const KNOWN_MEMORY_KEYS = new Set(["tokenPressureThreshold", "turnInterval", "keepRecentTurns", "summarizationModel"]);
 const KNOWN_BASH_POLICY_KEYS = new Set(["blockedCommands", "stripEnvKeys", "isolateEnv", "allowedEnvKeys", "osSandbox", "allowNetwork"]);
 const KNOWN_SKILLBANK_KEYS = new Set(["enabled", "extractionModel", "maxSkills", "similarityThreshold", "deduplicationThreshold", "topK", "retentionDays", "autoExtract"]);
+const KNOWN_TELEMETRY_KEYS = new Set(["enabled", "endpoint"]);
 
 /**
  * Validate and sanitise a raw settings object.
@@ -223,6 +243,36 @@ export function validateSettings(
         if (typeof v !== "number" || v < 1 || !Number.isInteger(v)) {
           warnings.push(`'skillbank.maxSkills' must be an integer >= 1 (got ${JSON.stringify(v)}) — using default`);
           delete sb.maxSkills;
+        }
+      }
+    }
+  }
+
+  // ── telemetry ────────────────────────────────────────────────────────────
+  if (settings.telemetry !== undefined) {
+    if (typeof settings.telemetry !== "object" || settings.telemetry === null) {
+      warnings.push(`'telemetry' must be an object — ignoring`);
+      delete settings.telemetry;
+    } else {
+      const t = settings.telemetry as Record<string, unknown>;
+
+      for (const key of Object.keys(t)) {
+        if (!KNOWN_TELEMETRY_KEYS.has(key)) {
+          warnings.push(`unknown key 'telemetry.${key}'`);
+        }
+      }
+
+      if (t.enabled !== undefined && typeof t.enabled !== "boolean") {
+        warnings.push(`'telemetry.enabled' must be a boolean (got ${typeof t.enabled}) — ignoring`);
+        delete t.enabled;
+      }
+
+      if (t.endpoint !== undefined) {
+        if (typeof t.endpoint !== "string") {
+          warnings.push(`'telemetry.endpoint' must be a string URL (got ${typeof t.endpoint}) — ignoring`);
+          delete t.endpoint;
+        } else if (!t.endpoint.startsWith("http://") && !t.endpoint.startsWith("https://")) {
+          warnings.push(`'telemetry.endpoint' should be an HTTP/HTTPS URL (got '${t.endpoint}')`);
         }
       }
     }

@@ -329,7 +329,12 @@ export type { AgentConfig, AgentWorkflow, AgentDefinition } from "./types.js";
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  await initTelemetry();
+  // Load settings early so telemetry.enabled/endpoint can be respected at startup.
+  // The full settings merge happens inside runAgentLoop; this is just a lightweight
+  // pre-read to extract the telemetry block before any SDK initialisation.
+  const { loadSettings } = await import("./settings.js");
+  const earlySettings = await loadSettings();
+  await initTelemetry("orager", earlySettings.telemetry);
 
   let argv = process.argv.slice(2);
   // Track whether --config-file was present before expansion (used to skip PID lock)

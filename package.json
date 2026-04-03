@@ -7,7 +7,8 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE"
   ],
   "bin": {
     "orager": "dist/index.js",
@@ -26,7 +27,8 @@
     "dev:ui": "vite --config ui/vite.config.ts",
     "mcp": "tsx src/mcp.ts",
     "build:binary": "node scripts/build-binary.mjs --targets=bun-darwin-arm64,bun-darwin-x64,bun-linux-x64",
-    "build:binary:local": "node scripts/build-binary.mjs --targets=bun-darwin-arm64"
+    "build:binary:local": "node scripts/build-binary.mjs --targets=bun-darwin-arm64",
+    "test:licenses": "bash scripts/check-licenses.sh"
   },
   "devDependencies": {
     "@tanstack/react-virtual": "^3.13.23",
