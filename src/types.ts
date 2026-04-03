@@ -1036,16 +1036,46 @@ export interface AgentLoopOptions {
   bashPolicy?: BashPolicy;
 
   /**
-   * Maximum depth of nested spawn_agent calls. Default 3. Set to 0 to disable
-   * subagent spawning entirely.
+   * Maximum depth of nested agent tool calls. Default 3. Set to 0 to disable
+   * sub-agent spawning entirely.
    */
   maxSpawnDepth?: number;
 
   /**
-   * Internal — current spawn depth. Set automatically by the spawn_agent tool.
+   * Internal — current spawn depth. Incremented automatically by the Agent tool.
    * Do not set this manually.
    */
   _spawnDepth?: number;
+
+  /**
+   * When true, suppress <memory_update> block processing for this run.
+   * Used by the Agent tool to prevent sub-agents from writing to the parent's
+   * memory namespace by default. Overridden by AgentDefinition.memoryWrite.
+   */
+  _suppressMemoryWrite?: boolean;
+
+  /**
+   * Named sub-agent definitions available to this run.
+   * When set, the Agent tool is registered and the model can delegate tasks
+   * to any defined sub-agent by name. The model reads each agent's `description`
+   * to decide when and what to delegate.
+   *
+   * @example
+   * agents: {
+   *   researcher: {
+   *     description: "Deep research and information gathering. Use for multi-source research tasks.",
+   *     prompt: "You are a research specialist...",
+   *     model: "deepseek/deepseek-r1",
+   *     tools: ["WebSearch", "WebFetch", "Read"],
+   *   },
+   *   reviewer: {
+   *     description: "Code review, security audit, and quality analysis.",
+   *     prompt: "You are a senior code reviewer...",
+   *     tools: ["Read", "Grep", "Glob"],
+   *   },
+   * }
+   */
+  agents?: Record<string, AgentDefinition>;
 
   /**
    * Features required for this run. If the selected model does not support all
@@ -1373,6 +1403,65 @@ export interface AgentLoopOptions {
      */
     binaryPath?: string;
   };
+}
+
+// ── Dynamic agent spawning types (ADR-0010) ──────────────────────────────────
+
+/**
+ * Definition for a named sub-agent that can be spawned dynamically via the
+ * Agent tool. The parent model reads `description` to decide when to delegate.
+ */
+export interface AgentDefinition {
+  /**
+   * One or two sentences describing what this agent does and when to use it.
+   * The parent model reads this to decide which agent (if any) to delegate to.
+   * Be specific: "Use for X when Y" is better than "An agent that does X".
+   */
+  description: string;
+
+  /**
+   * System prompt that defines the sub-agent's role, constraints, and output format.
+   * Prepended to the sub-agent's prompt before the task.
+   */
+  prompt: string;
+
+  /**
+   * Restrict the sub-agent to a named subset of the parent's tools.
+   * Use tool names exactly as registered (e.g. "Read", "Bash", "WebSearch").
+   * Omit to inherit all tools from the parent (minus the Agent tool itself —
+   * sub-agents cannot spawn further sub-agents).
+   */
+  tools?: string[];
+
+  /**
+   * Model override for this sub-agent. Any OpenRouter model ID or "inherit".
+   * Default: inherit the parent's model.
+   */
+  model?: string;
+
+  /**
+   * Memory namespace override. Omit to inherit the parent's memoryKey (read-only
+   * unless memoryWrite is true). Set to a custom string for isolated memory.
+   */
+  memoryKey?: string;
+
+  /**
+   * When true, allow the sub-agent to write <memory_update> blocks to its
+   * memory namespace. Default false — sub-agents read memory but don't write.
+   */
+  memoryWrite?: boolean;
+
+  /**
+   * When false, skip skill injection for this sub-agent. Default true.
+   * Disable for fast/cheap utility agents where token overhead isn't worth it.
+   */
+  skills?: boolean;
+
+  /** Max turns override for this sub-agent. Default: inherits parent's maxTurns. */
+  maxTurns?: number;
+
+  /** Per-sub-agent cost ceiling in USD. Default: no limit (parent's maxCostUsd applies). */
+  maxCostUsd?: number;
 }
 
 // ── Multi-agent workflow types ───────────────────────────────────────────────
