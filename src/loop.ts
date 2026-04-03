@@ -20,7 +20,7 @@ import { makeTodoTools } from "./tools/todo.js";
 import { makeRememberTool } from "./tools/remember.js";
 import { makeWriteMemoryTool, makeReadMemoryTool, loadAutoMemory } from "./tools/auto-memory.js";
 import { loadMemoryStoreAny, saveMemoryStoreAny, addMemoryEntry, pruneExpired, renderMemoryBlock, renderRetrievedBlock, retrieveEntries, retrieveEntriesWithEmbeddings, memoryKeyFromCwd, buildMemoryKeyFromRepo, shouldUseFtsRetrieval, withMemoryLock } from "./memory.js";
-import { isSqliteMemoryEnabled, searchMemoryFts, searchMemoryFtsMulti, loadMasterContext, addMemoryEntrySqlite, getMemoryEntryCount, getEntriesForDistillation, deleteMemoryEntriesByIds } from "./memory-sqlite.js";
+import { isSqliteMemoryEnabled, searchMemoryFts, searchMemoryFtsMulti, loadMasterContext, addMemoryEntrySqlite, getMemoryEntryCount, getEntriesForDistillation, deleteMemoryEntriesByIds, retrieveEntriesANNSqlite } from "./memory-sqlite.js";
 import { fireHooks } from "./hooks.js";
 import type { HookConfig, HookPayload } from "./hooks.js";
 import { loadSettings, mergeSettings, loadClaudeDesktopMcpServers } from "./settings.js";
@@ -709,7 +709,11 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             totalEntries: memStore.entries.length,
             topK: 12,
             path: "embedding",
-          }, async () => retrieveEntriesWithEmbeddings(memStore, queryVec ?? [], { topK: 12 }));
+          }, async () => {
+            const qv = queryVec ?? [];
+            const ann = await retrieveEntriesANNSqlite(effectiveMemoryKey, qv, 12);
+            return ann ?? retrieveEntriesWithEmbeddings(memStore, qv, { topK: 12 });
+          });
           memBlock = renderRetrievedBlock(embEntries, memoryMaxChars);
           _retrievalPath = "embedding"; _retrievalCount = embEntries.length;
         } catch {
@@ -755,7 +759,10 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
                   totalEntries: memStore.entries.length,
                   topK: 12,
                   path: "fts_embedding_fallback",
-                }, async () => retrieveEntriesWithEmbeddings(memStore, queryVec!, { topK: 12 }))
+                }, async () => {
+                  const ann = await retrieveEntriesANNSqlite(effectiveMemoryKey, queryVec!, 12);
+                  return ann ?? retrieveEntriesWithEmbeddings(memStore, queryVec!, { topK: 12 });
+                })
               : [];
             if (embResults.length > 0) {
               onLog?.("stderr", `[orager] FTS miss — embedding fallback retrieved ${embResults.length} entries\n`);

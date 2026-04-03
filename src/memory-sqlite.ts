@@ -9,7 +9,7 @@
  *
  * Skills table has been moved to skillbank's own DB (~/.orager/skills/).
  */
-import { openWasmDb } from "./native-sqlite.js";
+import { openWasmDb, isSqliteVecAvailable } from "./native-sqlite.js";
 import type { WasmDatabase } from "./native-sqlite.js";
 import crypto from "node:crypto";
 import type { MemoryStore, MemoryEntry } from "./memory.js";
@@ -147,6 +147,10 @@ function _migrate(db: WasmDatabase): void {
     CREATE INDEX IF NOT EXISTS idx_context_type ON memory_entries(context_id, type);
   `);
 
+  // ── _meta table + ANN index ───────────────────────────────────────────────
+  // _meta stores kv pairs (e.g. vec_dim) so we can recreate the vec0 table on open.
+  db.exec(`CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+
   // One-time migration: convert legacy JSON-string embeddings to binary Float32 BLOB.
   const legacyRows = db.prepare(
     "SELECT rowid, embedding FROM memory_entries WHERE embedding IS NOT NULL AND typeof(embedding) = 'text'",
@@ -161,6 +165,61 @@ function _migrate(db: WasmDatabase): void {
       } catch { /* skip malformed rows */ }
     }
   }
+
+  // Backfill vec index from existing embeddings (no-op when sqlite-vec unavailable).
+  // Called once per process per DB open; _rebuildVecForNamespace is idempotent.
+  _rebuildVecForNamespace(db);
+}
+
+// ── sqlite-vec ANN helpers ────────────────────────────────────────────────────
+
+/**
+ * Create (or verify) the memory_entry_vectors vec0 virtual table.
+ * Returns true when the table is ready for use with the given dimension.
+ * If the stored dimension differs (model swap), drops and recreates the table.
+ */
+function _ensureVecTable(db: WasmDatabase, dim: number): boolean {
+  if (!isSqliteVecAvailable()) return false;
+  try {
+    const dimRow = db.prepare("SELECT value FROM _meta WHERE key = 'vec_dim'").get() as { value: string } | undefined;
+    if (dimRow) {
+      if (parseInt(dimRow.value, 10) === dim) return true;
+      // Dimension changed (embedding model swap) — drop and recreate
+      db.exec("DROP TABLE IF EXISTS memory_entry_vectors");
+      db.prepare("DELETE FROM _meta WHERE key = 'vec_dim'").run();
+    }
+    db.exec(`CREATE VIRTUAL TABLE memory_entry_vectors USING vec0(embedding float[${dim}])`);
+    db.prepare("INSERT INTO _meta (key, value) VALUES ('vec_dim', ?)").run(String(dim));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Rebuild the memory_entry_vectors table from scratch for all embeddings in
+ * this DB. Called on DB open (backfill) and after saveMemoryStoreSqlite.
+ * No-op when sqlite-vec is unavailable or there are no embeddings.
+ */
+function _rebuildVecForNamespace(db: WasmDatabase): void {
+  if (!isSqliteVecAvailable()) return;
+  try {
+    const embRows = db.prepare(
+      "SELECT rowid, embedding FROM memory_entries WHERE embedding IS NOT NULL",
+    ).all() as { rowid: number; embedding: Uint8Array }[];
+    if (embRows.length === 0) return;
+
+    const dim = embRows[0]!.embedding.byteLength / 4;
+    if (!_ensureVecTable(db, dim)) return;
+
+    db.transaction(() => {
+      db.exec("DELETE FROM memory_entry_vectors");
+      const ins = db.prepare("INSERT INTO memory_entry_vectors (rowid, embedding) VALUES (?, ?)");
+      for (const row of embRows) {
+        try { ins.run(row.rowid, row.embedding); } catch { /* skip malformed */ }
+      }
+    })();
+  } catch { /* graceful — ANN unavailable, brute-force fallback active */ }
 }
 
 // ── Row mapping ───────────────────────────────────────────────────────────────
@@ -233,11 +292,23 @@ export async function loadMemoryStoreSqlite(memoryKey: string): Promise<MemorySt
 
 export async function saveMemoryStoreSqlite(memoryKey: string, store: MemoryStore): Promise<void> {
   const db = await getDb(memoryKey);
+  // ON CONFLICT DO UPDATE preserves the existing rowid (unlike INSERT OR REPLACE which
+  // deletes + reinserts and would break the sqlite-vec ANN index rowid references).
   const upsert = db.prepare(`
-    INSERT OR REPLACE INTO memory_entries
+    INSERT INTO memory_entries
       (id, memory_key, content, tags, created_at, expires_at, run_id, importance, embedding, embedding_model)
     VALUES
       (@id, @memoryKey, @content, @tags, @createdAt, @expiresAt, @runId, @importance, @embedding, @embeddingModel)
+    ON CONFLICT(id) DO UPDATE SET
+      memory_key      = excluded.memory_key,
+      content         = excluded.content,
+      tags            = excluded.tags,
+      created_at      = excluded.created_at,
+      expires_at      = excluded.expires_at,
+      run_id          = excluded.run_id,
+      importance      = excluded.importance,
+      embedding       = excluded.embedding,
+      embedding_model = excluded.embedding_model
   `);
 
   const doSave = db.transaction((entries: MemoryEntry[]) => {
@@ -262,6 +333,8 @@ export async function saveMemoryStoreSqlite(memoryKey: string, store: MemoryStor
   });
 
   doSave(store.entries);
+  // Rebuild ANN index to reflect any inserts, updates, or deletions.
+  _rebuildVecForNamespace(db);
 }
 
 export async function addMemoryEntrySqlite(
@@ -271,6 +344,8 @@ export async function addMemoryEntrySqlite(
   const db = await getDb(memoryKey);
   const id = crypto.randomUUID();
   const createdAt = new Date().toISOString();
+
+  const embeddingBlob = entry._embedding ? Buffer.from(new Float32Array(entry._embedding).buffer) : null;
 
   db.prepare(`
     INSERT INTO memory_entries
@@ -282,10 +357,23 @@ export async function addMemoryEntrySqlite(
     tags: entry.tags ? JSON.stringify(entry.tags) : null,
     createdAt, expiresAt: entry.expiresAt ?? null, runId: entry.runId ?? null,
     importance: entry.importance ?? 2,
-    embedding: entry._embedding ? Buffer.from(new Float32Array(entry._embedding).buffer) : null,
+    embedding: embeddingBlob,
     embeddingModel: entry._embeddingModel ?? null,
     type: entry.type ?? "insight",
   });
+
+  // Sync to ANN index immediately so the new entry is searchable without waiting
+  // for the next saveMemoryStoreSqlite rebuild.
+  if (embeddingBlob && entry._embedding && isSqliteVecAvailable()) {
+    try {
+      const row = db.prepare("SELECT rowid FROM memory_entries WHERE id = ?").get(id) as { rowid: number } | undefined;
+      if (row && _ensureVecTable(db, entry._embedding.length)) {
+        db.prepare("INSERT OR REPLACE INTO memory_entry_vectors (rowid, embedding) VALUES (?, ?)").run(
+          row.rowid, embeddingBlob,
+        );
+      }
+    } catch { /* graceful — next saveMemoryStoreSqlite will rebuild */ }
+  }
 
   return { ...entry, id, createdAt, importance: entry.importance ?? 2 };
 }
@@ -449,13 +537,121 @@ export async function getEntriesForDistillation(
 
 export async function deleteMemoryEntriesByIds(ids: string[]): Promise<void> {
   if (ids.length === 0) return;
-  // Group by memoryKey since ids may span namespaces — load each affected DB
-  // Simplification: scan all open DBs for the given ids
   const placeholders = ids.map(() => "?").join(",");
   for (const db of _dbs.values()) {
     try {
-      db.prepare(`DELETE FROM memory_entries WHERE id IN (${placeholders})`).run(...ids);
+      db.transaction(() => {
+        // Collect rowids before deletion so we can sync the vec index.
+        let rowids: number[] = [];
+        if (isSqliteVecAvailable()) {
+          try {
+            rowids = (db.prepare(
+              `SELECT rowid FROM memory_entries WHERE id IN (${placeholders})`,
+            ).all(...ids) as { rowid: number }[]).map((r) => r.rowid);
+          } catch { /* ignore */ }
+        }
+        db.prepare(`DELETE FROM memory_entries WHERE id IN (${placeholders})`).run(...ids);
+        if (rowids.length > 0) {
+          const rp = rowids.map(() => "?").join(",");
+          try {
+            db.prepare(`DELETE FROM memory_entry_vectors WHERE rowid IN (${rp})`).run(...rowids);
+          } catch { /* vec table may not exist yet — no-op */ }
+        }
+      })();
     } catch { /* ignore */ }
+  }
+}
+
+/**
+ * ANN embedding retrieval using the sqlite-vec memory_entry_vectors index.
+ *
+ * Returns a ranked list of up to `topK` entries whose stored embedding is
+ * nearest to `queryEmbedding`, re-ranked with the same importance × recency
+ * weights used by the brute-force path.
+ *
+ * Returns null when:
+ *  - sqlite-vec is unavailable on this process
+ *  - the vec table does not exist yet (no embeddings ever stored)
+ *  - the embedding dimension doesn't match (model was swapped)
+ *  - any SQLite error occurs
+ *
+ * Callers must fall back to retrieveEntriesWithEmbeddings() when null is returned.
+ */
+export async function retrieveEntriesANNSqlite(
+  memoryKey: string,
+  queryEmbedding: number[],
+  topK: number,
+): Promise<MemoryEntry[] | null> {
+  if (!isSqliteVecAvailable() || queryEmbedding.length === 0) return null;
+
+  const db = await getDb(memoryKey);
+
+  // Verify the vec table exists with a matching dimension
+  const dimRow = db.prepare("SELECT value FROM _meta WHERE key = 'vec_dim'").get() as { value: string } | undefined;
+  if (!dimRow || parseInt(dimRow.value, 10) !== queryEmbedding.length) return null;
+
+  const now = new Date().toISOString();
+
+  try {
+    const queryBlob = new Uint8Array(new Float32Array(queryEmbedding).buffer);
+    // Fetch topK*2 candidates to give buffer for post-filter and reranking.
+    const annRows = db.prepare(`
+      SELECT rowid, distance
+      FROM memory_entry_vectors
+      WHERE embedding MATCH ?
+        AND k = ?
+    `).all(queryBlob, topK * 2) as { rowid: number; distance: number }[];
+
+    if (annRows.length === 0) return [];
+
+    const distanceByRowid = new Map(annRows.map((r) => [r.rowid, r.distance]));
+    const rowids = annRows.map((r) => r.rowid);
+    const rp = rowids.map(() => "?").join(",");
+
+    // Load full entry data and apply expiry + namespace + type filters
+    const rows = db.prepare(`
+      SELECT rowid, id, memory_key, content, tags, created_at, expires_at,
+             run_id, importance, embedding, embedding_model
+      FROM memory_entries
+      WHERE rowid IN (${rp})
+        AND memory_key = ?
+        AND (expires_at IS NULL OR expires_at > ?)
+        AND type != 'master_context'
+    `).all(...rowids, memoryKey, now) as unknown as (MemoryRow & { rowid: number })[];
+
+    // Re-rank with exact cosine similarity + importance × recency
+    // (same formula as retrieveEntriesWithEmbeddings in memory.ts)
+    const scored = rows.map((row) => {
+      const entry = rowToEntry(row);
+      const importanceWeight = entry.importance === 3 ? 1.5 : entry.importance === 2 ? 1.0 : 0.6;
+      const days = (Date.now() - Date.parse(entry.createdAt)) / 86400000;
+      const recencyDecay = 1 / (1 + days / 30);
+
+      let score = 0;
+      if (entry._embedding && entry._embedding.length === queryEmbedding.length) {
+        // Exact cosine similarity for precise reranking over ANN candidates
+        let dot = 0, magA = 0, magB = 0;
+        for (let i = 0; i < queryEmbedding.length; i++) {
+          dot  += queryEmbedding[i]! * entry._embedding[i]!;
+          magA += queryEmbedding[i]! * queryEmbedding[i]!;
+          magB += entry._embedding[i]! * entry._embedding[i]!;
+        }
+        const denom = Math.sqrt(magA) * Math.sqrt(magB);
+        score = denom === 0 ? 0 : (dot / denom) * importanceWeight * recencyDecay;
+      } else {
+        // Embedding missing or mismatched — use L2 distance as a proxy score
+        const d = distanceByRowid.get(row.rowid) ?? 2;
+        score = (1 / (1 + d)) * importanceWeight * recencyDecay;
+      }
+      return { entry, score };
+    });
+
+    return scored
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK)
+      .map(({ entry }) => entry);
+  } catch {
+    return null; // signal caller to use brute-force fallback
   }
 }
 

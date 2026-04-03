@@ -21,6 +21,7 @@
 import { callEmbeddings, callOpenRouter } from "../openrouter.js";
 import type { OmlsConfig, RouterSignal, ConfidenceRouterConfig } from "../types.js";
 import { DEFAULT_TEACHER_MODELS } from "./supported-models.js";
+import { cosineSimilarity } from "../memory.js";
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
 
@@ -86,18 +87,6 @@ async function getPatternEmbeddings(
   _patternEmbeddings = await callEmbeddings(apiKey, embeddingModel, HARD_TASK_PATTERNS);
   _patternEmbeddingModel = embeddingModel;
   return _patternEmbeddings;
-}
-
-function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length !== b.length || a.length === 0) return 0;
-  let dot = 0, normA = 0, normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
-  return denom === 0 ? 0 : dot / denom;
 }
 
 // ── Signal 1: Task classifier ─────────────────────────────────────────────────
