@@ -36,6 +36,8 @@ import { handleMemorySubcommand } from "./commands/memory-command.js";
 import { handleRunCommand } from "./commands/run-command.js";
 import { handleChatCommand } from "./commands/chat-command.js";
 import { makeCliOnEmit, extractFlag } from "./commands/cli-helpers.js";
+import { requestShutdown } from "./shutdown.js";
+import { closeDb } from "./memory-sqlite.js";
 
 // ── Node.js version gate ──────────────────────────────────────────────────────
 {
@@ -136,9 +138,25 @@ async function releaseCliPidLock(): Promise<void> {
 let interruptSessionId = "";
 let interruptUsage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 };
 
-async function handleInterrupt(signal: string): Promise<void> {
-  process.stderr.write(`\n[orager] received ${signal}, shutting down\n`);
+// Hard-kill timeout: if graceful shutdown hangs for >5s, force exit.
+const SHUTDOWN_TIMEOUT_MS = 5_000;
+let _shutdownInProgress = false;
 
+async function handleInterrupt(signal: string): Promise<void> {
+  // Prevent re-entrant signal handling (e.g. double Ctrl-C)
+  if (_shutdownInProgress) {
+    process.stderr.write(`\n[orager] force exit on second ${signal}\n`);
+    process.exit(1);
+  }
+  _shutdownInProgress = true;
+
+  process.stderr.write(`\n[orager] received ${signal}, shutting down gracefully...\n`);
+
+  // Set the flag — the agent loop checks this at the top of each turn and
+  // breaks cleanly, allowing the finally block to save sessions + release locks.
+  requestShutdown();
+
+  // Emit interrupted result so listeners (e.g. Paperclip adapter) know we stopped.
   const resultEvent: EmitResultEvent = {
     type: "result",
     subtype: "interrupted",
@@ -150,16 +168,29 @@ async function handleInterrupt(signal: string): Promise<void> {
   };
   emit(resultEvent);
 
+  // Hard-kill fallback — if the loop doesn't exit within SHUTDOWN_TIMEOUT_MS,
+  // force-close everything and exit. This prevents hanging on stuck tool calls.
+  const hardKill = setTimeout(() => {
+    process.stderr.write(`[orager] shutdown timeout (${SHUTDOWN_TIMEOUT_MS}ms) — forcing exit\n`);
+    _doFinalCleanup().finally(() => process.exit(1));
+  }, SHUTDOWN_TIMEOUT_MS);
+  // Don't let this timer keep the process alive if the loop exits normally.
+  if (hardKill.unref) hardKill.unref();
+
   // Flush OTel spans/metrics before exit so no telemetry is lost on SIGTERM.
-  // getSpanBuffer() is synchronous; the SDK shutdown is what needs to await.
-  // Import lazily to avoid circular deps and keep the no-OTEL path fast.
   try {
     const { flushTelemetry } = await import("./telemetry.js");
     await flushTelemetry();
   } catch { /* non-fatal — never block shutdown */ }
+}
 
+/**
+ * Close all open SQLite handles and release the PID lock.
+ * Called both on normal exit and on hard-kill timeout.
+ */
+async function _doFinalCleanup(): Promise<void> {
+  try { closeDb(); } catch { /* best-effort WAL checkpoint */ }
   await releaseCliPidLock();
-  process.exit(0);
 }
 
 process.on("SIGINT", () => { void handleInterrupt("SIGINT"); });

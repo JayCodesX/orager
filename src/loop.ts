@@ -81,6 +81,7 @@ import { recordTokens, recordSession } from "./metrics.js";
 // recordToolCall is used in loop-executor.ts (extracted in Sprint 6)
 import { executeOne as _executeOneImpl, type ToolExecCtx } from "./loop-executor.js";
 import { runPreflight } from "./loop-preflight.js";
+import { isShutdownRequested } from "./shutdown.js";
 
 // ── Cost anomaly detection ────────────────────────────────────────────────────
 //
@@ -1307,7 +1308,15 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
 
     // maxTurns <= 0 means unlimited
     while (maxTurns <= 0 || turn < maxTurns) {
-      // ── Cancellation check ────────────────────────────────────────────────
+      // ── Cancellation / graceful shutdown check ────────────────────────────
+      // isShutdownRequested() is set by the SIGINT/SIGTERM handler in index.ts.
+      // Breaking here lets the finally block run normally: session is saved,
+      // locks released, MCP handles closed.
+      if (isShutdownRequested()) {
+        onLog?.("stderr", "[orager] shutdown requested — stopping loop cleanly\n");
+        log.warn("loop_shutdown", { sessionId, turn });
+        break;
+      }
       if (_effectiveAbortSignal?.aborted) {
         onLog?.("stderr", "[orager] run cancelled via abort signal\n");
         log.warn("loop_cancelled", { sessionId, turn });

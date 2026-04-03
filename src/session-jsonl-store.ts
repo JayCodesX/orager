@@ -19,6 +19,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { openDb, type SqliteDatabase } from "./native-sqlite.js";
+import { runMigrations, type Migration } from "./db-migrations.js";
 import { CURRENT_SESSION_SCHEMA_VERSION, migrateSession } from "./session.js";
 import type { SessionData, SessionSummary, PruneResult } from "./types.js";
 import type { SessionStore } from "./session-store.js";
@@ -44,81 +45,77 @@ export class JsonlSessionStore implements SessionStore {
     return path.join(this.sessionsDir, `${sessionId}.jsonl`);
   }
 
-  // ── Schema ──────────────────────────────────────────────────────────────────
+  // ── Schema migrations ───────────────────────────────────────────────────────
+
+  private static readonly _migrations: Migration[] = [
+    {
+      version: 1,
+      name: "create_sessions_base",
+      sql: `
+        CREATE TABLE IF NOT EXISTS sessions (
+          session_id  TEXT PRIMARY KEY,
+          model       TEXT NOT NULL DEFAULT '',
+          created_at  TEXT NOT NULL DEFAULT '',
+          updated_at  TEXT NOT NULL DEFAULT '',
+          turn_count  INTEGER NOT NULL DEFAULT 0,
+          cwd         TEXT NOT NULL DEFAULT '',
+          trashed     INTEGER NOT NULL DEFAULT 0,
+          summarized  INTEGER NOT NULL DEFAULT 0,
+          context_id  TEXT NOT NULL DEFAULT 'default'
+        );
+        CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_sessions_trashed    ON sessions(trashed);
+
+        CREATE TABLE IF NOT EXISTS session_locks (
+          session_id TEXT PRIMARY KEY,
+          pid        INTEGER NOT NULL,
+          locked_at  INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS session_checkpoints (
+          thread_id   TEXT PRIMARY KEY,
+          context_id  TEXT NOT NULL DEFAULT 'default',
+          last_turn   INTEGER NOT NULL DEFAULT 0,
+          summary     TEXT,
+          full_state  JSON,
+          updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_checkpoint_context
+          ON session_checkpoints(context_id);
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
+          session_id UNINDEXED,
+          content,
+          tokenize = 'porter ascii'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS sessions_ai AFTER INSERT ON sessions BEGIN
+          INSERT INTO sessions_fts(session_id, content)
+          VALUES (new.session_id, new.model || ' ' || new.cwd);
+        END;
+        CREATE TRIGGER IF NOT EXISTS sessions_au AFTER UPDATE ON sessions BEGIN
+          DELETE FROM sessions_fts WHERE session_id = old.session_id;
+          INSERT INTO sessions_fts(session_id, content)
+          VALUES (new.session_id, new.model || ' ' || new.cwd);
+        END;
+        CREATE TRIGGER IF NOT EXISTS sessions_ad AFTER DELETE ON sessions BEGIN
+          DELETE FROM sessions_fts WHERE session_id = old.session_id;
+        END;
+
+        INSERT OR IGNORE INTO sessions_fts(session_id, content)
+          SELECT session_id, model || ' ' || cwd FROM sessions;
+      `,
+    },
+    {
+      version: 2,
+      name: "add_cumulative_cost_usd",
+      sql: `ALTER TABLE sessions ADD COLUMN cumulative_cost_usd REAL NOT NULL DEFAULT 0`,
+    },
+  ];
 
   private _migrate(): void {
     try {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS sessions (
-        session_id  TEXT PRIMARY KEY,
-        model       TEXT NOT NULL DEFAULT '',
-        created_at  TEXT NOT NULL DEFAULT '',
-        updated_at  TEXT NOT NULL DEFAULT '',
-        turn_count  INTEGER NOT NULL DEFAULT 0,
-        cwd         TEXT NOT NULL DEFAULT '',
-        trashed     INTEGER NOT NULL DEFAULT 0,
-        summarized  INTEGER NOT NULL DEFAULT 0,
-        context_id  TEXT NOT NULL DEFAULT 'default'
-      );
-      CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_sessions_trashed    ON sessions(trashed);
-
-      CREATE TABLE IF NOT EXISTS session_locks (
-        session_id TEXT PRIMARY KEY,
-        pid        INTEGER NOT NULL,
-        locked_at  INTEGER NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS session_checkpoints (
-        thread_id   TEXT PRIMARY KEY,
-        context_id  TEXT NOT NULL DEFAULT 'default',
-        last_turn   INTEGER NOT NULL DEFAULT 0,
-        summary     TEXT,
-        full_state  JSON,
-        updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-      );
-      CREATE INDEX IF NOT EXISTS idx_checkpoint_context
-        ON session_checkpoints(context_id);
-    `);
-
-    // FTS5 for full-text search over session metadata
-    this.db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
-        session_id UNINDEXED,
-        content,
-        tokenize = 'porter ascii'
-      );
-    `);
-
-    this.db.exec(`
-      CREATE TRIGGER IF NOT EXISTS sessions_ai AFTER INSERT ON sessions BEGIN
-        INSERT INTO sessions_fts(session_id, content)
-        VALUES (new.session_id, new.model || ' ' || new.cwd);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS sessions_au AFTER UPDATE ON sessions BEGIN
-        DELETE FROM sessions_fts WHERE session_id = old.session_id;
-        INSERT INTO sessions_fts(session_id, content)
-        VALUES (new.session_id, new.model || ' ' || new.cwd);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS sessions_ad AFTER DELETE ON sessions BEGIN
-        DELETE FROM sessions_fts WHERE session_id = old.session_id;
-      END;
-    `);
-
-    // Back-fill FTS for any existing rows
-    this.db.exec(`
-      INSERT OR IGNORE INTO sessions_fts(session_id, content)
-      SELECT session_id, model || ' ' || cwd FROM sessions;
-    `);
-
-    // Additive migration: cumulative_cost_usd column (added after initial schema)
-    // ALTER TABLE ADD COLUMN is idempotent-safe via the PRAGMA column check below.
-    const cols = this.db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
-    if (!cols.some((c) => c.name === "cumulative_cost_usd")) {
-      this.db.exec("ALTER TABLE sessions ADD COLUMN cumulative_cost_usd REAL NOT NULL DEFAULT 0");
-    }
+      runMigrations(this.db, JsonlSessionStore._migrations);
     } catch (err) {
       throw new Error(`JsonlSessionStore: schema migration failed: ${err instanceof Error ? err.message : String(err)}`);
     }
