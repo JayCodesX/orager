@@ -1,18 +1,21 @@
 /**
  * Database path resolution and size budget constants.
  *
- * Single source of truth for the default SQLite DB path and size thresholds.
- * Centralises logic that was previously duplicated across memory-sqlite.ts,
- * session.ts, and daemon health routes.
+ * ADR-0008: per-namespace SQLite files replace the monolithic orager.db.
+ *
+ *   ~/.orager/memory/<memoryKey>.sqlite   — one file per memory namespace
+ *   ~/.orager/skills/skills.sqlite        — shared SkillBank store
+ *   ~/.orager/sessions/index.sqlite       — session metadata + FTS + checkpoints
+ *   ~/.orager/sessions/<sessionId>.jsonl  — append-only session transcripts
  */
 import os from "node:os";
 import path from "node:path";
 
-// ── Default DB path ───────────────────────────────────────────────────────────
+// ── Default DB path (legacy — still used for ORAGER_DB_PATH=none opt-out) ────
 
 /**
- * Default path for the orager SQLite database.
- * Used when ORAGER_DB_PATH is not explicitly set.
+ * Default path for the legacy monolithic orager SQLite database.
+ * Used when ORAGER_DB_PATH is not explicitly set and for backward compat.
  */
 export const DEFAULT_DB_PATH = path.join(os.homedir(), ".orager", "orager.db");
 
@@ -41,6 +44,40 @@ export function resolveDbPath(): string | null {
   const envVal = process.env["ORAGER_DB_PATH"];
   if (envVal === "" || envVal === "none") return null; // explicit opt-out → JSON fallback
   return envVal ?? DEFAULT_DB_PATH;
+}
+
+// ── ADR-0008 per-namespace path resolvers ─────────────────────────────────────
+
+/**
+ * Directory for per-namespace memory SQLite files.
+ * Override with ORAGER_MEMORY_SQLITE_DIR env var.
+ */
+export function resolveMemoryDir(): string {
+  return process.env["ORAGER_MEMORY_SQLITE_DIR"] ?? path.join(os.homedir(), ".orager", "memory");
+}
+
+/**
+ * Path to the shared SkillBank SQLite database.
+ * Override with ORAGER_SKILLS_DB_PATH env var.
+ */
+export function resolveSkillsDbPath(): string {
+  return process.env["ORAGER_SKILLS_DB_PATH"] ?? path.join(os.homedir(), ".orager", "skills", "skills.sqlite");
+}
+
+/**
+ * Directory for JSONL session transcripts and the index.sqlite.
+ * Reads ORAGER_SESSIONS_DIR for compatibility with existing env overrides.
+ */
+export function resolveSessionsDir(): string {
+  return process.env["ORAGER_SESSIONS_DIR"] ?? path.join(os.homedir(), ".orager", "sessions");
+}
+
+/**
+ * Sanitize a memoryKey into a safe filename component.
+ * Replaces `/` with `__` and any other non-alphanumeric chars (except `-_.`) with `_`.
+ */
+export function sanitizeKeyForFilename(key: string): string {
+  return key.replace(/\//g, "__").replace(/[^a-zA-Z0-9_\-.]/g, "_");
 }
 
 // ── Size check ────────────────────────────────────────────────────────────────

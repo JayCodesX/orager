@@ -17,9 +17,9 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { _getDb } from "./memory-sqlite.js";
+import { openWasmDb, type WasmCompatDb } from "./native-sqlite.js";
 import { callEmbeddings, callOpenRouter } from "./openrouter.js";
-import { resolveDbPath } from "./db.js";
+import { resolveSkillsDbPath } from "./db.js";
 import type { SkillBankConfig } from "./types.js";
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
@@ -64,10 +64,44 @@ export interface SkillStats {
   weakSkills: Skill[];
 }
 
+// ── Skills DB connection ──────────────────────────────────────────────────────
+
+let _skillsDb: WasmCompatDb | null = null;
+
+async function _getSkillsDb(): Promise<WasmCompatDb> {
+  if (_skillsDb) return _skillsDb;
+  const dbPath = resolveSkillsDbPath();
+  _skillsDb = await openWasmDb(dbPath);
+  _skillsDb.exec(`
+    CREATE TABLE IF NOT EXISTS skills (
+      id               TEXT PRIMARY KEY,
+      version          INTEGER NOT NULL DEFAULT 1,
+      text             TEXT NOT NULL,
+      embedding        BLOB,
+      embedding_model  TEXT,
+      source_session   TEXT NOT NULL DEFAULT '',
+      extraction_model TEXT NOT NULL DEFAULT '',
+      created_at       TEXT NOT NULL,
+      updated_at       TEXT NOT NULL,
+      use_count        INTEGER NOT NULL DEFAULT 0,
+      success_rate     REAL NOT NULL DEFAULT 0.5,
+      deleted          INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_skills_deleted ON skills(deleted);
+  `);
+  return _skillsDb;
+}
+
+/** Reset for testing — closes any open skills DB connection. */
+export function _resetSkillsDbForTesting(): void {
+  try { _skillsDb?.close(); } catch { /* ignore */ }
+  _skillsDb = null;
+}
+
 // ── Guards ────────────────────────────────────────────────────────────────────
 
 function isSkillBankAvailable(): boolean {
-  return resolveDbPath() !== null;
+  return true; // errors are caught and swallowed per-function; never abort a run
 }
 
 // ── Embedding helpers ─────────────────────────────────────────────────────────
@@ -142,7 +176,7 @@ export async function retrieveSkills(
   if (!config.enabled) return [];
 
   try {
-    const db = await _getDb();
+    const db = await _getSkillsDb();
     const rows = db
       .prepare("SELECT * FROM skills WHERE deleted = 0")
       .all() as unknown as SkillRow[];
@@ -197,7 +231,7 @@ export async function updateSkillOutcomes(
 ): Promise<void> {
   if (!isSkillBankAvailable() || skillIds.length === 0) return;
   try {
-    const db = await _getDb();
+    const db = await _getSkillsDb();
     const upd = db.prepare(`
       UPDATE skills
       SET use_count    = use_count + 1,
@@ -352,7 +386,7 @@ export async function extractSkillFromTrajectory(
 
     // ── 4. Deduplication check ────────────────────────────────────────────────
     try {
-      const db = await _getDb();
+      const db = await _getSkillsDb();
       const existing = db
         .prepare("SELECT embedding FROM skills WHERE deleted = 0 AND embedding IS NOT NULL")
         .all() as Array<{ embedding: Uint8Array | null }>;
@@ -421,7 +455,7 @@ export async function extractSkillFromTrajectory(
 export async function listSkills(includeDeleted = false): Promise<Skill[]> {
   if (!isSkillBankAvailable()) return [];
   try {
-    const db = await _getDb();
+    const db = await _getSkillsDb();
     const sql = includeDeleted
       ? "SELECT * FROM skills ORDER BY created_at DESC"
       : "SELECT * FROM skills WHERE deleted = 0 ORDER BY created_at DESC";
@@ -434,7 +468,7 @@ export async function listSkills(includeDeleted = false): Promise<Skill[]> {
 export async function getSkill(id: string): Promise<Skill | null> {
   if (!isSkillBankAvailable()) return null;
   try {
-    const db = await _getDb();
+    const db = await _getSkillsDb();
     const row = db.prepare("SELECT * FROM skills WHERE id = ?").get(id) as unknown as SkillRow | undefined;
     return row ? rowToSkill(row) : null;
   } catch {
@@ -445,7 +479,7 @@ export async function getSkill(id: string): Promise<Skill | null> {
 export async function deleteSkill(id: string): Promise<void> {
   if (!isSkillBankAvailable()) return;
   try {
-    const db = await _getDb();
+    const db = await _getSkillsDb();
     db.prepare("UPDATE skills SET deleted = 1, updated_at = ? WHERE id = ?").run(
       new Date().toISOString(),
       id,
@@ -462,7 +496,7 @@ export async function getSkillStats(): Promise<SkillStats> {
     return { total: 0, avgSuccessRate: 0, topByUse: [], weakSkills: [] };
   }
   try {
-    const db = await _getDb();
+    const db = await _getSkillsDb();
     const total = (db
       .prepare("SELECT COUNT(*) as c FROM skills WHERE deleted = 0")
       .get() as { c: number }).c;
