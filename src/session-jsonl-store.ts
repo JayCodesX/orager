@@ -27,7 +27,7 @@ const LOCK_STALE_MS = 5 * 60 * 1000;
 
 export class JsonlSessionStore implements SessionStore {
   private constructor(
-    private readonly db: SqliteDb,
+    private readonly db: SqliteDatabase,
     private readonly sessionsDir: string,
   ) {}
 
@@ -111,6 +111,13 @@ export class JsonlSessionStore implements SessionStore {
       INSERT OR IGNORE INTO sessions_fts(session_id, content)
       SELECT session_id, model || ' ' || cwd FROM sessions;
     `);
+
+    // Additive migration: cumulative_cost_usd column (added after initial schema)
+    // ALTER TABLE ADD COLUMN is idempotent-safe via the PRAGMA column check below.
+    const cols = this.db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "cumulative_cost_usd")) {
+      this.db.exec("ALTER TABLE sessions ADD COLUMN cumulative_cost_usd REAL NOT NULL DEFAULT 0");
+    }
   }
 
   // ── SessionStore interface ──────────────────────────────────────────────────
@@ -123,25 +130,27 @@ export class JsonlSessionStore implements SessionStore {
     // Upsert metadata row (no full JSON blob — index only)
     this.db.prepare(`
       INSERT INTO sessions
-        (session_id, model, created_at, updated_at, turn_count, cwd, trashed, summarized)
+        (session_id, model, created_at, updated_at, turn_count, cwd, trashed, summarized, cumulative_cost_usd)
       VALUES
-        (@sessionId, @model, @createdAt, @updatedAt, @turnCount, @cwd, @trashed, @summarized)
+        (@sessionId, @model, @createdAt, @updatedAt, @turnCount, @cwd, @trashed, @summarized, @cumulativeCostUsd)
       ON CONFLICT(session_id) DO UPDATE SET
-        model      = excluded.model,
-        updated_at = excluded.updated_at,
-        turn_count = excluded.turn_count,
-        cwd        = excluded.cwd,
-        trashed    = excluded.trashed,
-        summarized = excluded.summarized
+        model                = excluded.model,
+        updated_at           = excluded.updated_at,
+        turn_count           = excluded.turn_count,
+        cwd                  = excluded.cwd,
+        trashed              = excluded.trashed,
+        summarized           = excluded.summarized,
+        cumulative_cost_usd  = excluded.cumulative_cost_usd
     `).run({
       sessionId,
-      model:      data.model,
-      createdAt:  data.createdAt,
-      updatedAt:  data.updatedAt,
-      turnCount:  data.turnCount,
-      cwd:        data.cwd ?? "",
-      trashed:    data.trashed ? 1 : 0,
-      summarized: data.summarized ? 1 : 0,
+      model:              data.model,
+      createdAt:          data.createdAt,
+      updatedAt:          data.updatedAt,
+      turnCount:          data.turnCount,
+      cwd:                data.cwd ?? "",
+      trashed:            data.trashed ? 1 : 0,
+      summarized:         data.summarized ? 1 : 0,
+      cumulativeCostUsd:  data.cumulativeCostUsd ?? 0,
     });
   }
 
@@ -184,20 +193,22 @@ export class JsonlSessionStore implements SessionStore {
     const limit  = opts?.limit  ?? 100;
     const offset = opts?.offset ?? 0;
     const rows = this.db.prepare(
-      "SELECT session_id, model, created_at, updated_at, turn_count, cwd, trashed " +
+      "SELECT session_id, model, created_at, updated_at, turn_count, cwd, trashed, cumulative_cost_usd " +
       "FROM sessions ORDER BY updated_at DESC LIMIT ? OFFSET ?"
     ).all(limit, offset) as Array<{
       session_id: string; model: string; created_at: string;
       updated_at: string; turn_count: number; cwd: string; trashed: number;
+      cumulative_cost_usd: number;
     }>;
     return rows.map((r) => ({
-      sessionId:  r.session_id,
-      model:      r.model,
-      createdAt:  r.created_at,
-      updatedAt:  r.updated_at,
-      turnCount:  r.turn_count,
-      cwd:        r.cwd,
-      trashed:    r.trashed === 1,
+      sessionId:         r.session_id,
+      model:             r.model,
+      createdAt:         r.created_at,
+      updatedAt:         r.updated_at,
+      turnCount:         r.turn_count,
+      cwd:               r.cwd,
+      trashed:           r.trashed === 1,
+      cumulativeCostUsd: r.cumulative_cost_usd,
     }));
   }
 
@@ -290,7 +301,7 @@ export class JsonlSessionStore implements SessionStore {
     const ftsQuery = `"${sanitized.replace(/"/g, '""')}"`;
 
     const rows = this.db.prepare(`
-      SELECT s.session_id, s.model, s.created_at, s.updated_at, s.turn_count, s.cwd, s.trashed
+      SELECT s.session_id, s.model, s.created_at, s.updated_at, s.turn_count, s.cwd, s.trashed, s.cumulative_cost_usd
       FROM sessions_fts f
       JOIN sessions s ON s.session_id = f.session_id
       WHERE sessions_fts MATCH ?
@@ -300,11 +311,13 @@ export class JsonlSessionStore implements SessionStore {
     `).all(ftsQuery, limit) as Array<{
       session_id: string; model: string; created_at: string;
       updated_at: string; turn_count: number; cwd: string; trashed: number;
+      cumulative_cost_usd: number;
     }>;
 
     return rows.map((r) => ({
       sessionId: r.session_id, model: r.model, createdAt: r.created_at,
       updatedAt: r.updated_at, turnCount: r.turn_count, cwd: r.cwd, trashed: r.trashed === 1,
+      cumulativeCostUsd: r.cumulative_cost_usd,
     }));
   }
 

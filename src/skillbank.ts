@@ -66,9 +66,9 @@ export interface SkillStats {
 
 // ── Skills DB connection ──────────────────────────────────────────────────────
 
-let _skillsDb: SqliteDb | null = null;
+let _skillsDb: SqliteDatabase | null = null;
 
-async function _getSkillsDb(): Promise<SqliteDb> {
+async function _getSkillsDb(): Promise<SqliteDatabase> {
   if (_skillsDb) return _skillsDb;
   const dbPath = resolveSkillsDbPath();
   _skillsDb = await openDb(dbPath);

@@ -126,6 +126,8 @@ export interface SessionSummary {
   turnCount: number;
   cwd: string;
   trashed: boolean;
+  /** Cumulative API cost across all runs for this session. Missing in older sessions. */
+  cumulativeCostUsd?: number;
 }
 
 export interface PruneResult {

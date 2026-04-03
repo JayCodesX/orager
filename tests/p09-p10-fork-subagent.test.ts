@@ -178,7 +178,8 @@ describe("P-10: spawn_agent tool", () => {
       "utf8",
     );
     expect(source).toContain("spawn cycle detected");
-    expect(source).toContain("parentSessionIds.includes");
+    // Local variable is _earlyParentIds (derived from opts._parentSessionIds)
+    expect(source).toContain("_earlyParentIds.includes");
   });
 
   it("spawn_agent supports parallel execution", async () => {
