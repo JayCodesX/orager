@@ -18,7 +18,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { openWasmDb, type WasmCompatDb } from "./native-sqlite.js";
+import { openDb, type SqliteDatabase } from "./native-sqlite.js";
 import { CURRENT_SESSION_SCHEMA_VERSION, migrateSession } from "./session.js";
 import type { SessionData, SessionSummary, PruneResult } from "./types.js";
 import type { SessionStore } from "./session-store.js";
@@ -27,14 +27,14 @@ const LOCK_STALE_MS = 5 * 60 * 1000;
 
 export class JsonlSessionStore implements SessionStore {
   private constructor(
-    private readonly db: WasmCompatDb,
+    private readonly db: SqliteDb,
     private readonly sessionsDir: string,
   ) {}
 
   static async create(sessionsDir: string): Promise<JsonlSessionStore> {
     await fs.mkdir(sessionsDir, { recursive: true });
     const indexPath = path.join(sessionsDir, "index.sqlite");
-    const db = await openWasmDb(indexPath);
+    const db = await openDb(indexPath);
     const store = new JsonlSessionStore(db, sessionsDir);
     store._migrate();
     return store;

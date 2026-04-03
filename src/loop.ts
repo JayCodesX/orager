@@ -439,6 +439,15 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   // Tool error budget tracking: consecutive error count per tool name
   const consecutiveToolErrors = new Map<string, number>(); // toolName → consecutive error count
 
+  // ── Spawn-cycle fast-exit ─────────────────────────────────────────────────
+  // Check before any I/O (session lock, DB, etc.) — no point acquiring a lock
+  // or loading session data for a run we are about to reject.
+  const _earlyParentIds = opts._parentSessionIds ?? [];
+  if (opts.sessionId && _earlyParentIds.includes(opts.sessionId)) {
+    onLog?.("stderr", `[orager] ERROR: spawn cycle detected — session '${opts.sessionId}' is already an ancestor. Aborting sub-agent.\n`);
+    return;
+  }
+
   // ── Safety warning ────────────────────────────────────────────────────────
   if (opts.dangerouslySkipPermissions) {
     onLog?.(
@@ -961,14 +970,6 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     }
   }
 
-  // Spawn-cycle detection: if this session ID appears in the ancestor chain,
-  // we have a logical loop (A spawned B which is trying to resume A).
-  const parentSessionIds = opts._parentSessionIds ?? [];
-  if (opts.sessionId && parentSessionIds.includes(opts.sessionId)) {
-    onLog?.("stderr", `[orager] ERROR: spawn cycle detected — session '${opts.sessionId}' is already an ancestor. Aborting sub-agent.\n`);
-    return;
-  }
-
   // ── Spawn-agent tool (inline closure — avoids circular import) ────────────
   const maxSpawnDepth = opts.maxSpawnDepth ?? 3;
   const currentSpawnDepth = opts._spawnDepth ?? 0;
@@ -1036,7 +1037,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           sessionId: null, // fresh session for each sub-agent
           trackFileChanges: true,
           _spawnDepth: currentSpawnDepth + 1,
-          _parentSessionIds: [...parentSessionIds, ...(sessionId ? [sessionId] : [])],
+          _parentSessionIds: [..._earlyParentIds, ...(sessionId ? [sessionId] : [])],
           onEmit: (event) => {
             if (event.type === "result") {
               subResult = event.result ?? "";

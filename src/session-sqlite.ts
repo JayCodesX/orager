@@ -5,8 +5,8 @@
  * Schema: sessions table (indexed columns + full JSON data column)
  *         session_locks table (advisory locking)
  */
-import { openWasmDb } from "./native-sqlite.js";
-import type { WasmDatabase } from "./native-sqlite.js";
+import { openDb } from "./native-sqlite.js";
+import type { SqliteDatabase } from "./native-sqlite.js";
 import type { SessionData, SessionSummary, PruneResult } from "./types.js";
 import type { SessionStore } from "./session-store.js";
 import { CURRENT_SESSION_SCHEMA_VERSION, migrateSession } from "./session.js";
@@ -15,9 +15,9 @@ import { checkDbSize } from "./db.js";
 const LOCK_STALE_MS = 5 * 60 * 1000;
 
 export class SqliteSessionStore implements SessionStore {
-  private readonly db: WasmDatabase;
+  private readonly db: SqliteDatabase;
 
-  private constructor(db: WasmDatabase) {
+  private constructor(db: SqliteDatabase) {
     this.db = db;
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
@@ -36,7 +36,7 @@ export class SqliteSessionStore implements SessionStore {
   }
 
   static async create(dbPath: string): Promise<SqliteSessionStore> {
-    const db = await openWasmDb(dbPath);
+    const db = await openDb(dbPath);
     return new SqliteSessionStore(db);
   }
 

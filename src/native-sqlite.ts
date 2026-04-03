@@ -1,18 +1,15 @@
 /**
- * Native SQLite driver using bun:sqlite.
+ * Native SQLite driver using bun:sqlite (ADR-0008 §Component 1).
  *
- * Drop-in replacement for wasm-sqlite.ts. Provides the same synchronous API
- * (WasmCompatDb / WasmCompatStmt / openWasmDb / WasmDatabase) so all callers
- * can migrate by changing a single import line.
+ * Replaced the former @sqlite.org/sqlite-wasm driver. All persistence
+ * (memory, sessions, skills, OMLS) goes through this module.
  *
- * Advantages over the WASM driver:
+ * Advantages over the removed WASM driver:
  *  - Zero cold-start overhead (no WASM parse, no sqlite3_deserialize)
  *  - Real WAL mode — unlimited concurrent readers, serialised writers that queue
  *  - No silent data loss — bun:sqlite writes are synchronous and durable
  *  - No 50ms debounce window — every write is immediately on disk
  *  - No ~1.25 MB WASM blob in the compiled binary
- *
- * ADR-0008 §Component 1.
  */
 import { Database, type Statement } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
@@ -72,9 +69,9 @@ function normalizeArgs(args: unknown[]): BindArgs | undefined {
 
 export interface RunResult { changes: number }
 
-// ── WasmCompatStmt ────────────────────────────────────────────────────────────
+// ── SqliteStmt ────────────────────────────────────────────────────────────
 
-export class WasmCompatStmt {
+export class SqliteStmt {
   constructor(private readonly _stmt: Statement) {}
 
   run(...args: unknown[]): RunResult {
@@ -114,9 +111,9 @@ type TxFn<A extends unknown[], T> = {
   exclusive: (...args: A) => T;
 };
 
-// ── WasmCompatDb ─────────────────────────────────────────────────────────────
+// ── SqliteDb ─────────────────────────────────────────────────────────────
 
-export class WasmCompatDb {
+export class SqliteDb {
   /** No-op: kept for API compatibility with wasm-sqlite.ts callers. */
   _txDepth = 0;
 
@@ -133,8 +130,8 @@ export class WasmCompatDb {
     this._db.exec(sql);
   }
 
-  prepare(sql: string): WasmCompatStmt {
-    return new WasmCompatStmt(this._db.prepare(sql));
+  prepare(sql: string): SqliteStmt {
+    return new SqliteStmt(this._db.prepare(sql));
   }
 
   transaction<A extends unknown[], T>(fn: (...args: A) => T): TxFn<A, T> {
@@ -172,22 +169,20 @@ export class WasmCompatDb {
 /**
  * Open or create a SQLite database at `filePath` using bun:sqlite.
  *
- * This is a drop-in replacement for `openWasmDb`. The function is async for
- * API compatibility only — bun:sqlite opens synchronously.
- *
+ * The function is async for historical API compatibility — bun:sqlite opens synchronously.
  * WAL mode and all ADR-0008 pragmas are applied on every open.
  * Pass `{ readonly: true }` for health-check reads.
  */
-export async function openWasmDb(filePath: string, opts?: { readonly?: boolean }): Promise<WasmCompatDb> {
+export async function openDb(filePath: string, opts?: { readonly?: boolean }): Promise<SqliteDb> {
   if (opts?.readonly) {
     // Readonly opens: use SQLITE_OPEN_READONLY — no WAL pragmas needed (read-only can't set journal_mode)
     const db = new Database(filePath, { readonly: true });
-    return new WasmCompatDb(db);
+    return new SqliteDb(db);
   }
   mkdirSync(dirname(filePath), { recursive: true });
   const db = new Database(filePath, { create: true, readwrite: true });
   db.exec(STARTUP_PRAGMAS);
-  const compat = new WasmCompatDb(db);
+  const compat = new SqliteDb(db);
   tryLoadSqliteVec(compat);
   return compat;
 }
@@ -206,11 +201,11 @@ let _sqliteVecAvailable: boolean | null = null;
  *
  * ADR-0008 §Component 4.
  */
-function tryLoadSqliteVec(db: WasmCompatDb): void {
+function tryLoadSqliteVec(db: SqliteDb): void {
   if (_sqliteVecAvailable === false) return; // already failed — don't retry
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const sqliteVec = require("sqlite-vec") as { load: (db: WasmCompatDb) => void };
+    const sqliteVec = require("sqlite-vec") as { load: (db: SqliteDb) => void };
     sqliteVec.load(db);
     _sqliteVecAvailable = true;
   } catch {
@@ -224,6 +219,7 @@ export function isSqliteVecAvailable(): boolean {
   return _sqliteVecAvailable === true;
 }
 
-// Type alias for backward compatibility — all callers importing WasmDatabase
-// from wasm-sqlite.ts will work without changes.
-export type { WasmCompatDb as WasmDatabase };
+/** Primary type alias for an open SQLite database handle. */
+export type { SqliteDb as SqliteDatabase };
+/** @deprecated Use SqliteDatabase. Kept temporarily for rename transition. */
+export type { SqliteDb as WasmDatabase };

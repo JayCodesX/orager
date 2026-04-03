@@ -9,8 +9,8 @@
  *
  * Skills table has been moved to skillbank's own DB (~/.orager/skills/).
  */
-import { openWasmDb, isSqliteVecAvailable } from "./native-sqlite.js";
-import type { WasmDatabase } from "./native-sqlite.js";
+import { openDb, isSqliteVecAvailable } from "./native-sqlite.js";
+import type { SqliteDatabase } from "./native-sqlite.js";
 import crypto from "node:crypto";
 import type { MemoryStore, MemoryEntry } from "./memory.js";
 import { resolveDbPath, resolveMemoryDir, sanitizeKeyForFilename, checkDbSize } from "./db.js";
@@ -20,7 +20,7 @@ import path from "node:path";
 // ── Per-namespace DB map ───────────────────────────────────────────────────────
 // Each memoryKey gets its own SQLite file. The map caches open connections.
 
-const _dbs = new Map<string, WasmDatabase>();
+const _dbs = new Map<string, SqliteDatabase>();
 
 /**
  * Returns the on-disk path for a given memoryKey's SQLite file.
@@ -31,20 +31,20 @@ export function resolveMemoryDbPath(memoryKey: string): string {
   return path.join(dir, `${sanitizeKeyForFilename(memoryKey)}.sqlite`);
 }
 
-async function getDb(memoryKey: string): Promise<WasmDatabase> {
+async function getDb(memoryKey: string): Promise<SqliteDatabase> {
   const existing = _dbs.get(memoryKey);
   if (existing) return existing;
 
   const dbPath = resolveMemoryDbPath(memoryKey);
   mkdirSync(path.dirname(dbPath), { recursive: true });
-  const db = await openWasmDb(dbPath);
+  const db = await openDb(dbPath);
   _migrate(db);
   _logDbSize(db, memoryKey);
   _dbs.set(memoryKey, db);
   return db;
 }
 
-function _logDbSize(db: WasmDatabase, memoryKey: string): void {
+function _logDbSize(db: SqliteDatabase, memoryKey: string): void {
   const status = checkDbSize(db);
   if (status === "prune") {
     process.stderr.write(
@@ -81,7 +81,7 @@ export function _resetDbForTesting(): void {
   closeDb();
 }
 
-function _migrate(db: WasmDatabase): void {
+function _migrate(db: SqliteDatabase): void {
   // ── Base table ────────────────────────────────────────────────────────────
   db.exec(`
     CREATE TABLE IF NOT EXISTS memory_entries (
@@ -178,7 +178,7 @@ function _migrate(db: WasmDatabase): void {
  * Returns true when the table is ready for use with the given dimension.
  * If the stored dimension differs (model swap), drops and recreates the table.
  */
-function _ensureVecTable(db: WasmDatabase, dim: number): boolean {
+function _ensureVecTable(db: SqliteDatabase, dim: number): boolean {
   if (!isSqliteVecAvailable()) return false;
   try {
     const dimRow = db.prepare("SELECT value FROM _meta WHERE key = 'vec_dim'").get() as { value: string } | undefined;
@@ -201,7 +201,7 @@ function _ensureVecTable(db: WasmDatabase, dim: number): boolean {
  * this DB. Called on DB open (backfill) and after saveMemoryStoreSqlite.
  * No-op when sqlite-vec is unavailable or there are no embeddings.
  */
-function _rebuildVecForNamespace(db: WasmDatabase): void {
+function _rebuildVecForNamespace(db: SqliteDatabase): void {
   if (!isSqliteVecAvailable()) return;
   try {
     const embRows = db.prepare(
@@ -658,6 +658,6 @@ export async function retrieveEntriesANNSqlite(
 /**
  * @internal — exposed for skillbank.ts so it can get a DB connection for a
  * given memory namespace (where skills co-locate with memory).
- * @deprecated Use resolveSkillsDbPath() + openWasmDb() in skillbank directly.
+ * @deprecated Use resolveSkillsDbPath() + openDb() in skillbank directly.
  */
 export { getDb as _getDb };

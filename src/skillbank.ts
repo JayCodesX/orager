@@ -17,7 +17,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { openWasmDb, type WasmCompatDb } from "./native-sqlite.js";
+import { openDb, type SqliteDatabase } from "./native-sqlite.js";
 import { callEmbeddings, callOpenRouter } from "./openrouter.js";
 import { resolveSkillsDbPath } from "./db.js";
 import type { SkillBankConfig } from "./types.js";
@@ -66,12 +66,12 @@ export interface SkillStats {
 
 // ── Skills DB connection ──────────────────────────────────────────────────────
 
-let _skillsDb: WasmCompatDb | null = null;
+let _skillsDb: SqliteDb | null = null;
 
-async function _getSkillsDb(): Promise<WasmCompatDb> {
+async function _getSkillsDb(): Promise<SqliteDb> {
   if (_skillsDb) return _skillsDb;
   const dbPath = resolveSkillsDbPath();
-  _skillsDb = await openWasmDb(dbPath);
+  _skillsDb = await openDb(dbPath);
   _skillsDb.exec(`
     CREATE TABLE IF NOT EXISTS skills (
       id               TEXT PRIMARY KEY,

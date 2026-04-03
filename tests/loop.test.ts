@@ -91,6 +91,10 @@ function loopOpts(overrides: Partial<Parameters<typeof runAgentLoop>[0]> = {}) {
       dangerouslySkipPermissions: false,
       verbose: false,
       onEmit: (e: EmitEvent) => emitted.push(e),
+      // Disable SQLite memory in unit tests — avoids WASM DB I/O that can leave
+      // the WASM module in a bad state in bun's shared test process.
+      // Memory behaviour is tested separately in phase6-distillation.test.ts.
+      memory: false,
       // Disable summarization triggers in unit tests — summarization behaviour is
       // tested separately. Without this, the new defaults (summarizeTurnInterval=6,
       // summarizeAt=0.70) would fire during multi-turn tests and skew call counts.
@@ -371,7 +375,7 @@ describe("runAgentLoop — unlimited turns (maxTurns=0)", () => {
 
     await runAgentLoop(opts);
 
-    expect(calls).toBe(8); // 7 agent turns + 1 session-end synthesis call
+    expect(calls).toBe(7); // 7 agent turns (memory disabled in unit tests — no synthesis call)
     expect(resultEvent(emitted).subtype).toBe("success");
   });
 });

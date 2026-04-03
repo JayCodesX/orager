@@ -82,13 +82,13 @@ export function sanitizeKeyForFilename(key: string): string {
 
 // ── Size check ────────────────────────────────────────────────────────────────
 
-import type { WasmDatabase } from "./native-sqlite.js";
+import type { SqliteDatabase } from "./native-sqlite.js";
 
 /**
  * Returns the current on-disk size of the database in bytes.
  * Uses PRAGMA page_count * page_size for an exact in-process measurement.
  */
-export function getDbSizeBytes(db: WasmDatabase): number {
+export function getDbSizeBytes(db: SqliteDatabase): number {
   const row = db.prepare("SELECT page_count * page_size AS sz FROM pragma_page_count(), pragma_page_size()").get() as { sz: number } | undefined;
   return row?.sz ?? 0;
 }
@@ -97,7 +97,7 @@ export function getDbSizeBytes(db: WasmDatabase): number {
  * Check the DB size and log a warning / flag prune if thresholds are exceeded.
  * Returns: 'ok' | 'warn' | 'prune'
  */
-export function checkDbSize(db: WasmDatabase): "ok" | "warn" | "prune" {
+export function checkDbSize(db: SqliteDatabase): "ok" | "warn" | "prune" {
   const bytes = getDbSizeBytes(db);
   if (bytes >= DB_PRUNE_BYTES) return "prune";
   if (bytes >= DB_WARN_BYTES)  return "warn";
