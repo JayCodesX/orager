@@ -819,6 +819,8 @@ export interface CliOptions {
   autoMemory?: boolean;
   /** Route LLM calls to a local Ollama server instead of OpenRouter. */
   ollama?: OllamaConfig;
+  /** File paths to attach to the prompt (images, PDFs, audio, text files). */
+  attachments?: string[];
 }
 
 // ── Bash policy ──────────────────────────────────────────────────────────────
@@ -987,6 +989,16 @@ export interface AgentLoopOptions {
   turnModelRules?: TurnModelRule[];
   /** Structured first-message content for multimodal prompts. Overrides the text `prompt` field. */
   promptContent?: UserMessageContentBlock[];
+  /**
+   * File paths to attach to the first user message.
+   * The input processor encodes each file as the appropriate content block:
+   *   images  → image_url blocks (base64 data URL)
+   *   PDFs    → text blocks (extracted via pdftotext if available, else raw)
+   *   audio   → text block noting audio transcription is not yet supported
+   *   other   → text block with file contents
+   * Requires the model to support the relevant modality, or visionModel to be set.
+   */
+  attachments?: string[];
   /**
    * Fallback model to use when the primary model does not support vision and
    * the prompt contains image_url blocks. orager detects this automatically and
@@ -1460,6 +1472,7 @@ export type RouterSignal =
   | "confidence_token"   // Self-REF score below threshold
   | "semantic_entropy"   // N=3 samples had high divergence
   | "standing_gate"      // cost/turn budget exceeded (turnModelRules)
+  | "modality_mismatch"  // input contains modality not supported by RL model
   | "local";             // served by RL model — no escalation
 
 /** Configuration for the three-signal confidence router. */

@@ -34,9 +34,10 @@ import { fetchLiveModelMeta, getLiveModelPricing, isLiveModelMetaCacheWarm, live
 import { recordProviderSuccess } from "./provider-health.js";
 import { loadSkillsFromDirs, buildSkillsSystemPrompt, buildSkillTools } from "./skills.js";
 import { retrieveSkills, buildSkillsPromptSection, updateSkillOutcomes } from "./skillbank.js";
-import { routeRequest, checkConfidenceToken, selectTeachers } from "./omls/confidence-router.js";
+import { routeRequest, checkConfidenceToken, selectTeachers, checkModalityMismatch } from "./omls/confidence-router.js";
 import { getCurrentEndpoint } from "./omls/together-hosting.js";
 import { resolveLocalAdapterServer } from "./omls/local-adapter-server.js";
+import { processInput, detectModalitiesFromBlocks } from "./input-processor.js";
 import type { RouterSignal } from "./types.js";
 import { ALL_TOOLS, finishTool, BROWSER_TOOLS } from "./tools/index.js";
 import { FINISH_TOOL_NAME } from "./tools/finish.js";
@@ -178,6 +179,11 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   // Declared as `let` so vision routing can swap it to opts.visionModel when
   // the primary model does not support image inputs.
   let model = _modelOpt;
+  // Effective prompt content — may be augmented by the input processor when
+  // opts.attachments are provided. Declared here so vision routing (below) can
+  // read it before the input processor block runs later in the function.
+  let _effectivePromptContent: import("./types.js").UserMessageContentBlock[] | undefined = opts.promptContent;
+  let _inputModalities = new Set<string>(["text"]);
 
   // Track whether a result event has been emitted so the finally block knows
   // whether it needs to emit one (e.g. when the loop is aborted mid-execution).
@@ -339,7 +345,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   // support vision, swap to opts.visionModel for this run.  The model meta
   // cache is warm at this point (fetched above), so liveModelSupportsVision is
   // a cheap synchronous lookup — no extra network call.
-  const hasImages = (opts.promptContent ?? []).some((b) => b.type === "image_url");
+  const hasImages = (_effectivePromptContent ?? opts.promptContent ?? []).some((b) => b.type === "image_url");
   if (hasImages) {
     const visionOk = liveModelSupportsVision(model);
     if (visionOk === false) {
@@ -1131,8 +1137,29 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     }
   }
 
-  const userMessage: UserMessage = opts.promptContent && opts.promptContent.length > 0
-    ? { role: "user", content: opts.promptContent }
+  // ── Process file attachments (input-processor) ────────────────────────────
+  // If attachments are provided, encode them into content blocks and merge with
+  // any pre-built promptContent. The resulting modalities set is stored for use
+  // by the confidence router's modality_mismatch signal.
+  if (!isResume && opts.attachments && opts.attachments.length > 0) {
+    try {
+      const processed = await processInput(resolvedPrompt, opts.attachments);
+      _inputModalities = processed.modalities as Set<string>;
+      // Merge with any caller-provided content blocks
+      _effectivePromptContent = [
+        ...processed.contentBlocks,
+        ...(opts.promptContent ?? []),
+      ];
+      if (processed.hasImages) {
+        onLog?.("stderr", `[orager] ${processed.modalities.size > 1 ? [...processed.modalities].filter(m => m !== "text").join("+") + " " : ""}input detected — encoding ${opts.attachments.length} attachment(s)\n`);
+      }
+    } catch { /* non-fatal — proceed without attachments */ }
+  } else if (opts.promptContent) {
+    _inputModalities = detectModalitiesFromBlocks(opts.promptContent) as Set<string>;
+  }
+
+  const userMessage: UserMessage = _effectivePromptContent && _effectivePromptContent.length > 0
+    ? { role: "user", content: _effectivePromptContent }
     : { role: "user", content: injectedContextPrefix + resolvedPrompt };
 
   if (isResume) {
@@ -1753,6 +1780,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             apiKey,
             opts.memoryEmbeddingModel ?? null,
             opts.omls,
+            _inputModalities,
           );
           if (decision.escalated) {
             // Override model to teacher for this run

@@ -28,6 +28,7 @@ import {
   resolveAdapterPath,
   resolveAdapterMetaPath,
 } from "./hardware-detector.js";
+import { modelSupportsVision } from "./supported-models.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -103,15 +104,18 @@ async function startMlxServer(
 ): Promise<boolean> {
   const log = onProgress ?? (() => {});
 
+  // Vision models use mlx_vlm.server; text-only models use mlx_lm.server
+  const serverModule = modelSupportsVision(baseModel) ? "mlx_vlm.server" : "mlx_lm.server";
+
   const args = [
-    "-m", "mlx_lm.server",
+    "-m", serverModule,
     "--model", baseModel,
     "--adapter-path", adapterDir,
     "--port", String(port),
     "--host", "127.0.0.1",
   ];
 
-  log(`[local-adapter] starting mlx_lm.server on port ${port}…\n`);
+  log(`[local-adapter] starting ${serverModule} on port ${port}…\n`);
 
   const proc = spawn("python3", args, {
     stdio: ["ignore", "ignore", "ignore"],
@@ -124,7 +128,7 @@ async function startMlxServer(
 
   if (proc.pid) {
     await fs.writeFile(pidFilePath(adapterDir), String(proc.pid) + "\n", "utf8");
-    log(`[local-adapter] mlx_lm.server started (pid=${proc.pid})\n`);
+    log(`[local-adapter] server started (pid=${proc.pid})\n`);
     return true;
   }
 

@@ -20,7 +20,7 @@
 
 import { callEmbeddings, callOpenRouter } from "../openrouter.js";
 import type { OmlsConfig, RouterSignal, ConfidenceRouterConfig } from "../types.js";
-import { DEFAULT_TEACHER_MODELS } from "./supported-models.js";
+import { DEFAULT_TEACHER_MODELS, modelSupportsVision } from "./supported-models.js";
 import { cosineSimilarity } from "../memory.js";
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
@@ -202,6 +202,29 @@ export async function measureSemanticEntropy(
 // ── Main router ───────────────────────────────────────────────────────────────
 
 /**
+ * Check whether the active RL model can handle all modalities present in the input.
+ * Returns an escalation decision if a mismatch is detected, null otherwise.
+ *
+ * @param modalities   Set of modalities detected in the input ("text", "vision", "audio")
+ * @param rlModelId    Base model ID of the active RL model
+ * @param teacherModel Teacher model to escalate to
+ */
+export function checkModalityMismatch(
+  modalities: Set<string>,
+  rlModelId: string,
+  teacherModel: string,
+): RoutingDecision | null {
+  if (modalities.has("vision") && !modelSupportsVision(rlModelId)) {
+    return {
+      model: teacherModel,
+      escalated: true,
+      signal: "modality_mismatch",
+    };
+  }
+  return null;
+}
+
+/**
  * Evaluate the confidence router and return a routing decision.
  *
  * @param prompt           - The user prompt for this run
@@ -211,6 +234,7 @@ export async function measureSemanticEntropy(
  * @param apiKey           - OpenRouter API key
  * @param embeddingModel   - Model for embedding calls
  * @param omlsCfg          - OMLS configuration
+ * @param modalities       - Set of modalities detected in the input
  */
 export async function routeRequest(
   prompt: string,
@@ -220,8 +244,15 @@ export async function routeRequest(
   apiKey: string,
   embeddingModel: string | null,
   omlsCfg?: OmlsConfig,
+  modalities?: Set<string>,
 ): Promise<RoutingDecision> {
   const cfg = routerCfg(omlsCfg?.router);
+
+  // ── Signal 0: Modality mismatch ───────────────────────────────────────────
+  if (modalities && modalities.size > 0) {
+    const mismatch = checkModalityMismatch(modalities, rlModel, teacherModel);
+    if (mismatch) return mismatch;
+  }
 
   // ── Signal 1: Task classifier ─────────────────────────────────────────────
   if (promptEmbedding && promptEmbedding.length > 0 && embeddingModel) {
