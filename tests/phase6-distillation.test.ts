@@ -152,42 +152,43 @@ describe("distillMemoryEntries", () => {
 
 describe("distillation SQLite helpers", () => {
   let tmpDir: string;
-  let origDbPath: string | undefined;
+  // memory-sqlite uses ORAGER_MEMORY_SQLITE_DIR (not ORAGER_DB_PATH) via resolveMemoryDir()
+  let origMemorySqliteDir: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "orager-p6-"));
-    origDbPath = process.env["ORAGER_DB_PATH"];
+    origMemorySqliteDir = process.env["ORAGER_MEMORY_SQLITE_DIR"];
   });
 
   afterEach(async () => {
-    if (origDbPath !== undefined) {
-      process.env["ORAGER_DB_PATH"] = origDbPath;
+    if (origMemorySqliteDir !== undefined) {
+      process.env["ORAGER_MEMORY_SQLITE_DIR"] = origMemorySqliteDir;
     } else {
-      delete process.env["ORAGER_DB_PATH"];
+      delete process.env["ORAGER_MEMORY_SQLITE_DIR"];
     }
     const { _resetDbForTesting } = await import("../src/memory-sqlite.js");
     _resetDbForTesting();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  async function openTestDb(dbName: string) {
-    const dbPath = path.join(tmpDir, dbName);
-    process.env["ORAGER_DB_PATH"] = dbPath;
+  // Point per-namespace memory files at the temp dir so tests never touch
+  // ~/.orager/memory/. Each namespace gets its own file: tmpDir/<ns>.sqlite.
+  async function openTestDb() {
+    process.env["ORAGER_MEMORY_SQLITE_DIR"] = tmpDir;
     const { _resetDbForTesting, loadMemoryStoreSqlite } = await import("../src/memory-sqlite.js");
     _resetDbForTesting();
-    // Trigger schema creation
+    // Trigger schema creation for the sentinel namespace
     await loadMemoryStoreSqlite("__init__");
-    return dbPath;
   }
 
   it("getMemoryEntryCount returns 0 for an empty namespace", async () => {
-    await openTestDb("p6a.db");
+    await openTestDb();
     const { getMemoryEntryCount } = await import("../src/memory-sqlite.js");
     expect(await getMemoryEntryCount("ctx-empty")).toBe(0);
   });
 
   it("getMemoryEntryCount counts only non-expired regular entries", async () => {
-    await openTestDb("p6b.db");
+    await openTestDb();
     const { addMemoryEntrySqlite, getMemoryEntryCount } = await import("../src/memory-sqlite.js");
     const past = new Date(Date.now() - 1000).toISOString();
     await addMemoryEntrySqlite("ctx-count", { content: "Active 1", importance: 2, tags: [] });
@@ -197,7 +198,7 @@ describe("distillation SQLite helpers", () => {
   });
 
   it("getEntriesForDistillation excludes importance=3 entries and orders by importance ASC", async () => {
-    await openTestDb("p6c.db");
+    await openTestDb();
     const { addMemoryEntrySqlite, getEntriesForDistillation } = await import("../src/memory-sqlite.js");
     await addMemoryEntrySqlite("ctx-dist", { content: "High", importance: 3, tags: [] });
     await addMemoryEntrySqlite("ctx-dist", { content: "Normal", importance: 2, tags: [] });
@@ -210,7 +211,7 @@ describe("distillation SQLite helpers", () => {
   });
 
   it("getEntriesForDistillation respects the limit", async () => {
-    await openTestDb("p6d.db");
+    await openTestDb();
     const { addMemoryEntrySqlite, getEntriesForDistillation } = await import("../src/memory-sqlite.js");
     for (let i = 0; i < 10; i++) {
       await addMemoryEntrySqlite("ctx-lim", { content: `Fact ${i}`, importance: 2, tags: [] });
@@ -220,7 +221,7 @@ describe("distillation SQLite helpers", () => {
   });
 
   it("deleteMemoryEntriesByIds removes only the specified entries", async () => {
-    await openTestDb("p6e.db");
+    await openTestDb();
     const { addMemoryEntrySqlite, deleteMemoryEntriesByIds, loadMemoryStoreSqlite } =
       await import("../src/memory-sqlite.js");
     const e1 = await addMemoryEntrySqlite("ctx-del", { content: "Keep", importance: 2, tags: [] });
@@ -234,7 +235,7 @@ describe("distillation SQLite helpers", () => {
   });
 
   it("deleteMemoryEntriesByIds is a no-op for an empty array", async () => {
-    await openTestDb("p6f.db");
+    await openTestDb();
     const { addMemoryEntrySqlite, deleteMemoryEntriesByIds, loadMemoryStoreSqlite } =
       await import("../src/memory-sqlite.js");
     await addMemoryEntrySqlite("ctx-noop", { content: "Safe", importance: 2, tags: [] });

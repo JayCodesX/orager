@@ -2,13 +2,13 @@
  * Persistence round-trip tests for native SQLite (src/native-sqlite.ts).
  *
  * These tests exercise the open/write/close/reopen cycle:
- *   openWasmDb(path) → write → close() → openWasmDb(same path) → read
+ *   openDb(path) → write → close() → openDb(same path) → read
  *
  * bun:sqlite writes are synchronous and immediately durable — no debounce,
  * no serialize/deserialize cycle, real WAL mode.
  */
 import { describe, it, expect } from "vitest";
-import { openWasmDb } from "../src/native-sqlite.js";
+import { openDb } from "../src/native-sqlite.js";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
@@ -19,18 +19,18 @@ function makeTempDbPath(): string {
 }
 
 describe("native SQLite — persistence round-trip", () => {
-  it("data written and close()d survives a second openWasmDb() call", async () => {
+  it("data written and close()d survives a second openDb() call", async () => {
     const dbPath = makeTempDbPath();
     try {
       // ── Phase 1: write ────────────────────────────────────────────────────
-      const db1 = await openWasmDb(dbPath);
+      const db1 = await openDb(dbPath);
       db1.exec("CREATE TABLE items (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
       db1.prepare("INSERT INTO items VALUES (?, ?)").run("a", "hello");
       db1.prepare("INSERT INTO items VALUES (?, ?)").run("b", "world");
       db1.close(); // bun:sqlite writes are already durable; close() runs PRAGMA optimize
 
       // ── Phase 2: read from a new DB instance ─────────────────────────────
-      const db2 = await openWasmDb(dbPath);
+      const db2 = await openDb(dbPath);
       const rows = db2.prepare("SELECT id, value FROM items ORDER BY id").all();
       db2.close();
 
@@ -45,7 +45,7 @@ describe("native SQLite — persistence round-trip", () => {
   it("file is written to disk (non-empty) after inserting a row", async () => {
     const dbPath = makeTempDbPath();
     try {
-      const db = await openWasmDb(dbPath);
+      const db = await openDb(dbPath);
       db.exec("CREATE TABLE t (x INTEGER)");
       db.prepare("INSERT INTO t VALUES (?)").run(42);
       db.close();
@@ -60,7 +60,7 @@ describe("native SQLite — persistence round-trip", () => {
   it("transaction data persists across close + reopen", async () => {
     const dbPath = makeTempDbPath();
     try {
-      const db1 = await openWasmDb(dbPath);
+      const db1 = await openDb(dbPath);
       db1.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, msg TEXT)");
 
       const insert = db1.prepare("INSERT INTO t VALUES (?, ?)");
@@ -70,7 +70,7 @@ describe("native SQLite — persistence round-trip", () => {
       doInsert([[1, "first"], [2, "second"], [3, "third"]]);
       db1.close();
 
-      const db2 = await openWasmDb(dbPath);
+      const db2 = await openDb(dbPath);
       const count = db2.prepare("SELECT COUNT(*) as c FROM t").get() as { c: number };
       const last = db2.prepare("SELECT msg FROM t WHERE id = 3").get() as { msg: string } | undefined;
       db2.close();
@@ -84,9 +84,9 @@ describe("native SQLite — persistence round-trip", () => {
 
   it("data is durable after writes without close() (native driver writes synchronously)", async () => {
     const dbPath = makeTempDbPath();
-    let db: Awaited<ReturnType<typeof openWasmDb>> | undefined;
+    let db: Awaited<ReturnType<typeof openDb>> | undefined;
     try {
-      db = await openWasmDb(dbPath);
+      db = await openDb(dbPath);
       db.exec("CREATE TABLE t (v TEXT)");
       db.prepare("INSERT INTO t VALUES (?)").run("persisted");
       // flush() is a no-op in the native driver — data is already on disk
@@ -96,7 +96,7 @@ describe("native SQLite — persistence round-trip", () => {
       expect(stat.size).toBeGreaterThan(0);
 
       // Open a second instance to verify the data is present on disk
-      const db2 = await openWasmDb(dbPath);
+      const db2 = await openDb(dbPath);
       const row = db2.prepare("SELECT v FROM t").get() as { v: string } | undefined;
       db2.close();
 
@@ -111,18 +111,18 @@ describe("native SQLite — persistence round-trip", () => {
     const dbPath = makeTempDbPath();
     try {
       // Write first batch
-      const db1 = await openWasmDb(dbPath);
+      const db1 = await openDb(dbPath);
       db1.exec("CREATE TABLE log (ts INTEGER, msg TEXT)");
       db1.prepare("INSERT INTO log VALUES (?, ?)").run(1, "alpha");
       db1.close();
 
       // Append second batch
-      const db2 = await openWasmDb(dbPath);
+      const db2 = await openDb(dbPath);
       db2.prepare("INSERT INTO log VALUES (?, ?)").run(2, "beta");
       db2.close();
 
       // Read all
-      const db3 = await openWasmDb(dbPath);
+      const db3 = await openDb(dbPath);
       const rows = db3.prepare("SELECT ts, msg FROM log ORDER BY ts").all() as Array<{ ts: number; msg: string }>;
       db3.close();
 
@@ -138,14 +138,14 @@ describe("native SQLite — persistence round-trip", () => {
     const dbPath = makeTempDbPath();
     try {
       // Create DB and persist
-      const dbW = await openWasmDb(dbPath);
+      const dbW = await openDb(dbPath);
       dbW.exec("CREATE TABLE t (v TEXT)");
       dbW.prepare("INSERT INTO t VALUES (?)").run("original");
       dbW.close();
       const sizeBefore = fs.statSync(dbPath).size;
 
       // Open readonly — read value, no writes
-      const dbRo = await openWasmDb(dbPath, { readonly: true });
+      const dbRo = await openDb(dbPath, { readonly: true });
       const row = dbRo.prepare("SELECT v FROM t").get() as { v: string } | undefined;
       dbRo.close();
       const sizeAfter = fs.statSync(dbPath).size;
@@ -163,7 +163,7 @@ describe("native SQLite — persistence round-trip", () => {
     // Guarantee the file does NOT exist before opening
     expect(fs.existsSync(dbPath)).toBe(false);
     try {
-      const db = await openWasmDb(dbPath);
+      const db = await openDb(dbPath);
       db.exec("CREATE TABLE t (x INTEGER)");
       const row = db.prepare("SELECT COUNT(*) as c FROM t").get() as { c: number };
       db.close();

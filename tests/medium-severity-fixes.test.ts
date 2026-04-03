@@ -6,17 +6,20 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-// ── M-05: wasm-sqlite flush() method ─────────────────────────────────────────
+// ── M-05: native-sqlite flush() method ───────────────────────────────────────
+// wasm-sqlite.ts has been deleted (ADR-0008 §WASM removal). The flush() contract
+// is satisfied by SqliteDb in native-sqlite.ts — native writes are immediately
+// durable so flush() is a no-op, but the method must still exist for callers.
 
-describe("M-05: wasm-sqlite flush() method", () => {
-  it("flush() method exists on WasmCompatDb", async () => {
+describe("M-05: native-sqlite flush() method", () => {
+  it("flush() method exists on SqliteDb (native-sqlite.ts)", async () => {
     const source = await fs.readFile(
-      path.join(process.cwd(), "src/wasm-sqlite.ts"),
+      path.join(process.cwd(), "src/native-sqlite.ts"),
       "utf8",
     );
     expect(source).toContain("async flush()");
-    expect(source).toContain("M-05");
-    expect(source).toContain("if (this._saving) await this._saving");
+    // Native writes are immediately durable — no debounce queue to wait for
+    expect(source).toContain("no debounced write queue");
   });
 });
 
@@ -156,17 +159,19 @@ describe("M-22: Rate limit uses socket address only", () => {
   });
 });
 
-// ── M-23: Health detail avoids opening new WASM DB ───────────────────────────
+// ── M-23: Health detail avoids opening a new SQLite DB ───────────────────────
 // ADR-0003: src/daemon/routes/health.ts has been removed with the daemon.
 // The ui-server /api/daemon/status endpoint is now a simple stub (no DB open).
+// ADR-0008: WASM driver removed; openDb() is the current factory.
 
 describe("M-23: Health detail DB check", () => {
-  it("ui-server daemon-status handler does not open a WASM DB", async () => {
+  it("ui-server daemon-status handler does not open a SQLite DB", async () => {
     const source = await fs.readFile(
       path.join(process.cwd(), "src/ui-server.ts"),
       "utf8",
     );
-    // The stub handler must not open a new WASM database on every call
+    // The stub handler must not open a new database on every call
+    expect(source).not.toContain("openDb");
     expect(source).not.toContain("openWasmDb");
   });
 });

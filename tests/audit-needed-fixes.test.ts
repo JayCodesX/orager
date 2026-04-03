@@ -223,17 +223,19 @@ describe("N-09: withCacheControl multimodal message handling", () => {
   });
 });
 
-// ── N-10: wasm-sqlite lastSaveError tracking ─────────────────────────────────
+// ── N-10: native-sqlite lastSaveError tracking ───────────────────────────────
+// wasm-sqlite.ts has been deleted (ADR-0008 §WASM removal). The lastSaveError
+// field is preserved in native-sqlite.ts's SqliteDb for API compatibility.
 
-describe("N-10: wasm-sqlite lastSaveError field", () => {
-  it("the lastSaveError field exists in the source code", async () => {
+describe("N-10: native-sqlite lastSaveError field", () => {
+  it("the lastSaveError field exists in native-sqlite.ts (SqliteDb)", async () => {
     const source = await fs.readFile(
-      path.join(process.cwd(), "src/wasm-sqlite.ts"),
+      path.join(process.cwd(), "src/native-sqlite.ts"),
       "utf8",
     );
+    // SqliteDb exposes lastSaveError for API compatibility — always null (native writes are durable)
     expect(source).toContain("lastSaveError");
-    expect(source).toContain("this.lastSaveError = null");
-    expect(source).toContain("this.lastSaveError = err");
+    expect(source).toContain("lastSaveError: Error | null = null");
   });
 });
 

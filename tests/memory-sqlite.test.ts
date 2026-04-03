@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { openWasmDb } from "../src/native-sqlite.js";
+import { openDb } from "../src/native-sqlite.js";
 import { resolveMemoryDbPath } from "../src/memory-sqlite.js";
 
 // We must import after setting ORAGER_DB_PATH, so we use dynamic imports below.
@@ -237,12 +237,12 @@ describe("_migrate — JSON text embedding → Float32 BLOB conversion", () => {
 
     // Directly overwrite the embedding column with a JSON text string (legacy format)
     const embeddingJson = JSON.stringify([1.0, 2.0, 3.0]);
-    const dbRaw = await openWasmDb(actualDbPath);
+    const dbRaw = await openDb(actualDbPath);
     dbRaw.prepare("UPDATE memory_entries SET embedding = ? WHERE id = ?").run(embeddingJson, entry.id);
     dbRaw.close();
 
     // Confirm the embedding is stored as TEXT before migration
-    const dbBefore = await openWasmDb(actualDbPath, { readonly: true });
+    const dbBefore = await openDb(actualDbPath, { readonly: true });
     const before = dbBefore.prepare(
       "SELECT typeof(embedding) as t FROM memory_entries WHERE id = ?",
     ).get(entry.id) as { t: string };
@@ -255,7 +255,7 @@ describe("_migrate — JSON text embedding → Float32 BLOB conversion", () => {
     _resetDbForTesting(); // flush, close
 
     // Confirm the embedding is now stored as BLOB
-    const dbAfter = await openWasmDb(actualDbPath, { readonly: true });
+    const dbAfter = await openDb(actualDbPath, { readonly: true });
     const after = dbAfter.prepare(
       "SELECT typeof(embedding) as t FROM memory_entries WHERE id = ?",
     ).get(entry.id) as { t: string };
@@ -275,7 +275,7 @@ describe("_migrate — JSON text embedding → Float32 BLOB conversion", () => {
     const actualDbPath = resolveMemoryDbPath("keyMigBad");
 
     // Inject invalid JSON as the embedding TEXT value
-    const dbRaw = await openWasmDb(actualDbPath);
+    const dbRaw = await openDb(actualDbPath);
     dbRaw.prepare("UPDATE memory_entries SET embedding = ? WHERE id = ?").run("not-valid-json!!", entry.id);
     dbRaw.close();
 
@@ -285,7 +285,7 @@ describe("_migrate — JSON text embedding → Float32 BLOB conversion", () => {
     _resetDbForTesting();
 
     // The row is still present (catch swallowed parse error; UPDATE was skipped)
-    const dbAfter = await openWasmDb(actualDbPath, { readonly: true });
+    const dbAfter = await openDb(actualDbPath, { readonly: true });
     const row = dbAfter.prepare(
       "SELECT id, typeof(embedding) as t FROM memory_entries WHERE id = ?",
     ).get(entry.id) as { id: string; t: string } | undefined;
