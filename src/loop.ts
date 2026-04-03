@@ -29,6 +29,7 @@ import path from "node:path";
 import { loadSession, saveSession, newSessionId, acquireSessionLock, saveSessionCheckpoint, loadLatestCheckpointByContextId } from "./session.js";
 import { callWithRetry } from "./retry.js";
 import { fetchGenerationMeta, shouldUseDirect, callEmbeddings } from "./openrouter.js";
+import { isOllamaRunning, resolveOllamaBaseUrl, toOllamaTag, isModelPulled } from "./ollama.js";
 import { fetchLiveModelMeta, getLiveModelPricing, isLiveModelMetaCacheWarm, liveModelSupportsTools, liveModelSupportsVision } from "./openrouter-model-meta.js";
 import { recordProviderSuccess } from "./provider-health.js";
 import { loadSkillsFromDirs, buildSkillsSystemPrompt, buildSkillTools } from "./skills.js";
@@ -376,8 +377,34 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     // visionOk === true: confirmed, no action needed.
   }
 
+  // ── Ollama backend startup check ──────────────────────────────────────────
+  const _ollamaCfg = opts.ollama;
+  let _ollamaBaseUrl: string | undefined;
+  if (_ollamaCfg?.enabled) {
+    const ollamaUrl = resolveOllamaBaseUrl(_ollamaCfg);
+    const running = await isOllamaRunning(ollamaUrl);
+    if (!running) {
+      const msg = `[orager] Ollama is not running at ${ollamaUrl}. ` +
+        `Start Ollama with \`ollama serve\` and retry, or set opts.ollama.enabled = false to use OpenRouter.\n`;
+      onLog?.("stderr", msg);
+      throw new Error(`Ollama not reachable at ${ollamaUrl}`);
+    }
+    const ollamaTag = toOllamaTag(model, _ollamaCfg);
+    if (_ollamaCfg.checkModel !== false) {
+      const pulled = await isModelPulled(ollamaTag, ollamaUrl);
+      if (!pulled) {
+        const msg = `[orager] Ollama model "${ollamaTag}" is not pulled. ` +
+          `Run \`ollama pull ${ollamaTag}\` then retry.\n`;
+        onLog?.("stderr", msg);
+        throw new Error(`Ollama model "${ollamaTag}" not pulled`);
+      }
+    }
+    _ollamaBaseUrl = ollamaUrl;
+    onLog?.("stderr", `[orager] using local Ollama backend: ${ollamaTag} @ ${ollamaUrl}\n`);
+  }
+
   // Log if direct Anthropic mode is active (bypasses OpenRouter)
-  if (shouldUseDirect(model)) {
+  if (!_ollamaBaseUrl && shouldUseDirect(model)) {
     onLog?.("stderr", `[orager] using direct Anthropic API for model ${model} (ANTHROPIC_API_KEY is set)\n`);
   }
 
@@ -1758,6 +1785,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           // Per-agent user identifier for OpenRouter attribution/abuse detection.
           // Falls back to sessionId (stable UUID) when no explicit agentId is set.
           user: opts.agentId ?? sessionId,
+          // Ollama routing — when set, retry.ts dispatches to the local backend
+          _ollamaBaseUrl,
           // Stream partial tokens to consumers in real time.
           // Each delta is emitted as a separate event so the adapter can
           // forward it to Paperclip / other UIs without buffering the full turn.

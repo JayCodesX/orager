@@ -568,6 +568,13 @@ export interface OpenRouterCallOptions {
    * value so sessions map 1-to-1 with OpenRouter user identifiers.
    */
   user?: string;
+
+  /**
+   * Internal — when set, routes this call to a local Ollama server instead of
+   * OpenRouter. Value is the Ollama base URL (e.g. "http://localhost:11434").
+   * Set by loop.ts when opts.ollama.enabled is true; not intended for callers.
+   */
+  _ollamaBaseUrl?: string;
 }
 
 // ── OpenRouter call result ───────────────────────────────────────────────────
@@ -1254,6 +1261,14 @@ export interface AgentLoopOptions {
   /** SkillBank configuration. When undefined, defaults from DEFAULT_SKILLBANK_CONFIG apply. */
   skillbank?: SkillBankConfig;
 
+  // ── Ollama local inference (ADR-0009 Phase 1) ─────────────────────────────
+  /**
+   * Local Ollama backend configuration. When enabled, inference calls are
+   * routed to the local Ollama server instead of OpenRouter. No API key is
+   * required. Ollama must be running and the target model must be pulled.
+   */
+  ollama?: OllamaConfig;
+
   // ── OMLS (ADR-0007) ───────────────────────────────────────────────────────
   /** OMLS opportunistic RL training configuration. Default: disabled. */
   omls?: OmlsConfig;
@@ -1455,6 +1470,36 @@ export interface ConfidenceRouterConfig {
   entropySamples?: number;
   /** Temperature for entropy sampling. Default: 0.8. */
   entropyTemperature?: number;
+}
+
+// ── Ollama (ADR-0009 Phase 1) ──────────────────────────────────────────────────
+
+/**
+ * Configuration for the local Ollama inference backend.
+ * When enabled, orager routes LLM calls to the local Ollama server instead of
+ * OpenRouter. No API key is required for local inference.
+ */
+export interface OllamaConfig {
+  /** Enable local Ollama backend. Default: false. */
+  enabled?: boolean;
+  /**
+   * Ollama server base URL.
+   * Override with ORAGER_OLLAMA_BASE_URL env var.
+   * Default: http://localhost:11434
+   */
+  baseUrl?: string;
+  /**
+   * Ollama model tag to use (e.g. "qwen2.5:7b", "llama3.1:8b").
+   * If omitted, orager maps the configured model ID to the closest Ollama tag
+   * automatically. Set this if you've pulled a custom or quantized variant.
+   */
+  model?: string;
+  /**
+   * When true, orager checks that Ollama is running and the target model is
+   * pulled before each run. If the model is not pulled, the run fails with a
+   * clear error instead of returning a garbled response. Default: true.
+   */
+  checkModel?: boolean;
 }
 
 /** VPS provider backend for RL training. */
