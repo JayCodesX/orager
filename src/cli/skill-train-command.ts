@@ -6,6 +6,9 @@
  *   orager skill-train --rl --dry-run          estimate cost, print plan, do nothing
  *   orager skill-train --rl --require-idle     only run if system is idle (for cron)
  *   orager skill-train --rl --backend <name>   override VPS backend
+ *   orager skill-train --rl --local            force local training (MLX or peft)
+ *   orager skill-train --rl --no-local         force cloud VPS training
+ *   orager skill-train --rl --local-backend <n> override local backend (mlx|llamacpp-cuda|llamacpp-cpu)
  *   orager skill-train --status                show current RL model + buffer size
  *   orager skill-train --rollback              revert to previous adapter version
  *   orager skill-train --setup-cron            install OMLS cron job
@@ -97,14 +100,14 @@ async function handleRemoveCron(): Promise<void> {
 async function handleRlTrain(argv: string[], cfg: OmlsConfig): Promise<void> {
   const dryRun = argv.includes("--dry-run");
   const requireIdle = argv.includes("--require-idle");
+  const forceLocal = argv.includes("--local");
+  const forceCloud = argv.includes("--no-local");
   const backendIdx = argv.indexOf("--backend");
   const backendOverride = backendIdx !== -1 ? argv[backendIdx + 1] : undefined;
+  const localBackendIdx = argv.indexOf("--local-backend");
+  const localBackendOverride = localBackendIdx !== -1 ? argv[localBackendIdx + 1] : undefined;
 
   const apiKey = (process.env["PROTOCOL_API_KEY"] ?? "").trim();
-  if (!apiKey) {
-    printErr("orager: API key not set. Export PROTOCOL_API_KEY.");
-    process.exit(1);
-  }
 
   // ── Idle check (for cron) ────────────────────────────────────────────────
   if (requireIdle) {
@@ -119,6 +122,9 @@ async function handleRlTrain(argv: string[], cfg: OmlsConfig): Promise<void> {
   }
 
   // ── Scheduler pre-check ───────────────────────────────────────────────────
+  let schedulerPreferredBackend: "local" | "cloud" = "local";
+  let schedulerLocalBackend: import("../omls/hardware-detector.js").LocalBackend | undefined;
+
   if (!dryRun && !argv.includes("--force")) {
     const { checkSchedulerConditions } = await import("../omls/scheduler.js");
     const check = await checkSchedulerConditions(cfg);
@@ -131,14 +137,65 @@ async function handleRlTrain(argv: string[], cfg: OmlsConfig): Promise<void> {
         process.exit(1);
       }
     }
+    schedulerPreferredBackend = check.preferredBackend;
+    schedulerLocalBackend = check.localBackend;
   }
 
-  // ── Apply backend override ────────────────────────────────────────────────
+  // ── Determine whether to run local or cloud ───────────────────────────────
+  // Precedence: --local / --no-local flags > scheduler detection > config default
+  const useLocal = forceCloud ? false
+    : forceLocal ? true
+    : schedulerPreferredBackend === "local";
+
+  if (useLocal) {
+    // ── Local training path ─────────────────────────────────────────────────
+    printLine(dryRun ? "Dry run — estimating local training plan..." : "Starting local OMLS training pipeline...");
+
+    const { runLocalTrainingPipeline } = await import("../omls/local-training-pipeline.js");
+    const effectiveLocalBackend =
+      (localBackendOverride as import("../omls/hardware-detector.js").LocalBackend | undefined)
+      ?? schedulerLocalBackend;
+
+    const result = await runLocalTrainingPipeline({
+      dryRun,
+      cfg,
+      apiKey,
+      memoryKey: "default",
+      backendOverride: effectiveLocalBackend,
+      onProgress: (msg) => process.stderr.write(msg),
+    });
+
+    printLine("");
+    if (result.success) {
+      if (dryRun) {
+        printLine("Dry run complete. No changes made.");
+      } else {
+        printLine(`✅ Local RL training complete!`);
+        printLine(`   Adapter:  ${result.adapterPath}`);
+        printLine(`   Version:  v${result.version}`);
+        printLine(`   Backend:  ${result.backend}`);
+        printLine(`   Duration: ${Math.round((result.durationMs ?? 0) / 1000)}s`);
+      }
+    } else {
+      printErr(`❌ Local training failed: ${result.error}`);
+      for (const s of result.steps) {
+        if (s.status === "error") printErr(`   [${s.step}] ${s.detail}`);
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  // ── Cloud training path ───────────────────────────────────────────────────
+  if (!apiKey) {
+    printErr("orager: API key not set. Export PROTOCOL_API_KEY (required for cloud training).");
+    process.exit(1);
+  }
+
   const effectiveCfg: OmlsConfig = backendOverride
     ? { ...cfg, rl: { ...cfg.rl, backend: backendOverride as import("../types.js").VpsBackend } }
     : cfg;
 
-  // ── Run pipeline ──────────────────────────────────────────────────────────
   printLine(dryRun ? "Dry run — estimating training plan..." : "Starting OMLS training pipeline...");
 
   const { runTrainingPipeline } = await import("../omls/training-pipeline.js");
@@ -201,17 +258,25 @@ export async function handleSkillTrainSubcommand(argv: string[]): Promise<void> 
   printLine("Usage: orager skill-train <flags>");
   printLine("");
   printLine("Flags:");
-  printLine("  --rl                  Run the full OMLS training pipeline");
-  printLine("  --rl --dry-run        Estimate cost and plan without running");
-  printLine("  --rl --require-idle   Only run if system is idle (for cron use)");
-  printLine("  --rl --backend <n>    Override VPS backend (vastai | runpod)");
-  printLine("  --rl --force          Skip condition checks and force training");
-  printLine("  --status              Show current RL model + buffer status");
-  printLine("  --rollback            Revert to previous adapter version");
-  printLine("  --setup-cron          Install OMLS cron job (~/.orager/cron)");
-  printLine("  --remove-cron         Remove OMLS cron job");
+  printLine("  --rl                        Run the OMLS training pipeline (local by default)");
+  printLine("  --rl --dry-run              Estimate plan without running");
+  printLine("  --rl --require-idle         Only run if system is idle (for cron use)");
+  printLine("  --rl --local                Force local training (MLX or peft)");
+  printLine("  --rl --no-local             Force cloud VPS training");
+  printLine("  --rl --local-backend <n>    Override local backend (mlx|llamacpp-cuda|llamacpp-cpu)");
+  printLine("  --rl --backend <n>          Override cloud VPS backend (vastai|runpod)");
+  printLine("  --rl --force                Skip condition checks and force training");
+  printLine("  --status                    Show current RL model + buffer status");
+  printLine("  --rollback                  Revert to previous adapter version");
+  printLine("  --setup-cron                Install OMLS cron job (~/.orager/cron)");
+  printLine("  --remove-cron               Remove OMLS cron job");
+  printLine("");
+  printLine("Local training (default when hardware is available):");
+  printLine("  Apple Silicon:  pip install mlx-lm");
+  printLine("  NVIDIA GPU:     pip install peft transformers bitsandbytes accelerate datasets");
+  printLine("  CPU fallback:   pip install peft transformers accelerate datasets");
   printLine("");
   printLine("To enable OMLS, add to ~/.orager/settings.json:");
-  printLine('  { "omls": { "enabled": true, "rl": { "enabled": true, "backend": "vastai" } } }');
+  printLine('  { "omls": { "enabled": true } }');
   printLine("");
 }

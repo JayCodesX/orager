@@ -16,12 +16,17 @@
 import type { OmlsConfig } from "../types.js";
 import { checkIdle } from "./idle-detector.js";
 import { countDistillableBuffer, getCurrentSkillGeneration } from "./trajectory-buffer.js";
+import type { LocalBackend } from "./hardware-detector.js";
 
 export interface SchedulerCheckResult {
   shouldTrain: boolean;
   reason: string;
   bufferSize: number;
   idleResult: Awaited<ReturnType<typeof checkIdle>>;
+  /** Preferred backend for this training run — "cloud" if local is disabled/unavailable. */
+  preferredBackend: "local" | "cloud";
+  /** Detected local backend, if preferredBackend is "local". */
+  localBackend?: LocalBackend;
 }
 
 /**
@@ -45,6 +50,7 @@ export async function checkSchedulerConditions(
       reason: `not_idle: ${idleResult.reason}`,
       bufferSize: 0,
       idleResult,
+      preferredBackend: "cloud",
     };
   }
 
@@ -57,14 +63,40 @@ export async function checkSchedulerConditions(
       reason: `buffer_too_small (${bufferSize}/${minBatchSize} distillable trajectories)`,
       bufferSize,
       idleResult,
+      preferredBackend: "cloud",
     };
+  }
+
+  // ── 3. Preferred backend: local vs cloud ───────────────────────────────────
+  // Local training is preferred by default when hardware supports it.
+  // It can be disabled via cfg.localTraining.enabled = false.
+  const localEnabled = cfg.localTraining?.enabled !== false;
+  let preferredBackend: "local" | "cloud" = "cloud";
+  let localBackend: LocalBackend | undefined;
+
+  if (localEnabled) {
+    try {
+      const { detectHardware } = await import("./hardware-detector.js");
+      const hw = await detectHardware();
+      if (hw.recommendedBackend) {
+        const cfgBackend = cfg.localTraining?.backend;
+        localBackend = (cfgBackend && cfgBackend !== "auto")
+          ? cfgBackend as LocalBackend
+          : hw.recommendedBackend;
+        preferredBackend = "local";
+      }
+    } catch {
+      // Hardware detection failed — fall back to cloud
+    }
   }
 
   return {
     shouldTrain: true,
-    reason: `conditions_met (${bufferSize} trajectories, idle: ${idleResult.reason})`,
+    reason: `conditions_met (${bufferSize} trajectories, idle: ${idleResult.reason}, backend: ${preferredBackend})`,
     bufferSize,
     idleResult,
+    preferredBackend,
+    localBackend,
   };
 }
 

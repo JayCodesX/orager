@@ -1601,6 +1601,22 @@ export interface OmlsConfig {
       };
     };
   };
+
+  // ── Local training (ADR-0009 Phase 2) ─────────────────────────────────────
+  localTraining?: {
+    /**
+     * Whether local training is enabled.
+     * Default: true — runs automatically on idle when hardware supports it.
+     * Set to false to always use cloud VPS training.
+     */
+    enabled?: boolean;
+    /**
+     * Force a specific local backend instead of auto-detecting.
+     * Default: "auto" — selects mlx on Apple Silicon, llamacpp-cuda on NVIDIA,
+     * llamacpp-cpu otherwise.
+     */
+    backend?: "auto" | "mlx" | "llamacpp-cuda" | "llamacpp-cpu";
+  };
 }
 
 // ── Permission types ─────────────────────────────────────────────────────────
