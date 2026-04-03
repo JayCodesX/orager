@@ -22,12 +22,16 @@ export async function readStdin(): Promise<string> {
 // ── Arg parsing ───────────────────────────────────────────────────────────────
 
 export function parseArgs(argv: string[]): CliOptions {
+  // ORAGER_MAX_TURNS env var overrides the default (20) but is overridden by --max-turns flag
+  const _envMaxTurns = process.env["ORAGER_MAX_TURNS"]
+    ? parseInt(process.env["ORAGER_MAX_TURNS"], 10)
+    : NaN;
   const opts: CliOptions = {
     model: "deepseek/deepseek-chat-v3-2",
     models: [],
     sessionId: null,
     addDirs: [],
-    maxTurns: 20,
+    maxTurns: !isNaN(_envMaxTurns) && _envMaxTurns > 0 ? _envMaxTurns : 20,
     maxRetries: 3,
     forceResume: false,
     dangerouslySkipPermissions: false,

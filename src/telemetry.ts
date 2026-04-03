@@ -55,6 +55,7 @@ export function getSpanBuffer(): SpanBuffer { return _spanBuffer; }
 // ── Tracer ────────────────────────────────────────────────────────────────────
 
 let _tracer: Tracer | null = null;
+let _shutdownSdk: (() => Promise<void>) | null = null;
 // Guard against multiple initTelemetry() calls (e.g. daemon restart loops)
 let _sdkInitialized = false;
 
@@ -103,9 +104,11 @@ export async function initTelemetry(serviceName = "orager"): Promise<void> {
     sdk.start();
     _tracer = trace.getTracer(TRACER_NAME);
     // Flush both traces and metrics on clean exit.
-    const shutdownSdk = async () => { try { await sdk.shutdown(); } catch { /* */ } };
-    process.on("beforeExit", shutdownSdk);
-    process.once("SIGTERM", async () => { await shutdownSdk(); process.exit(0); });
+    _shutdownSdk = async () => { try { await sdk.shutdown(); } catch { /* */ } };
+    process.on("beforeExit", _shutdownSdk);
+    // Note: SIGTERM shutdown is handled by the CLI entry point (index.ts) via
+    // flushTelemetry(). No separate SIGTERM handler registered here to avoid
+    // double process.exit() calls.
   } catch (err) {
     // OTEL init failure must never crash the agent
     console.error("[orager] OpenTelemetry init failed:", err);
@@ -178,4 +181,13 @@ export async function withSpan<T>(
 export function spanSetAttributes(attrs: Record<string, string | number | boolean>): void {
   const span = trace.getActiveSpan();
   if (span) span.setAttributes(attrs);
+}
+
+/**
+ * Flush pending OTel spans and metrics. Call before process.exit() to ensure
+ * no telemetry is lost on SIGTERM or other clean shutdowns.
+ * No-op when OTEL is not configured.
+ */
+export async function flushTelemetry(): Promise<void> {
+  if (_shutdownSdk) await _shutdownSdk();
 }
