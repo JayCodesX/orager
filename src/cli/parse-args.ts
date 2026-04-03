@@ -336,6 +336,21 @@ export function parseArgs(argv: string[]): CliOptions {
         opts.autoMemory = true;
         break;
       }
+      case "--ollama": {
+        if (!opts.ollama) opts.ollama = {};
+        opts.ollama.enabled = true;
+        break;
+      }
+      case "--ollama-model": {
+        if (!opts.ollama) opts.ollama = {};
+        opts.ollama.model = argv[++i];
+        break;
+      }
+      case "--ollama-url": {
+        if (!opts.ollama) opts.ollama = {};
+        opts.ollama.baseUrl = argv[++i];
+        break;
+      }
       case "--track-file-changes": {
         opts.trackFileChanges = true;
         break;

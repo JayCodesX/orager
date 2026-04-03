@@ -267,11 +267,28 @@ function processLine(line: string, state: ParseState): void {
 
 // ── Main API call ─────────────────────────────────────────────────────────────
 
+/**
+ * Optional backend override. When provided, routes the call to a custom
+ * OpenAI-compatible endpoint (e.g. a local Ollama server) instead of
+ * OpenRouter. OpenRouter-specific body fields (plugins, provider, preset,
+ * transforms, metadata) and response processing (rate-limit tracking,
+ * generation-ID extraction) are skipped when a backend override is active.
+ */
+interface BackendOverride {
+  /** Base URL for the OpenAI-compatible API (e.g. "http://localhost:11434/v1"). */
+  baseUrl: string;
+}
+
 export async function callOpenRouter(
-  opts: OpenRouterCallOptions
+  opts: OpenRouterCallOptions,
+  _backend?: BackendOverride,
 ): Promise<OpenRouterCallResult> {
   const { apiKey, model, signal, onChunk } = opts;
   const maxTokens = opts.max_completion_tokens;
+  const isLocalBackend = !!_backend;
+  const endpoint = isLocalBackend
+    ? `${_backend.baseUrl}/chat/completions`
+    : ENDPOINT;
 
   // Apply Anthropic-specific prompt cache breakpoints when the model is
   // anthropic/*.  For all other models messages and tools are passed as-is
@@ -323,52 +340,50 @@ export async function callOpenRouter(
   // Output format
   if (opts.response_format !== undefined) body.response_format = opts.response_format;
   if (opts.structured_outputs !== undefined) body.structured_outputs = opts.structured_outputs;
-  // Provider routing
-  if (opts.provider !== undefined) body.provider = opts.provider;
-  // OpenRouter preset (named server-side config)
-  if (opts.preset !== undefined && opts.preset.length > 0) body.preset = opts.preset;
-  // Context transforms
-  if (opts.transforms !== undefined && opts.transforms.length > 0) body.transforms = opts.transforms;
   // Fallback models
   if (opts.models !== undefined && opts.models.length > 0) body.models = opts.models;
-  // OTEL trace ID — injected into OpenRouter metadata for correlation
-  body.metadata = (() => {
+  // OpenRouter-only metadata and user attribution (not sent to local backends)
+  if (!isLocalBackend) {
+    // OTEL trace ID — injected into OpenRouter metadata for correlation
     const span = trace.getActiveSpan();
     const traceId = span?.spanContext().traceId;
-    return traceId ? { trace_id: traceId } : undefined;
-  })();
-  // Per-user / per-agent identifier — used by OpenRouter for abuse detection
-  // and attribution in dashboards. Prefer sessionId (stable, already a UUID).
-  if (opts.user) body.user = opts.user;
+    if (traceId) body.metadata = { trace_id: traceId };
+    // Per-user / per-agent identifier — used by OpenRouter for abuse detection
+    // and attribution in dashboards. Prefer sessionId (stable, already a UUID).
+    if (opts.user) body.user = opts.user;
+  }
 
-  // Plugins (e.g. response-healing, context-compression)
-  // When response_format is set (structured outputs), add response-healing by default
-  // unless the caller has already supplied an explicit plugins array.
-  const plugins = (() => {
-    const base = opts.plugins ?? (opts.response_format !== undefined ? [{ id: "response-healing" }] : []);
-    if (opts.disableContextCompression) {
-      // Only add the disable entry if not already present
-      const hasEntry = base.some((p: { id: string }) => p.id === "context-compression");
-      if (!hasEntry) {
-        return [...base, { id: "context-compression", enabled: false }];
+  // OpenRouter-specific fields — skipped for local backends (e.g. Ollama)
+  if (!isLocalBackend) {
+    // Plugins (e.g. response-healing, context-compression)
+    const plugins = (() => {
+      const base = opts.plugins ?? (opts.response_format !== undefined ? [{ id: "response-healing" }] : []);
+      if (opts.disableContextCompression) {
+        const hasEntry = base.some((p: { id: string }) => p.id === "context-compression");
+        if (!hasEntry) {
+          return [...base, { id: "context-compression", enabled: false }];
+        }
       }
-    }
-    return base.length > 0 ? base : undefined;
-  })();
-  if (plugins !== undefined) {
-    body.plugins = plugins;
+      return base.length > 0 ? base : undefined;
+    })();
+    if (plugins !== undefined) body.plugins = plugins;
+    if (opts.provider !== undefined) body.provider = opts.provider;
+    if (opts.preset !== undefined && opts.preset.length > 0) body.preset = opts.preset;
+    if (opts.transforms !== undefined && opts.transforms.length > 0) body.transforms = opts.transforms;
   }
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Authorization: `Bearer ${apiKey}`,
   };
-  if (opts.siteUrl) headers["HTTP-Referer"] = opts.siteUrl;
-  if (opts.siteName) headers["X-Title"] = opts.siteName;
-  // X-Session-Id enables sticky routing: OpenRouter sends all requests with the
-  // same session ID to the same provider endpoint, maximising prompt cache hits
-  // across turns within a single agent session.
-  if (opts.sessionId) headers["X-Session-Id"] = opts.sessionId;
+  if (!isLocalBackend) {
+    if (opts.siteUrl) headers["HTTP-Referer"] = opts.siteUrl;
+    if (opts.siteName) headers["X-Title"] = opts.siteName;
+    // X-Session-Id enables sticky routing: OpenRouter sends all requests with the
+    // same session ID to the same provider endpoint, maximising prompt cache hits
+    // across turns within a single agent session.
+    if (opts.sessionId) headers["X-Session-Id"] = opts.sessionId;
+  }
 
   // Compose caller's abort signal with a default 120s timeout (audit B-09)
   const timeoutSignal = AbortSignal.timeout(120_000);
@@ -376,7 +391,7 @@ export async function callOpenRouter(
     ? AbortSignal.any([signal, timeoutSignal])
     : timeoutSignal;
 
-  const response = await fetch(ENDPOINT, {
+  const response = await fetch(endpoint, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
@@ -385,6 +400,7 @@ export async function callOpenRouter(
 
   if (!response.ok) {
     const errorBody = await response.text().catch(() => "(unreadable)");
+    const source = isLocalBackend ? "Ollama" : "OpenRouter";
     return {
       content: "",
       reasoning: "",
@@ -396,14 +412,15 @@ export async function callOpenRouter(
       finishReason: null,
       isError: true,
       httpStatus: response.status,
-      errorMessage: `OpenRouter error ${response.status} ${response.statusText}: ${errorBody.slice(0, 500)}`,
+      errorMessage: `${source} error ${response.status} ${response.statusText}: ${errorBody.slice(0, 500)}`,
     };
   }
 
-  // Update the process-global tracker (used by /metrics) and, when provided,
-  // the per-agent tracker so one agent's 429 doesn't pollute other agents.
-  updateRateLimitState(response.headers);
-  opts.rateLimitTracker?.updateFromHeaders(response.headers);
+  // Update rate-limit trackers — only applicable for OpenRouter, not local backends.
+  if (!isLocalBackend) {
+    updateRateLimitState(response.headers);
+    opts.rateLimitTracker?.updateFromHeaders(response.headers);
+  }
 
   if (!response.body) {
     throw new Error("OpenRouter response has no body");
