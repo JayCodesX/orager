@@ -221,5 +221,3 @@ export function isSqliteVecAvailable(): boolean {
 
 /** Primary type alias for an open SQLite database handle. */
 export type { SqliteDb as SqliteDatabase };
-/** @deprecated Use SqliteDatabase. Kept temporarily for rename transition. */
-export type { SqliteDb as WasmDatabase };

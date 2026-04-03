@@ -35,6 +35,7 @@ import {
 import { handleMemorySubcommand } from "./commands/memory-command.js";
 import { handleRunCommand } from "./commands/run-command.js";
 import { handleChatCommand } from "./commands/chat-command.js";
+import { makeCliOnEmit } from "./commands/cli-helpers.js";
 
 // ── Node.js version gate ──────────────────────────────────────────────────────
 {
@@ -135,9 +136,8 @@ async function releaseCliPidLock(): Promise<void> {
 let interruptSessionId = "";
 let interruptUsage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 };
 
-function handleInterrupt(signal: string): void {
+async function handleInterrupt(signal: string): Promise<void> {
   process.stderr.write(`\n[orager] received ${signal}, shutting down\n`);
-  void releaseCliPidLock();
 
   const resultEvent: EmitResultEvent = {
     type: "result",
@@ -148,13 +148,22 @@ function handleInterrupt(signal: string): void {
     usage: interruptUsage,
     total_cost_usd: 0,
   };
-
   emit(resultEvent);
+
+  // Flush OTel spans/metrics before exit so no telemetry is lost on SIGTERM.
+  // getSpanBuffer() is synchronous; the SDK shutdown is what needs to await.
+  // Import lazily to avoid circular deps and keep the no-OTEL path fast.
+  try {
+    const { flushTelemetry } = await import("./telemetry.js");
+    await flushTelemetry();
+  } catch { /* non-fatal — never block shutdown */ }
+
+  await releaseCliPidLock();
   process.exit(0);
 }
 
-process.on("SIGINT", () => handleInterrupt("SIGINT"));
-process.on("SIGTERM", () => handleInterrupt("SIGTERM"));
+process.on("SIGINT", () => { void handleInterrupt("SIGINT"); });
+process.on("SIGTERM", () => { void handleInterrupt("SIGTERM"); });
 
 // ── Help command ──────────────────────────────────────────────────────────────
 
@@ -229,6 +238,8 @@ SERVER
 
 ENVIRONMENT
   PROTOCOL_API_KEY          LLM provider API key (required)
+  ORAGER_MAX_TURNS          Override default max turns (overridden by --max-turns flag)
+  ORAGER_JSON_LOGS          Set to "1" to emit structured JSON startup log to stderr
   ORAGER_SESSIONS_DIR       Override sessions directory
   ORAGER_PROFILES_DIR       Override profiles directory
   ORAGER_SETTINGS_ALLOWED_ROOTS  Colon-separated absolute path roots for settingsFile
@@ -515,54 +526,6 @@ async function main(): Promise<void> {
       }
     : undefined;
 
-  // ── CLI output tracking ───────────────────────────────────────────────────────
-  const runStart = Date.now();
-  let cliTurn = 0;
-  let cliTurnStart = Date.now();
-
-  function makeOnEmit(baseEmit: typeof emit) {
-    return (event: Parameters<typeof emit>[0]) => {
-      baseEmit(event);
-
-      if (event.type === "assistant") {
-        if (cliTurn === 0) cliTurnStart = Date.now();
-        else cliTurnStart = Date.now();
-      }
-
-      if (event.type === "tool") {
-        const elapsed = ((Date.now() - cliTurnStart) / 1000).toFixed(1);
-        process.stderr.write(`\r[turn ${cliTurn + 1} | ${elapsed}s]\x1b[K\n`);
-        cliTurn++;
-        cliTurnStart = Date.now();
-      }
-
-      if (event.type === "result") {
-        const totalElapsedS = Math.round((Date.now() - runStart) / 1000);
-        const promptTokens = event.usage.input_tokens;
-        const completionTokens = event.usage.output_tokens;
-        const cachedTokens = event.usage.cache_read_input_tokens;
-        const totalTokens = promptTokens + completionTokens;
-        const cachedPct = totalTokens > 0
-          ? Math.round((cachedTokens / totalTokens) * 100)
-          : 0;
-        const cost = event.total_cost_usd;
-        const sessionShort = event.session_id.slice(0, 8);
-
-        process.stderr.write(
-          `\r\x1b[K` +
-          `─────────────────────────────────────\n` +
-          `  Turns:    ${event.turnCount ?? cliTurn}\n` +
-          `  Tokens:   ${promptTokens.toLocaleString()} prompt / ${completionTokens.toLocaleString()} completion\n` +
-          `  Cached:   ${cachedTokens.toLocaleString()} (${cachedPct}%)\n` +
-          `  Cost:     ~$${cost.toFixed(4)}\n` +
-          `  Duration: ${totalElapsedS}s\n` +
-          `  Session:  ${sessionShort}...\n` +
-          `─────────────────────────────────────\n`,
-        );
-      }
-    };
-  }
-
   // ── Build loop options ────────────────────────────────────────────────────────
   const G = globalThis as Record<string, unknown>;
   let loopOpts: AgentLoopOptions = {
@@ -577,7 +540,7 @@ async function main(): Promise<void> {
     cwd: process.cwd(),
     dangerouslySkipPermissions: opts.dangerouslySkipPermissions,
     verbose: opts.verbose,
-    onEmit: makeOnEmit(emit),
+    onEmit: makeCliOnEmit(emit),
     onLog: (stream, chunk) => {
       if (stream === "stderr") process.stderr.write(chunk);
     },

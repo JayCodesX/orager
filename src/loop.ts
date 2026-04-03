@@ -1021,6 +1021,19 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   // ── 3. Emit init ──────────────────────────────────────────────────────────
   onEmit({ type: "system", subtype: "init", model, session_id: sessionId });
   log.info("loop_start", { sessionId, model, isResume });
+  // Structured startup log for log aggregators (Datadog, CloudWatch, etc.).
+  // Gated on ORAGER_JSON_LOGS=1 so it doesn't clutter interactive TTY output.
+  // Written to stderr so it never contaminates the JSON event stream on stdout.
+  if (process.env["ORAGER_JSON_LOGS"] === "1") {
+    onLog?.("stderr", JSON.stringify({
+      event: "orager.start",
+      version: process.env["ORAGER_VERSION"] ?? "unknown",
+      model,
+      sessionId,
+      isResume,
+      ts: new Date().toISOString(),
+    }) + "\n");
+  }
 
   // ── SessionStart hook ─────────────────────────────────────────────────────
   if (effectiveOpts.hooks?.SessionStart) {
