@@ -33,8 +33,14 @@ import split2 from "split2";
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
 const ORAGER_DIR = path.join(os.homedir(), ".orager");
-const CONFIG_PATH = path.join(ORAGER_DIR, "config.json");
-const SETTINGS_PATH = path.join(ORAGER_DIR, "settings.json");
+let _configPath = path.join(ORAGER_DIR, "config.json");
+let _settingsPath = path.join(ORAGER_DIR, "settings.json");
+
+/** @internal — test use only. Redirects config/settings file paths to a temp dir. */
+export function _setPathsForTesting(configPath: string, settingsPath: string): void {
+  _configPath = configPath;
+  _settingsPath = settingsPath;
+}
 const UI_PORT_PATH = path.join(ORAGER_DIR, "ui.port");
 const UI_PID_PATH = path.join(ORAGER_DIR, "ui.pid");
 
@@ -177,7 +183,7 @@ function stripSecrets<T extends object>(obj: T, keys: string[]): T {
 
 async function loadConfig(): Promise<OragerUserConfig> {
   try {
-    const raw = await fs.readFile(CONFIG_PATH, "utf8");
+    const raw = await fs.readFile(_configPath, "utf8");
     return { ...DEFAULT_CONFIG, ...JSON.parse(raw) as OragerUserConfig };
   } catch {
     return { ...DEFAULT_CONFIG };
@@ -220,7 +226,7 @@ async function handlePostConfig(
   delete incoming["agentApiKey"];
 
   const merged: OragerUserConfig = { ...existing, ...incoming };
-  await atomicWrite(CONFIG_PATH, JSON.stringify(merged, null, 2));
+  await atomicWrite(_configPath, JSON.stringify(merged, null, 2));
   const safe = stripSecrets(merged, ["agentApiKey", "key", "token", "secret"]);
   jsonResponse(res, 200, safe);
 }
@@ -236,7 +242,7 @@ async function handleGetConfigDefaults(
 
 async function loadSettingsRaw(): Promise<OragerSettings> {
   try {
-    const raw = await fs.readFile(SETTINGS_PATH, "utf8");
+    const raw = await fs.readFile(_settingsPath, "utf8");
     return JSON.parse(raw) as OragerSettings;
   } catch {
     return {};
@@ -270,7 +276,7 @@ async function handlePostSettings(
 
   const existing = await loadSettingsRaw();
   const merged: OragerSettings = { ...existing, ...(body as OragerSettings) };
-  await atomicWrite(SETTINGS_PATH, JSON.stringify(merged, null, 2));
+  await atomicWrite(_settingsPath, JSON.stringify(merged, null, 2));
   jsonResponse(res, 200, merged);
 }
 
@@ -926,6 +932,18 @@ async function handleRequest(
 }
 
 // ── Server lifecycle ──────────────────────────────────────────────────────────
+
+/** @internal — test use only. Creates a real HTTP server without PID lock or signal handlers. */
+export async function _createTestServer(port: number): Promise<{ server: http.Server; token: string }> {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer(handleRequest);
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", () => {
+      server.removeListener("error", reject);
+      resolve({ server, token: UI_AUTH_TOKEN });
+    });
+  });
+}
 
 export interface UiServerOptions {
   port?: number;
