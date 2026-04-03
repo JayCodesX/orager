@@ -475,5 +475,38 @@ export function mergeSettings<T extends {
       r["summarizeModel"] = m.summarizationModel;
   }
 
+  // providers: map provider-specific config fields into AgentLoopOptions.
+  // Runtime opts always win — file values only fill in when undefined.
+  if (fileSettings.providers) {
+    const r = merged as Record<string, unknown>;
+    const p = fileSettings.providers;
+
+    // providers.openrouter → flat OpenRouter fields on AgentLoopOptions
+    if (p.openrouter) {
+      const or = p.openrouter;
+      if (or.siteUrl !== undefined && r["siteUrl"] === undefined)
+        r["siteUrl"] = or.siteUrl;
+      if (or.siteName !== undefined && r["siteName"] === undefined)
+        r["siteName"] = or.siteName;
+      if (or.preset !== undefined && r["preset"] === undefined)
+        r["preset"] = or.preset;
+      if (or.transforms !== undefined && r["transforms"] === undefined)
+        r["transforms"] = or.transforms;
+      // provider routing object (order, ignore, only, etc.)
+      if (or.provider !== undefined && r["provider"] === undefined)
+        r["provider"] = or.provider;
+      // API key from providers block (lowest priority — env var > CLI flag > settings)
+      if (or.apiKey !== undefined && r["apiKey"] === undefined)
+        r["apiKey"] = or.apiKey;
+      if (or.apiKeys !== undefined && r["apiKeys"] === undefined)
+        r["apiKeys"] = or.apiKeys;
+    }
+
+    // providers.ollama → ollama config on AgentLoopOptions
+    if (p.ollama && r["ollama"] === undefined) {
+      r["ollama"] = p.ollama;
+    }
+  }
+
   return merged;
 }

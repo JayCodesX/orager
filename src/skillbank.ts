@@ -18,7 +18,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { openDb, type SqliteDatabase } from "./native-sqlite.js";
-import { callEmbeddings, callOpenRouter } from "./openrouter.js";
+import { getOpenRouterProvider } from "./providers/index.js";
 import { resolveSkillsDbPath } from "./db.js";
 import type { SkillBankConfig } from "./types.js";
 
@@ -342,7 +342,7 @@ export async function extractSkillFromTrajectory(
     const extractionModel = config.extractionModel || model;
     let skillText = "";
     try {
-      const result = await callOpenRouter({
+      const result = await getOpenRouterProvider().chat({
         apiKey,
         model: extractionModel,
         messages: [
@@ -365,7 +365,7 @@ export async function extractSkillFromTrajectory(
     // ── 3. Embed the candidate skill ──────────────────────────────────────────
     let candidateEmbedding: number[];
     try {
-      const vecs = await callEmbeddings(apiKey, embeddingModel, [skillText]);
+      const vecs = await getOpenRouterProvider().callEmbeddings!(apiKey, embeddingModel, [skillText]);
       candidateEmbedding = vecs[0];
     } catch (err) {
       process.stderr.write(

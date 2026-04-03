@@ -28,7 +28,8 @@ import { exitPlanModeTool, PLAN_MODE_TOOL_NAME } from "./tools/plan.js";
 // path is used in loop-executor.ts (extracted in Sprint 6)
 import { loadSession, saveSession, newSessionId, acquireSessionLock, saveSessionCheckpoint, loadLatestCheckpointByContextId } from "./session.js";
 import { callWithRetry } from "./retry.js";
-import { fetchGenerationMeta, shouldUseDirect, callEmbeddings } from "./openrouter.js";
+import { shouldUseDirect } from "./openrouter.js";
+import { getOpenRouterProvider } from "./providers/index.js";
 // isOllamaRunning, resolveOllamaBaseUrl, toOllamaTag, isModelPulled used in loop-preflight.ts (Sprint 6)
 import { getLiveModelPricing } from "./openrouter-model-meta.js";
 // fetchLiveModelMeta, isLiveModelMetaCacheWarm, liveModelSupportsTools, liveModelSupportsVision used in loop-preflight.ts (Sprint 6)
@@ -492,7 +493,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     try {
       let skillQueryVec = getCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt);
       if (!skillQueryVec) {
-        const vecs = await callEmbeddings(apiKey, opts.memoryEmbeddingModel, [prompt]);
+        const vecs = await getOpenRouterProvider().callEmbeddings!(apiKey, opts.memoryEmbeddingModel, [prompt]);
         skillQueryVec = vecs[0] ?? [];
         if (skillQueryVec.length > 0) {
           setCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt, skillQueryVec);
@@ -661,7 +662,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             queryVec = await withSpan("memory.embed_query", {
               model: opts.memoryEmbeddingModel,
             }, async () => {
-              const vecs = await callEmbeddings(apiKey, opts.memoryEmbeddingModel!, [prompt]);
+              const vecs = await getOpenRouterProvider().callEmbeddings!(apiKey, opts.memoryEmbeddingModel!, [prompt]);
               return vecs[0] ?? [];
             });
             setCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt, queryVec);
@@ -708,7 +709,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
               queryVec = await withSpan("memory.embed_query_fts_fallback", {
                 model: opts.memoryEmbeddingModel,
               }, async () => {
-                const vecs = await callEmbeddings(apiKey, opts.memoryEmbeddingModel!, [prompt]);
+                const vecs = await getOpenRouterProvider().callEmbeddings!(apiKey, opts.memoryEmbeddingModel!, [prompt]);
                 return vecs[0] ?? [];
               });
               if (queryVec && queryVec.length > 0) {
@@ -1630,7 +1631,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
 
       // ── Generation metadata (fire-and-forget) ────────────────────────────
       if (response.generationId) {
-        fetchGenerationMeta(apiKey, response.generationId).then((meta) => {
+        getOpenRouterProvider().fetchGenerationMeta!(apiKey, response.generationId).then((meta) => {
           if (!meta) return;
           // Use actual cost if available (overrides token-based estimate)
           if (meta.totalCost > 0) {
@@ -1713,7 +1714,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
                 let embeddingModel: string | undefined;
                 if (opts.memoryEmbeddingModel && apiKey) {
                   try {
-                    const vecs = await callEmbeddings(apiKey, opts.memoryEmbeddingModel, [upd.content]);
+                    const vecs = await getOpenRouterProvider().callEmbeddings!(apiKey, opts.memoryEmbeddingModel, [upd.content]);
                     if (vecs[0] && vecs[0].length > 0) {
                       embeddingVec = vecs[0];
                       embeddingModel = opts.memoryEmbeddingModel;

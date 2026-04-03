@@ -18,7 +18,7 @@
  * (never fails a run due to routing infrastructure).
  */
 
-import { callEmbeddings, callOpenRouter } from "../openrouter.js";
+import { getOpenRouterProvider } from "../providers/index.js";
 import type { OmlsConfig, RouterSignal, ConfidenceRouterConfig } from "../types.js";
 import { DEFAULT_TEACHER_MODELS, modelSupportsVision } from "./supported-models.js";
 import { cosineSimilarity } from "../memory.js";
@@ -84,7 +84,7 @@ async function getPatternEmbeddings(
   if (_patternEmbeddings && _patternEmbeddingModel === embeddingModel) {
     return _patternEmbeddings;
   }
-  _patternEmbeddings = await callEmbeddings(apiKey, embeddingModel, HARD_TASK_PATTERNS);
+  _patternEmbeddings = await getOpenRouterProvider().callEmbeddings!(apiKey, embeddingModel, HARD_TASK_PATTERNS);
   _patternEmbeddingModel = embeddingModel;
   return _patternEmbeddings;
 }
@@ -157,7 +157,7 @@ export async function measureSemanticEntropy(
     // Sample N completions in parallel
     const samples = await Promise.all(
       Array.from({ length: cfg.entropySamples }, () =>
-        callOpenRouter({
+        getOpenRouterProvider().chat({
           apiKey,
           model,
           messages: [{ role: "user", content: prompt }],
