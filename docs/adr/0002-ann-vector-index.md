@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| **Status** | Proposed (deferred — implement when triggers are met) |
+| **Status** | Accepted — unblocked by ADR-0008 Phase 4 (sqlite-vec loaded); implement when trigger thresholds are met |
 | **Date** | 2026-04-01 |
 | **Deciders** | JayCodesX |
 
