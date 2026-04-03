@@ -110,6 +110,8 @@ export interface ConfigFileSchema {
   daemonMaxConcurrent?: number;
   /** Daemon idle-shutdown timeout string, e.g. "30m" or "1h" (applied when --serve is used). */
   daemonIdleTimeout?: string;
+  /** Route LLM calls to a local Ollama server. */
+  ollama?: { enabled?: boolean; model?: string; baseUrl?: string };
   /** Per-agent OpenRouter API key override — isolates rate limits from the global key. */
   agentApiKey?: string;
   /** Memory retrieval mode: "local" (default FTS) or "embedding" (cosine similarity). */
@@ -340,6 +342,10 @@ export async function loadConfigFile(filePath: string): Promise<LoadConfigFileRe
   if (typeof cfg.agentApiKey === "string" && cfg.agentApiKey.trim()) result.agentApiKey = cfg.agentApiKey.trim();
   if (cfg.memoryRetrieval === "local" || cfg.memoryRetrieval === "embedding") result.memoryRetrieval = cfg.memoryRetrieval;
   if (typeof cfg.memoryEmbeddingModel === "string" && cfg.memoryEmbeddingModel.trim()) result.memoryEmbeddingModel = cfg.memoryEmbeddingModel.trim();
+  // Ollama — push as CLI flags so parseArgs picks them up
+  if (cfg.ollama?.enabled) args.push("--ollama");
+  if (typeof cfg.ollama?.model === "string" && cfg.ollama.model.trim()) args.push("--ollama-model", cfg.ollama.model.trim());
+  if (typeof cfg.ollama?.baseUrl === "string" && cfg.ollama.baseUrl.trim()) args.push("--ollama-url", cfg.ollama.baseUrl.trim());
   return result;
 }
 

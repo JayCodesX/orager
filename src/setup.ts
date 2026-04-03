@@ -95,10 +95,12 @@ export interface OragerUserConfig {
   enableBrowserTools?: boolean;
   trackFileChanges?: boolean;
 
-  // Daemon defaults (applied when running orager --serve)
-  daemonPort?: number;
-  daemonMaxConcurrent?: number;
-  daemonIdleTimeout?: string;  // e.g. "30m", "1h"
+  // Ollama (local inference — no API key required)
+  ollama?: {
+    enabled?: boolean;
+    model?: string;    // Ollama tag override, e.g. "llama3.1:8b"
+    baseUrl?: string;  // default: http://localhost:11434
+  };
 
   // Misc
   profile?: string;
@@ -171,11 +173,6 @@ export const DEFAULT_CONFIG: OragerUserConfig = {
   useFinishTool: true,
   enableBrowserTools: false,
   trackFileChanges: true,
-
-  // Daemon defaults
-  daemonPort: 3456,
-  daemonMaxConcurrent: 3,
-  daemonIdleTimeout: "30m",
 
   // Misc
   profile: "",
@@ -565,26 +562,37 @@ async function customSetup(rl: readline.Interface): Promise<void> {
     if (b !== undefined) (cfg as Record<string, unknown>)[key] = b;
   }
 
-  // ── Section 12: Daemon defaults ──────────────────────────────────────────
-  process.stdout.write("\n" + bold("12. Daemon defaults") + dim(" (applied when running `orager --serve`)") + "\n");
-  process.stdout.write(dim("  The orager daemon keeps a persistent process alive to eliminate per-run startup\n"));
-  process.stdout.write(dim("  overhead. Start it with `orager --serve`, then point your adapter at\n"));
-  process.stdout.write(dim("  ORAGER_DAEMON_URL=http://localhost:<port>.\n\n"));
+  // ── Section 12: Ollama (local inference) ──────────────────────────────────
+  process.stdout.write("\n" + bold("12. Ollama (local inference)") + "\n");
+  process.stdout.write(dim("  Route all LLM calls to a local Ollama server instead of OpenRouter.\n"));
+  process.stdout.write(dim("  Install: https://ollama.com — then `ollama pull <model>`\n\n"));
 
-  process.stdout.write(cyan("daemonPort") + dim(` [${displayValue(cfg.daemonPort ?? 3456)}]`) + " — port the daemon listens on\n");
-  const dp = await ask(rl, "  > ");
-  const dpn = parseOptionalNumber(dp);
-  if (dpn !== undefined && dpn > 0) cfg.daemonPort = dpn;
+  process.stdout.write(cyan("ollama enabled") + dim(` [${displayValue(cfg.ollama?.enabled ?? false)}]`) + " — use local Ollama instead of OpenRouter (yes/no)\n");
+  const olEn = await ask(rl, "  > ");
+  const olEnb = parseOptionalBool(olEn);
+  if (olEnb !== undefined) {
+    if (!cfg.ollama) cfg.ollama = {};
+    cfg.ollama.enabled = olEnb || undefined;
+  }
 
-  process.stdout.write(cyan("daemonMaxConcurrent") + dim(` [${displayValue(cfg.daemonMaxConcurrent ?? 3)}]`) + " — max simultaneous agent runs\n");
-  const dmc = await ask(rl, "  > ");
-  const dmcn = parseOptionalNumber(dmc);
-  if (dmcn !== undefined && dmcn > 0) cfg.daemonMaxConcurrent = dmcn;
+  process.stdout.write(cyan("ollama url") + dim(` [${displayValue(cfg.ollama?.baseUrl ?? "http://localhost:11434")}]`) + " — Ollama server URL (leave blank for default)\n");
+  const olUrl = await ask(rl, "  > ");
+  if (olUrl.trim()) {
+    try {
+      new URL(olUrl.trim());
+      if (!cfg.ollama) cfg.ollama = {};
+      cfg.ollama.baseUrl = olUrl.trim();
+    } catch {
+      process.stdout.write(yellow("  Invalid URL — keeping current value.\n"));
+    }
+  }
 
-  process.stdout.write(cyan("daemonIdleTimeout") + dim(` [${displayValue(cfg.daemonIdleTimeout ?? "30m")}]`) + " — auto-shutdown after idle period (e.g. 30m, 2h)\n");
-  const dit = await ask(rl, "  > ");
-  if (/^\d+(?:\.\d+)?[mh]$/.test(dit.trim())) cfg.daemonIdleTimeout = dit.trim();
-  else if (dit.trim()) process.stdout.write(yellow("  Invalid format — expected e.g. 30m or 1h. Keeping current value.\n"));
+  process.stdout.write(cyan("ollama model") + dim(` [${displayValue(cfg.ollama?.model ?? "(auto-mapped from primary model)")}]`) + " — Ollama tag override, e.g. llama3.1:8b (leave blank for auto)\n");
+  const olMod = await ask(rl, "  > ");
+  if (olMod.trim()) {
+    if (!cfg.ollama) cfg.ollama = {};
+    cfg.ollama.model = olMod.trim();
+  }
 
   // ── Section 13: Profile & misc ────────────────────────────────────────────
   process.stdout.write("\n" + bold("13. Profile & misc\n"));
@@ -697,11 +705,6 @@ async function checkConfig(): Promise<void> {
   }
   if (cfg.webhookFormat !== undefined && cfg.webhookFormat !== "discord") {
     issues.push(`webhookFormat "${cfg.webhookFormat}" is not valid — only "discord" is supported`);
-  }
-  if (cfg.daemonIdleTimeout !== undefined) {
-    if (!/^\d+(?:\.\d+)?[mh]$/.test(cfg.daemonIdleTimeout)) {
-      issues.push(`daemonIdleTimeout "${cfg.daemonIdleTimeout}" is not valid (expected e.g. 30m or 1h)`);
-    }
   }
   if (cfg.memoryRetrieval !== undefined && cfg.memoryRetrieval !== "local" && cfg.memoryRetrieval !== "embedding") {
     issues.push(`memoryRetrieval "${cfg.memoryRetrieval}" is not valid (expected: local, embedding)`);
