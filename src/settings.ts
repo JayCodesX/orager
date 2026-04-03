@@ -72,7 +72,6 @@ export interface OragerSettings {
   /**
    * Provider-specific configuration blocks (ADR-0010).
    * Scopes provider-only fields to their namespace instead of polluting the root config.
-   * When absent, flat config fields (apiKey, siteUrl, ollama, etc.) are used as fallback.
    */
   providers?: ProvidersConfig;
 }

@@ -51,7 +51,7 @@ interface CreditsResponse {
 }
 
 async function fetchSessions(limit = 500, offset = 0): Promise<SessionsResponse> {
-  const r = await fetch(`/api/daemon/sessions?limit=${limit}&offset=${offset}`, {
+  const r = await fetch(`/api/sessions?limit=${limit}&offset=${offset}`, {
     headers: authHeaders(),
     signal: AbortSignal.timeout(4000),
   });
