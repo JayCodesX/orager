@@ -47,9 +47,25 @@ export interface OragerUserConfig {
   useFinishTool?: boolean;
   enableBrowserTools?: boolean;
   trackFileChanges?: boolean;
-  daemonPort?: number;
-  daemonMaxConcurrent?: number;
-  daemonIdleTimeout?: string;
+  /** Ollama local inference configuration. */
+  ollama?: {
+    enabled?: boolean;
+    model?: string;
+    baseUrl?: string;
+  };
+  /** OMLS opportunistic RL training configuration. */
+  omls?: {
+    enabled?: boolean;
+    localTraining?: {
+      enabled?: boolean;
+      backend?: "auto" | "mlx" | "llamacpp-cuda" | "llamacpp-cpu";
+    };
+    rl?: {
+      training?: {
+        baseModel?: string;
+      };
+    };
+  };
   profile?: string;
   webhookUrl?: string;
   webhookFormat?: "discord";
@@ -124,4 +140,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ url, format }),
     }),
+
+  getOmlsStatus: () => apiFetch<{
+    localAdapter: { version: number; backend: string; baseModel: string; trainedAt: string; trajectoryCount: number } | null;
+    cloudEndpoint: string | null;
+    bufferSize: number;
+    skillGen: number;
+  } | null>("/api/omls/status").catch(() => null),
 };

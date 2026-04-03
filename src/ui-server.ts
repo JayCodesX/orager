@@ -913,6 +913,44 @@ function checkUiAuth(req: http.IncomingMessage, res: http.ServerResponse): boole
   return false;
 }
 
+// ── /api/omls/status ─────────────────────────────────────────────────────────
+
+async function handleOmlsStatus(
+  _req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  try {
+    const [
+      { loadLocalAdapterMeta },
+      { getCurrentEndpoint },
+      { countDistillableBuffer, getCurrentSkillGeneration },
+      { loadSettings },
+      { DEFAULT_BASE_MODEL_ID },
+    ] = await Promise.all([
+      import("./omls/local-adapter-server.js"),
+      import("./omls/together-hosting.js"),
+      import("./omls/trajectory-buffer.js"),
+      import("./settings.js"),
+      import("./omls/supported-models.js"),
+    ]);
+
+    const settings = await loadSettings();
+    const baseModel = settings.omls?.rl?.training?.baseModel ?? DEFAULT_BASE_MODEL_ID;
+    const memoryKey = "default";
+
+    const [localAdapter, cloudEndpoint, skillGen] = await Promise.all([
+      loadLocalAdapterMeta(memoryKey, baseModel).catch(() => null),
+      getCurrentEndpoint().catch(() => null),
+      getCurrentSkillGeneration().catch(() => 0),
+    ]);
+    const bufferSize = await countDistillableBuffer(skillGen as number).catch(() => 0);
+
+    jsonResponse(res, 200, { localAdapter, cloudEndpoint, bufferSize, skillGen });
+  } catch (err) {
+    jsonResponse(res, 500, { error: (err as Error).message });
+  }
+}
+
 // ── Request router ────────────────────────────────────────────────────────────
 
 async function handleRequest(
@@ -977,6 +1015,8 @@ async function handleRequest(
       await handleGetCredits(req, res);
     } else if (pathname === "/api/webhook/test" && req.method === "POST") {
       await handleWebhookTest(req, res);
+    } else if (pathname === "/api/omls/status" && req.method === "GET") {
+      await handleOmlsStatus(req, res);
     } else if (pathname.startsWith("/api/")) {
       jsonResponse(res, 404, { error: "Not found" });
     } else {

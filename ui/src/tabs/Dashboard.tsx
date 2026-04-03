@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { authHeaders } from "../api";
+import { authHeaders, api } from "../api";
 import { type DateRangePreset, presetToFromIso, DATE_RANGE_OPTIONS } from "../dateRange";
 
 // ── API types ─────────────────────────────────────────────────────────────────
@@ -69,6 +69,19 @@ interface ConfigResponse {
   maxCostUsd?: number;
   maxCostUsdSoft?: number;
 }
+
+type OmlsStatusResponse = {
+  localAdapter: {
+    version: number;
+    backend: string;
+    baseModel: string;
+    trainedAt: string;
+    trajectoryCount: number;
+  } | null;
+  cloudEndpoint: string | null;
+  bufferSize: number;
+  skillGen: number;
+} | null
 
 interface CreditsResponse {
   configured?: boolean;
@@ -167,6 +180,7 @@ export default function Dashboard() {
   const [metrics, setMetrics] = useState<MetricsResponse | null>(null);
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [credits, setCredits] = useState<CreditsResponse | null>(null);
+  const [omlsStatus, setOmlsStatus] = useState<OmlsStatusResponse>(null);
   const [allSessions, setAllSessions] = useState<Session[]>([]);
   const [sessionsPage, setSessionsPage] = useState(0);
   const [dateRange, setDateRange] = useState<DateRangePreset>("7d");
@@ -220,6 +234,14 @@ export default function Dashboard() {
     }
   }, []);
 
+  const loadOmlsStatus = useCallback(async () => {
+    try {
+      setOmlsStatus(await api.getOmlsStatus());
+    } catch {
+      // non-fatal
+    }
+  }, []);
+
   const loadCredits = useCallback(async () => {
     try {
       setCredits(await fetchCredits());
@@ -234,7 +256,8 @@ export default function Dashboard() {
     void loadSessions();
     void loadConfig();
     void loadCredits();
-  }, [refresh, loadSessions, loadConfig, loadCredits]);
+    void loadOmlsStatus();
+  }, [refresh, loadSessions, loadConfig, loadCredits, loadOmlsStatus]);
 
   useEffect(() => {
     if (!autoRefresh) {
@@ -329,6 +352,59 @@ export default function Dashboard() {
               {config.visionModel
                 ? <Badge label={config.visionModel} variant="blue" />
                 : <span style={{ fontSize: 12, color: "var(--text-muted)" }}>none</span>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── OMLS / RL training status ── */}
+      {omlsStatus !== null && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="card-header" style={{ cursor: "default" }}>
+            <span className="card-title">OMLS / RL training</span>
+            <Badge
+              label={omlsStatus?.localAdapter ? `v${omlsStatus.localAdapter.version} local` : omlsStatus?.cloudEndpoint ? "cloud" : "no adapter"}
+              variant={omlsStatus?.localAdapter ? "green" : omlsStatus?.cloudEndpoint ? "blue" : "gray"}
+            />
+          </div>
+          <div style={{ padding: "10px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
+            {omlsStatus?.localAdapter ? (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", minWidth: 80 }}>Local adapter</span>
+                  <Badge label={omlsStatus.localAdapter.backend} variant="green" />
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>trained {new Date(omlsStatus.localAdapter.trainedAt).toLocaleDateString()}</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", minWidth: 80 }}>Base model</span>
+                  <span style={{ fontSize: 12, fontFamily: "monospace" }}>{omlsStatus.localAdapter.baseModel}</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", minWidth: 80 }}>Trajectories</span>
+                  <span style={{ fontSize: 12 }}>{omlsStatus.localAdapter.trajectoryCount} trained</span>
+                </div>
+              </>
+            ) : omlsStatus?.cloudEndpoint ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", minWidth: 80 }}>Cloud endpoint</span>
+                <span style={{ fontSize: 12, fontFamily: "monospace", color: "var(--text-muted)" }}>{omlsStatus.cloudEndpoint}</span>
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                No adapter trained yet. Run <code style={{ background: "var(--bg-input)", padding: "2px 6px", borderRadius: 4 }}>orager skill-train --rl</code> to start.
+              </div>
+            )}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, paddingTop: 4, borderTop: "1px solid var(--border)" }}>
+              <span style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", minWidth: 80 }}>Buffer</span>
+              <span style={{ fontSize: 12 }}>
+                {omlsStatus?.bufferSize ?? 0} trajectories
+                {(omlsStatus?.bufferSize ?? 0) < 32 && (omlsStatus?.bufferSize ?? 0) > 0 && (
+                  <span style={{ color: "var(--warn)", marginLeft: 6 }}>({32 - (omlsStatus?.bufferSize ?? 0)} more needed)</span>
+                )}
+                {(omlsStatus?.bufferSize ?? 0) >= 32 && (
+                  <span style={{ color: "var(--success)", marginLeft: 6 }}>ready to train</span>
+                )}
+              </span>
             </div>
           </div>
         </div>

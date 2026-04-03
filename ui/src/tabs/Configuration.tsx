@@ -223,9 +223,15 @@ interface ConfigForm {
   useFinishTool: boolean;
   enableBrowserTools: boolean;
   trackFileChanges: boolean;
-  daemonPort: string;
-  daemonMaxConcurrent: string;
-  daemonIdleTimeout: string;
+  // Ollama
+  ollamaEnabled: boolean;
+  ollamaModel: string;
+  ollamaBaseUrl: string;
+  // OMLS
+  omlsEnabled: boolean;
+  omlsLocalEnabled: boolean;
+  omlsLocalBackend: string;
+  omlsBaseModel: string;
   profile: string;
   webhookUrl: string;
   webhookFormat: "" | "discord";
@@ -277,9 +283,13 @@ function configToForm(c: OragerUserConfig): ConfigForm {
     useFinishTool:          c.useFinishTool ?? false,
     enableBrowserTools:     c.enableBrowserTools ?? true,
     trackFileChanges:       c.trackFileChanges ?? true,
-    daemonPort:             s(c.daemonPort),
-    daemonMaxConcurrent:    s(c.daemonMaxConcurrent),
-    daemonIdleTimeout:      c.daemonIdleTimeout ?? "",
+    ollamaEnabled:     c.ollama?.enabled ?? false,
+    ollamaModel:       c.ollama?.model ?? "",
+    ollamaBaseUrl:     c.ollama?.baseUrl ?? "",
+    omlsEnabled:       c.omls?.enabled ?? false,
+    omlsLocalEnabled:  c.omls?.localTraining?.enabled !== false,
+    omlsLocalBackend:  c.omls?.localTraining?.backend ?? "auto",
+    omlsBaseModel:     c.omls?.rl?.training?.baseModel ?? "",
     profile:                c.profile ?? "",
     webhookUrl:             c.webhookUrl ?? "",
     webhookFormat:          c.webhookFormat ?? "",
@@ -333,9 +343,19 @@ function formToConfig(f: ConfigForm): OragerUserConfig {
     useFinishTool:       f.useFinishTool || undefined,
     enableBrowserTools:  f.enableBrowserTools,
     trackFileChanges:    f.trackFileChanges,
-    daemonPort:          n(f.daemonPort),
-    daemonMaxConcurrent: n(f.daemonMaxConcurrent),
-    daemonIdleTimeout:   s(f.daemonIdleTimeout),
+    ollama: (f.ollamaEnabled || f.ollamaModel || f.ollamaBaseUrl) ? {
+      enabled: f.ollamaEnabled || undefined,
+      model: f.ollamaModel || undefined,
+      baseUrl: f.ollamaBaseUrl || undefined,
+    } : undefined,
+    omls: (f.omlsEnabled || f.omlsBaseModel) ? {
+      enabled: f.omlsEnabled || undefined,
+      localTraining: {
+        enabled: f.omlsLocalEnabled,
+        backend: (f.omlsLocalBackend && f.omlsLocalBackend !== "auto") ? f.omlsLocalBackend as "mlx" | "llamacpp-cuda" | "llamacpp-cpu" : undefined,
+      },
+      rl: f.omlsBaseModel ? { training: { baseModel: f.omlsBaseModel } } : undefined,
+    } : undefined,
     profile:             s(f.profile),
     webhookUrl:          s(f.webhookUrl),
     webhookFormat:       f.webhookFormat === "discord" ? "discord" : undefined,
@@ -390,11 +410,7 @@ interface FormErrors {
   temperature?: string;
   top_p?: string;
   min_p?: string;
-  daemonPort?: string;
-  daemonIdleTimeout?: string;
 }
-
-const DURATION_RE = /^\d+(?:\.\d+)?[smh]$/;
 
 function validateForm(f: ConfigForm): FormErrors {
   const errs: FormErrors = {};
@@ -413,10 +429,6 @@ function validateForm(f: ConfigForm): FormErrors {
     errs.top_p = "top_p must be 0–1";
   if (f.min_p && (isNaN(Number(f.min_p)) || Number(f.min_p) < 0 || Number(f.min_p) > 1))
     errs.min_p = "min_p must be 0–1";
-  if (f.daemonPort && (isNaN(Number(f.daemonPort)) || Number(f.daemonPort) < 1024 || Number(f.daemonPort) > 65535))
-    errs.daemonPort = "Port must be 1024–65535";
-  if (f.daemonIdleTimeout && !DURATION_RE.test(f.daemonIdleTimeout))
-    errs.daemonIdleTimeout = "Use format: 30m, 1h, 300s";
   return errs;
 }
 
@@ -710,10 +722,27 @@ export default function Configuration() {
             <ModelSelect label="Embedding model" value={f.memoryEmbeddingModel} onChange={upd("memoryEmbeddingModel")} placeholder="Search embedding models…" />
           </Section>
 
-          <Section title="Daemon Defaults" defaultOpen={false}>
-            <NumberField label="Port" value={f.daemonPort} onChange={upd("daemonPort")} min={1024} max={65535} error={cfgErrors.daemonPort} placeholder="3456" />
-            <NumberField label="Max concurrent runs" value={f.daemonMaxConcurrent} onChange={upd("daemonMaxConcurrent")} min={1} />
-            <TextField label="Idle timeout (e.g. 30m, 1h)" value={f.daemonIdleTimeout} onChange={upd("daemonIdleTimeout")} error={cfgErrors.daemonIdleTimeout} placeholder="30m" />
+          <Section title="Ollama (local inference)" defaultOpen={false}>
+            <CheckboxField label="Enable Ollama" checked={f.ollamaEnabled} onChange={upd("ollamaEnabled")} />
+            <TextField label="Model" value={f.ollamaModel} onChange={upd("ollamaModel")} placeholder="llama3.2" />
+            <TextField label="Server URL" value={f.ollamaBaseUrl} onChange={upd("ollamaBaseUrl")} placeholder="http://localhost:11434" full />
+          </Section>
+
+          <Section title="OMLS (local RL training)" defaultOpen={false}>
+            <CheckboxField label="Enable OMLS" checked={f.omlsEnabled} onChange={upd("omlsEnabled")} />
+            <CheckboxField label="Prefer local training" checked={f.omlsLocalEnabled} onChange={upd("omlsLocalEnabled")} />
+            <SelectField
+              label="Local backend"
+              value={f.omlsLocalBackend}
+              onChange={upd("omlsLocalBackend")}
+              options={[
+                { value: "auto", label: "Auto-detect" },
+                { value: "mlx", label: "MLX (Apple Silicon)" },
+                { value: "llamacpp-cuda", label: "llama.cpp CUDA (NVIDIA)" },
+                { value: "llamacpp-cpu", label: "llama.cpp CPU (any hardware)" },
+              ]}
+            />
+            <TextField label="Base model (HuggingFace ID)" value={f.omlsBaseModel} onChange={upd("omlsBaseModel")} placeholder="unsloth/Meta-Llama-3.1-8B-Instruct" full />
           </Section>
 
           <Section title="Webhooks" defaultOpen={false}>
