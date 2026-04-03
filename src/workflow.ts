@@ -59,7 +59,13 @@ export async function runAgentWorkflow(
       siteName: step.role,
     };
 
-    await runAgentLoop(opts);
+    try {
+      await runAgentLoop(opts);
+    } catch (err) {
+      throw new Error(
+        `Workflow step ${i} ("${step.role}") failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
 
     // Prepare the prompt for the next step unless this was the last one.
     if (i < steps.length - 1) {

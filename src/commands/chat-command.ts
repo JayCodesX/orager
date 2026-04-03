@@ -159,7 +159,7 @@ export async function handleChatCommand(
         timeoutSec: opts.timeoutSec,
         requiredEnvVars: opts.requiredEnvVars,
         memory: G.__oragerMemory as boolean | undefined,
-        memoryKey: (G.__oragerMemoryKey as string | undefined) ?? memoryKey ?? undefined,
+        memoryKey: (G.__oragerMemoryKey as string | undefined) ?? memoryKey,
         memoryRetrieval: G.__oragerMemoryRetrieval as "local" | "embedding" | undefined,
         memoryEmbeddingModel: G.__oragerMemoryEmbeddingModel as string | undefined,
       });

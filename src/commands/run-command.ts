@@ -211,7 +211,7 @@ export async function handleRunCommand(
     apiKeys: G.__oragerApiKeys as string[] | undefined,
     requiredEnvVars: opts.requiredEnvVars,
     memory: G.__oragerMemory as boolean | undefined,
-    memoryKey: (G.__oragerMemoryKey as string | undefined) ?? memoryKey ?? undefined,
+    memoryKey: (G.__oragerMemoryKey as string | undefined) ?? memoryKey,
     memoryMaxChars: G.__oragerMemoryMaxChars as number | undefined,
     agentApiKey: G.__oragerAgentApiKey as string | undefined,
     memoryRetrieval: G.__oragerMemoryRetrieval as "local" | "embedding" | undefined,

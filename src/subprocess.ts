@@ -60,7 +60,13 @@ function isNotification(msg: JsonRpcMessage): msg is JsonRpcNotification {
 }
 
 function writeLine(stream: NodeJS.WritableStream, msg: JsonRpcMessage): void {
-  stream.write(JSON.stringify(msg) + "\n");
+  const ok = stream.write(JSON.stringify(msg) + "\n");
+  if (!ok) {
+    // Buffer is full — log to stderr so operators can tune pipe buffer sizes.
+    // We don't block here because JSON-RPC messages are small enough that the
+    // OS will drain the buffer before the next write.
+    process.stderr.write("[orager/subprocess] writeLine: write buffer full, message queued\n");
+  }
 }
 
 // ── Kill helpers ──────────────────────────────────────────────────────────────
@@ -196,6 +202,13 @@ export async function runAgentLoopSubprocess(opts: AgentLoopOptions): Promise<vo
       method: "agent/run",
       params,
     };
+    child.stdin!.on("error", (err) => {
+      cleanup();
+      if (!settled) {
+        settled = true;
+        reject(new Error(`orager subprocess stdin error: ${err.message}`));
+      }
+    });
     writeLine(child.stdin!, request);
     child.stdin!.end();
   });

@@ -35,7 +35,7 @@ import {
 import { handleMemorySubcommand } from "./commands/memory-command.js";
 import { handleRunCommand } from "./commands/run-command.js";
 import { handleChatCommand } from "./commands/chat-command.js";
-import { makeCliOnEmit } from "./commands/cli-helpers.js";
+import { makeCliOnEmit, extractFlag } from "./commands/cli-helpers.js";
 
 // ── Node.js version gate ──────────────────────────────────────────────────────
 {
@@ -466,6 +466,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  const cliMemoryKey = extractFlag(argv, "--memory-key");
   const [prompt, opts] = await Promise.all([
     readStdin(),
     Promise.resolve(parseArgs(argv)),
@@ -609,7 +610,7 @@ async function main(): Promise<void> {
     apiKeys: G.__oragerApiKeys as string[] | undefined,
     requiredEnvVars: opts.requiredEnvVars,
     memory: G.__oragerMemory as boolean | undefined,
-    memoryKey: G.__oragerMemoryKey as string | undefined,
+    memoryKey: (G.__oragerMemoryKey as string | undefined) ?? cliMemoryKey,
     memoryMaxChars: G.__oragerMemoryMaxChars as number | undefined,
     agentApiKey: G.__oragerAgentApiKey as string | undefined,
     memoryRetrieval: G.__oragerMemoryRetrieval as "local" | "embedding" | undefined,
