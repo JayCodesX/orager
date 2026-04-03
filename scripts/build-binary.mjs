@@ -13,15 +13,6 @@
  *     Fix: inject `var __promiseAll = p => Promise.all(p);` at the top of the
  *     pre-bundled JS before compiling to a binary.
  *
- *   Bug 2 — sqlite3.wasm not embedded:
- *     wasm-sqlite.ts loads sqlite3.wasm via `createRequire().resolve()` +
- *     `readFileSync`, relying on the node_modules directory being present
- *     alongside the entry file. In a pre-bundled single JS file, Bun's
- *     virtual FS (`$bunfs`) doesn't have a node_modules directory, so the
- *     resolve fails at runtime.
- *     Fix: base64-encode sqlite3.wasm and inline it as a Buffer literal,
- *     replacing the dynamic filesystem read.
- *
  * Usage:
  *   node scripts/build-binary.mjs [--targets darwin-arm64,darwin-x64,linux-x64]
  *   bun run build:binary
@@ -49,11 +40,6 @@ const ENTRY_POINTS = [
   { src: "src/mcp.ts",   bin: "orager-mcp" },
 ];
 
-const WASM_PATH = path.join(
-  root,
-  "node_modules/@sqlite.org/sqlite-wasm/dist/sqlite3.wasm",
-);
-
 const BUNDLE_DIR  = path.join(root, "dist-binary");
 const BIN_DIR     = path.join(root, "bin");
 
@@ -76,11 +62,10 @@ function run(cmd, opts = {}) {
 }
 
 /**
- * Patch the Bun-generated bundle to fix the two known issues:
+ * Patch the Bun-generated bundle to fix known issues:
  *   1. Add the missing __promiseAll helper.
- *   2. Embed sqlite3.wasm as a Buffer literal so no filesystem access is needed.
  */
-function patchBundle(bundlePath, wasmBase64) {
+function patchBundle(bundlePath) {
   let src = fs.readFileSync(bundlePath, "utf8");
 
   // ── Fix 1: inject __promiseAll helper ─────────────────────────────────────
@@ -95,27 +80,6 @@ function patchBundle(bundlePath, wasmBase64) {
     console.log("  [patch] injected __promiseAll helper");
   }
 
-  // ── Fix 2: inline sqlite3.wasm as base64 ──────────────────────────────────
-  // wasm-sqlite.ts reads the WASM binary like this in the bundle:
-  //   _wasmPkgMain = _require.resolve("@sqlite.org/sqlite-wasm");
-  //   _wasmBinary = readFileSync(join(dirname(_wasmPkgMain), "sqlite3.wasm"));
-  //
-  // Replace both lines with a single Buffer.from(base64) literal, removing
-  // the filesystem dependency entirely.
-  const wasmLine1 = `_wasmPkgMain = _require.resolve("@sqlite.org/sqlite-wasm");`;
-  const wasmLine2Pattern = /  _wasmBinary = readFileSync\(join\(dirname\(_wasmPkgMain\)[^)]*\)[^)]*\);/;
-  if (src.includes(wasmLine1) && wasmLine2Pattern.test(src)) {
-    // Remove the _wasmPkgMain line and replace the readFileSync line
-    src = src.replace(`  ${wasmLine1}\n`, "");
-    src = src.replace(
-      wasmLine2Pattern,
-      `  _wasmBinary = Buffer.from("${wasmBase64}", "base64");`,
-    );
-    console.log("  [patch] inlined sqlite3.wasm as base64 (" + Math.round(wasmBase64.length / 1024) + " KB)");
-  } else {
-    console.warn("  [warn] could not find wasm readFileSync pattern — binary may fail to initialize SQLite memory");
-  }
-
   fs.writeFileSync(bundlePath, src, "utf8");
 }
 
@@ -123,14 +87,6 @@ function patchBundle(bundlePath, wasmBase64) {
 
 fs.mkdirSync(BUNDLE_DIR, { recursive: true });
 fs.mkdirSync(BIN_DIR, { recursive: true });
-
-// Read and base64-encode the WASM binary once
-if (!fs.existsSync(WASM_PATH)) {
-  console.error(`sqlite3.wasm not found at ${WASM_PATH} — run npm install first`);
-  process.exit(1);
-}
-const wasmBase64 = fs.readFileSync(WASM_PATH).toString("base64");
-console.log(`\nWASM binary: ${WASM_PATH} (${Math.round(fs.statSync(WASM_PATH).size / 1024)} KB)`);
 
 for (const { src: entry, bin: binName } of ENTRY_POINTS) {
   console.log(`\n${"─".repeat(60)}`);
@@ -153,7 +109,7 @@ for (const { src: entry, bin: binName } of ENTRY_POINTS) {
 
   // Pass 2: patch the bundle
   console.log("\n[2/3] Patching bundle...");
-  patchBundle(bundleOut, wasmBase64);
+  patchBundle(bundleOut);
 
   // Pass 3: compile per target
   console.log("\n[3/3] Compiling binaries...");
