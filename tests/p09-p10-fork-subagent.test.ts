@@ -8,7 +8,7 @@ import path from "node:path";
 
 // ── P-09: Fork session ─────────────────────────────────────────────────────
 
-import { forkSession, saveSession, loadSession, newSessionId } from "../src/session.js";
+import { forkSession, saveSession, loadSession, newSessionId, _resetStoreForTesting } from "../src/session.js";
 import type { SessionData } from "../src/types.js";
 
 describe("P-09: Fork session", () => {
@@ -20,6 +20,7 @@ describe("P-09: Fork session", () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "orager-fork-test-"));
     origEnv = process.env["ORAGER_SESSIONS_DIR"];
     process.env["ORAGER_SESSIONS_DIR"] = tmpDir;
+    _resetStoreForTesting();
 
     // Create a test session with 3 turns
     testSession = {
@@ -48,6 +49,7 @@ describe("P-09: Fork session", () => {
   });
 
   afterEach(async () => {
+    _resetStoreForTesting();
     if (origEnv !== undefined) {
       process.env["ORAGER_SESSIONS_DIR"] = origEnv;
     } else {

@@ -1,9 +1,10 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { openWasmDb } from "../src/native-sqlite.js";
+import { resolveMemoryDbPath } from "../src/memory-sqlite.js";
 
 // We must import after setting ORAGER_DB_PATH, so we use dynamic imports below.
 // But we also need to reset the singleton between tests.
@@ -12,15 +13,35 @@ function makeTempDbPath(): string {
   return path.join(os.tmpdir(), `orager-memory-test-${randomUUID()}.db`);
 }
 
+function makeTempMemoryDir(): string {
+  const dir = path.join(os.tmpdir(), `orager-memory-dir-${randomUUID()}`);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 async function importFresh() {
   const mod = await import("../src/memory-sqlite.js");
   return mod;
 }
 
+// Use a per-test temp directory for ORAGER_MEMORY_SQLITE_DIR so tests never
+// read stale data from ~/.orager/memory/.
+let _testMemDir: string;
+let _savedMemDir: string | undefined;
+
+beforeEach(() => {
+  _savedMemDir = process.env["ORAGER_MEMORY_SQLITE_DIR"];
+  _testMemDir = makeTempMemoryDir();
+  process.env["ORAGER_MEMORY_SQLITE_DIR"] = _testMemDir;
+});
+
 afterEach(async () => {
   const mod = await importFresh();
   mod._resetDbForTesting();
   delete process.env["ORAGER_DB_PATH"];
+  if (_savedMemDir !== undefined) process.env["ORAGER_MEMORY_SQLITE_DIR"] = _savedMemDir;
+  else delete process.env["ORAGER_MEMORY_SQLITE_DIR"];
+  fs.rmSync(_testMemDir, { recursive: true, force: true });
 });
 
 describe("isSqliteMemoryEnabled", () => {
@@ -203,83 +224,77 @@ describe("searchMemoryFts", () => {
 
 describe("_migrate — JSON text embedding → Float32 BLOB conversion", () => {
   it("converts a JSON text embedding to binary BLOB on the next DB open", async () => {
-    const dbPath = makeTempDbPath();
-    process.env["ORAGER_DB_PATH"] = dbPath;
+    process.env["ORAGER_DB_PATH"] = makeTempDbPath();
     const { _resetDbForTesting, addMemoryEntrySqlite, loadMemoryStoreSqlite } = await importFresh();
     _resetDbForTesting();
 
-    try {
-      // Create schema + insert a real entry via the module
-      const entry = await addMemoryEntrySqlite("keyMig", { content: "migration test content", importance: 2 });
-      _resetDbForTesting(); // closes DB and flushes to file
+    // Create schema + insert a real entry via the module
+    const entry = await addMemoryEntrySqlite("keyMig", { content: "migration test content", importance: 2 });
+    _resetDbForTesting(); // closes DB and flushes to file
 
-      // Directly overwrite the embedding column with a JSON text string (legacy format)
-      const embeddingJson = JSON.stringify([1.0, 2.0, 3.0]);
-      const dbRaw = await openWasmDb(dbPath);
-      dbRaw.prepare("UPDATE memory_entries SET embedding = ? WHERE id = ?").run(embeddingJson, entry.id);
-      dbRaw.close();
+    // Use the actual per-namespace DB path (not ORAGER_DB_PATH)
+    const actualDbPath = resolveMemoryDbPath("keyMig");
 
-      // Confirm the embedding is stored as TEXT before migration
-      const dbBefore = await openWasmDb(dbPath, { readonly: true });
-      const before = dbBefore.prepare(
-        "SELECT typeof(embedding) as t FROM memory_entries WHERE id = ?",
-      ).get(entry.id) as { t: string };
-      dbBefore.close();
-      expect(before.t).toBe("text");
+    // Directly overwrite the embedding column with a JSON text string (legacy format)
+    const embeddingJson = JSON.stringify([1.0, 2.0, 3.0]);
+    const dbRaw = await openWasmDb(actualDbPath);
+    dbRaw.prepare("UPDATE memory_entries SET embedding = ? WHERE id = ?").run(embeddingJson, entry.id);
+    dbRaw.close();
 
-      // Re-open via memory-sqlite module — _migrate() converts TEXT → BLOB
-      _resetDbForTesting();
-      await loadMemoryStoreSqlite("keyMig");
-      _resetDbForTesting(); // flush, close
+    // Confirm the embedding is stored as TEXT before migration
+    const dbBefore = await openWasmDb(actualDbPath, { readonly: true });
+    const before = dbBefore.prepare(
+      "SELECT typeof(embedding) as t FROM memory_entries WHERE id = ?",
+    ).get(entry.id) as { t: string };
+    dbBefore.close();
+    expect(before.t).toBe("text");
 
-      // Confirm the embedding is now stored as BLOB
-      const dbAfter = await openWasmDb(dbPath, { readonly: true });
-      const after = dbAfter.prepare(
-        "SELECT typeof(embedding) as t FROM memory_entries WHERE id = ?",
-      ).get(entry.id) as { t: string };
-      dbAfter.close();
-      expect(after.t).toBe("blob");
-    } finally {
-      _resetDbForTesting();
-      fs.rmSync(dbPath, { force: true });
-    }
+    // Re-open via memory-sqlite module — _migrate() converts TEXT → BLOB
+    _resetDbForTesting();
+    await loadMemoryStoreSqlite("keyMig");
+    _resetDbForTesting(); // flush, close
+
+    // Confirm the embedding is now stored as BLOB
+    const dbAfter = await openWasmDb(actualDbPath, { readonly: true });
+    const after = dbAfter.prepare(
+      "SELECT typeof(embedding) as t FROM memory_entries WHERE id = ?",
+    ).get(entry.id) as { t: string };
+    dbAfter.close();
+    expect(after.t).toBe("blob");
   });
 
   it("silently skips rows with malformed JSON — entry is preserved, embedding stays as text", async () => {
-    const dbPath = makeTempDbPath();
-    process.env["ORAGER_DB_PATH"] = dbPath;
+    process.env["ORAGER_DB_PATH"] = makeTempDbPath();
     const { _resetDbForTesting, addMemoryEntrySqlite, loadMemoryStoreSqlite } = await importFresh();
     _resetDbForTesting();
 
-    try {
-      const entry = await addMemoryEntrySqlite("keyMigBad", { content: "malformed embedding test", importance: 2 });
-      _resetDbForTesting();
+    const entry = await addMemoryEntrySqlite("keyMigBad", { content: "malformed embedding test", importance: 2 });
+    _resetDbForTesting();
 
-      // Inject invalid JSON as the embedding TEXT value
-      const dbRaw = await openWasmDb(dbPath);
-      dbRaw.prepare("UPDATE memory_entries SET embedding = ? WHERE id = ?").run("not-valid-json!!", entry.id);
-      dbRaw.close();
+    // Use the actual per-namespace DB path
+    const actualDbPath = resolveMemoryDbPath("keyMigBad");
 
-      // loadMemoryStoreSqlite must NOT throw despite the bad JSON
-      _resetDbForTesting();
-      await expect(loadMemoryStoreSqlite("keyMigBad")).resolves.toBeDefined();
-      _resetDbForTesting();
+    // Inject invalid JSON as the embedding TEXT value
+    const dbRaw = await openWasmDb(actualDbPath);
+    dbRaw.prepare("UPDATE memory_entries SET embedding = ? WHERE id = ?").run("not-valid-json!!", entry.id);
+    dbRaw.close();
 
-      // The row is still present (catch swallowed parse error; UPDATE was skipped)
-      const dbAfter = await openWasmDb(dbPath, { readonly: true });
-      const row = dbAfter.prepare(
-        "SELECT id, typeof(embedding) as t FROM memory_entries WHERE id = ?",
-      ).get(entry.id) as { id: string; t: string } | undefined;
-      dbAfter.close();
+    // loadMemoryStoreSqlite must NOT throw despite the bad JSON
+    _resetDbForTesting();
+    await expect(loadMemoryStoreSqlite("keyMigBad")).resolves.toBeDefined();
+    _resetDbForTesting();
 
-      expect(row).toBeDefined();
-      expect(row!.id).toBe(entry.id);
-      // The malformed row could not be converted — it stays as text
-      expect(row!.t).toBe("text");
-    } finally {
-      _resetDbForTesting();
-      fs.rmSync(dbPath, { force: true });
-    }
+    // The row is still present (catch swallowed parse error; UPDATE was skipped)
+    const dbAfter = await openWasmDb(actualDbPath, { readonly: true });
+    const row = dbAfter.prepare(
+      "SELECT id, typeof(embedding) as t FROM memory_entries WHERE id = ?",
+    ).get(entry.id) as { id: string; t: string } | undefined;
+    dbAfter.close();
+
+    expect(row).toBeDefined();
+    expect(row!.id).toBe(entry.id);
+    // The malformed row could not be converted — it stays as text
+    expect(row!.t).toBe("text");
   });
 
   it("is a no-op when no rows have text embeddings — zero-row query exits early", async () => {

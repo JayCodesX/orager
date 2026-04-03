@@ -8,5 +8,6 @@
     "moduleResolution": "NodeNext",
     "types": ["bun-types"]
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": ["src/wasm-sqlite.ts"]
 }

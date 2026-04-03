@@ -104,12 +104,6 @@ export interface ConfigFileSchema {
   memoryKey?: string;
   /** Max chars injected from memory into the system prompt (default 6000). */
   memoryMaxChars?: number;
-  /** Daemon default port (applied when --serve is used). */
-  daemonPort?: number;
-  /** Daemon max concurrent runs (applied when --serve is used). */
-  daemonMaxConcurrent?: number;
-  /** Daemon idle-shutdown timeout string, e.g. "30m" or "1h" (applied when --serve is used). */
-  daemonIdleTimeout?: string;
   /** Route LLM calls to a local Ollama server. */
   ollama?: { enabled?: boolean; model?: string; baseUrl?: string };
   /** Per-agent OpenRouter API key override — isolates rate limits from the global key. */
@@ -320,19 +314,6 @@ export async function loadConfigFile(filePath: string): Promise<LoadConfigFileRe
   if (Array.isArray(cfg.requiredEnvVars) && cfg.requiredEnvVars.length > 0) {
     const names = cfg.requiredEnvVars.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
     if (names.length > 0) result.args.push("--require-env", names.join(","));
-  }
-  // Daemon defaults — push as CLI flags so the --serve branch reads them via argv.indexOf
-  if (cfg.daemonPort !== undefined && cfg.daemonPort > 0) args.push("--port", String(cfg.daemonPort));
-  if (cfg.daemonMaxConcurrent !== undefined && cfg.daemonMaxConcurrent > 0) args.push("--max-concurrent", String(cfg.daemonMaxConcurrent));
-  if (typeof cfg.daemonIdleTimeout === "string") {
-    if (/^\d+(?:\.\d+)?[smh]$/.test(cfg.daemonIdleTimeout)) {
-      args.push("--idle-timeout", cfg.daemonIdleTimeout);
-    } else if (cfg.daemonIdleTimeout.trim()) {
-      process.stderr.write(
-        `[orager] WARNING: daemonIdleTimeout "${cfg.daemonIdleTimeout}" is not a valid duration ` +
-        `(expected a number followed by s, m, or h, e.g. "30m" or "1h") — using default\n`
-      );
-    }
   }
   // Memory — pass via result object so they can be stored in globalThis
   if (cfg.memory !== undefined) result.memory = cfg.memory;

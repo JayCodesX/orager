@@ -4,7 +4,7 @@
  *
  * Covers:
  *   - B2: agentApiKey, memoryRetrieval, memoryEmbeddingModel
- *   - M1: daemonPort, daemonMaxConcurrent, daemonIdleTimeout
+ *   - (M1 daemon fields removed — daemon section dropped per ADR-0003)
  */
 import { describe, it, expect } from "vitest";
 import fs from "node:fs/promises";
@@ -107,117 +107,6 @@ describe("loadConfigFile — memoryEmbeddingModel (B2)", () => {
     expect(result.agentApiKey).toBe("sk-agent-xyz");
     expect(result.memoryRetrieval).toBe("embedding");
     expect(result.memoryEmbeddingModel).toBe("openai/text-embedding-3-small");
-  });
-});
-
-// ── M1: daemonPort ────────────────────────────────────────────────────────────
-
-describe("loadConfigFile — daemonPort (M1)", () => {
-  it("converts daemonPort to --port argv token", async () => {
-    const p = await writeTmpConfig({ daemonPort: 4000 });
-    const result = await loadConfigFile(p);
-    const portIdx = result.args.indexOf("--port");
-    expect(portIdx).toBeGreaterThanOrEqual(0);
-    expect(result.args[portIdx + 1]).toBe("4000");
-  });
-
-  it("omits --port when daemonPort is 0", async () => {
-    const p = await writeTmpConfig({ daemonPort: 0 });
-    const result = await loadConfigFile(p);
-    expect(result.args).not.toContain("--port");
-  });
-
-  it("omits --port when daemonPort is negative", async () => {
-    const p = await writeTmpConfig({ daemonPort: -1 });
-    const result = await loadConfigFile(p);
-    expect(result.args).not.toContain("--port");
-  });
-
-  it("omits --port when daemonPort is absent", async () => {
-    const p = await writeTmpConfig({});
-    const result = await loadConfigFile(p);
-    expect(result.args).not.toContain("--port");
-  });
-});
-
-// ── M1: daemonMaxConcurrent ───────────────────────────────────────────────────
-
-describe("loadConfigFile — daemonMaxConcurrent (M1)", () => {
-  it("converts daemonMaxConcurrent to --max-concurrent argv token", async () => {
-    const p = await writeTmpConfig({ daemonMaxConcurrent: 5 });
-    const result = await loadConfigFile(p);
-    const idx = result.args.indexOf("--max-concurrent");
-    expect(idx).toBeGreaterThanOrEqual(0);
-    expect(result.args[idx + 1]).toBe("5");
-  });
-
-  it("omits --max-concurrent when daemonMaxConcurrent is 0", async () => {
-    const p = await writeTmpConfig({ daemonMaxConcurrent: 0 });
-    const result = await loadConfigFile(p);
-    expect(result.args).not.toContain("--max-concurrent");
-  });
-});
-
-// ── M1: daemonIdleTimeout ─────────────────────────────────────────────────────
-
-describe("loadConfigFile — daemonIdleTimeout (M1)", () => {
-  it("converts '30m' to --idle-timeout argv token", async () => {
-    const p = await writeTmpConfig({ daemonIdleTimeout: "30m" });
-    const result = await loadConfigFile(p);
-    const idx = result.args.indexOf("--idle-timeout");
-    expect(idx).toBeGreaterThanOrEqual(0);
-    expect(result.args[idx + 1]).toBe("30m");
-  });
-
-  it("converts '2h' to --idle-timeout argv token", async () => {
-    const p = await writeTmpConfig({ daemonIdleTimeout: "2h" });
-    const result = await loadConfigFile(p);
-    const idx = result.args.indexOf("--idle-timeout");
-    expect(idx).toBeGreaterThanOrEqual(0);
-    expect(result.args[idx + 1]).toBe("2h");
-  });
-
-  it("converts '1.5h' to --idle-timeout argv token", async () => {
-    const p = await writeTmpConfig({ daemonIdleTimeout: "1.5h" });
-    const result = await loadConfigFile(p);
-    const idx = result.args.indexOf("--idle-timeout");
-    expect(idx).toBeGreaterThanOrEqual(0);
-    expect(result.args[idx + 1]).toBe("1.5h");
-  });
-
-  it("converts '30s' to --idle-timeout argv token", async () => {
-    const p = await writeTmpConfig({ daemonIdleTimeout: "30s" });
-    const result = await loadConfigFile(p);
-    const idx = result.args.indexOf("--idle-timeout");
-    expect(idx).toBeGreaterThanOrEqual(0);
-    expect(result.args[idx + 1]).toBe("30s");
-  });
-
-  it("omits --idle-timeout when format is invalid (bare number)", async () => {
-    const p = await writeTmpConfig({ daemonIdleTimeout: "30" });
-    const result = await loadConfigFile(p);
-    expect(result.args).not.toContain("--idle-timeout");
-  });
-
-  it("omits --idle-timeout when absent", async () => {
-    const p = await writeTmpConfig({});
-    const result = await loadConfigFile(p);
-    expect(result.args).not.toContain("--idle-timeout");
-  });
-
-  it("all three M1 daemon fields convert to correct argv together", async () => {
-    const p = await writeTmpConfig({
-      daemonPort: 4567,
-      daemonMaxConcurrent: 8,
-      daemonIdleTimeout: "1h",
-    });
-    const result = await loadConfigFile(p);
-    const portIdx = result.args.indexOf("--port");
-    const concIdx = result.args.indexOf("--max-concurrent");
-    const idleIdx = result.args.indexOf("--idle-timeout");
-    expect(result.args[portIdx + 1]).toBe("4567");
-    expect(result.args[concIdx + 1]).toBe("8");
-    expect(result.args[idleIdx + 1]).toBe("1h");
   });
 });
 
