@@ -11,11 +11,11 @@ export async function promptApproval(
   input: Record<string, unknown>,
   timeoutMs = 5 * 60 * 1000,
 ): Promise<boolean> {
-  // In daemon mode there is no controlling terminal — approval via /dev/tty is impossible.
+  // No controlling terminal — approval via /dev/tty is impossible.
   // Return false immediately with a clear diagnostic rather than silently denying.
   if (process.env.ORAGER_DAEMON_MODE === "1" || !process.stdin.isTTY) {
     process.stderr.write(
-      `\n[orager] Tool approval required for '${toolName.replace(/[\x00-\x1f\x7f]/g, "?")}' but no TTY is available (running in daemon/headless mode). ` +
+      `\n[orager] Tool approval required for '${toolName.replace(/[\x00-\x1f\x7f]/g, "?")}' but no TTY is available (running in headless/non-interactive mode). ` +
       `Denying automatically. To allow this tool without approval, add it to your requireApproval exclusion list, ` +
       `or run interactively.\n`,
     );

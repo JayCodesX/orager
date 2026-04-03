@@ -21,16 +21,19 @@ describe("M-05: wasm-sqlite flush() method", () => {
 });
 
 // ── M-07: PID lock TOCTOU race mitigation ────────────────────────────────────
+// ADR-0003: src/daemon.ts has been removed. The PID lock pattern now lives in
+// src/ui-server.ts (for `orager serve`). We verify the same safe pattern there.
 
 describe("M-07: PID lock TOCTOU mitigation", () => {
-  it("acquirePidLock uses retry loop with exclusive flag", async () => {
+  it("ui-server acquireUiPidLock uses exclusive write flag", async () => {
     const source = await fs.readFile(
-      path.join(process.cwd(), "src/daemon.ts"),
+      path.join(process.cwd(), "src/ui-server.ts"),
       "utf8",
     );
-    expect(source).toContain("M-07");
-    expect(source).toContain("for (let retry = 0; retry < 3; retry++)");
+    // Exclusive create flag — atomic, no TOCTOU window
     expect(source).toContain('flag: "wx"');
+    // Must check for stale lock file (ESRCH = no such process)
+    expect(source).toContain("ESRCH");
   });
 });
 
@@ -137,31 +140,33 @@ describe("M-16: Hook tool input via stdin", () => {
 });
 
 // ── M-22: Rate limiting ignores x-forwarded-for ──────────────────────────────
+// ADR-0003: src/daemon.ts has been removed. The rate-limit concern no longer
+// applies (no HTTP server for agent execution). We verify that neither the
+// ui-server nor any remaining HTTP handler trusts x-forwarded-for for security
+// decisions.
 
 describe("M-22: Rate limit uses socket address only", () => {
-  it("rate limit logic does not use x-forwarded-for", async () => {
+  it("ui-server.ts does not trust x-forwarded-for for auth decisions", async () => {
     const source = await fs.readFile(
-      path.join(process.cwd(), "src/daemon.ts"),
+      path.join(process.cwd(), "src/ui-server.ts"),
       "utf8",
     );
-    expect(source).toContain("M-22");
-    expect(source).toContain("req.socket.remoteAddress");
-    // Should NOT contain the old x-forwarded-for lookup
+    // The UI auth check must not rely on a spoofable proxy header
     expect(source).not.toContain('req.headers["x-forwarded-for"]');
   });
 });
 
 // ── M-23: Health detail avoids opening new WASM DB ───────────────────────────
+// ADR-0003: src/daemon/routes/health.ts has been removed with the daemon.
+// The ui-server /api/daemon/status endpoint is now a simple stub (no DB open).
 
 describe("M-23: Health detail DB check", () => {
-  it("health detail uses accessSync instead of openWasmDb", async () => {
+  it("ui-server daemon-status handler does not open a WASM DB", async () => {
     const source = await fs.readFile(
-      path.join(process.cwd(), "src/daemon/routes/health.ts"),
+      path.join(process.cwd(), "src/ui-server.ts"),
       "utf8",
     );
-    expect(source).toContain("M-23");
-    expect(source).toContain("fsSync.accessSync");
-    // Should NOT open a new WASM DB
+    // The stub handler must not open a new WASM database on every call
     expect(source).not.toContain("openWasmDb");
   });
 });
@@ -195,15 +200,15 @@ describe("M-12: Browser beforeExit handler", () => {
 });
 
 // ── L-01: Rate limit map hard cap ───────────────────────────────────────────
+// ADR-0003: src/daemon.ts (which held the HTTP rate limiter) has been removed.
+// No unbounded in-memory rate-limit map remains. The concern is resolved by deletion.
 
 describe("L-01: Rate limit map hard cap", () => {
-  it("daemon has a hard cap on _rateLimitMap", async () => {
-    const source = await fs.readFile(
-      path.join(process.cwd(), "src/daemon.ts"),
-      "utf8",
-    );
-    expect(source).toContain("L-01");
-    expect(source).toContain("RATE_LIMIT_MAP_HARD_CAP");
+  it("src/daemon.ts no longer exists — L-01 concern is resolved by ADR-0003 removal", async () => {
+    // The daemon and its rate-limit map are gone. Verify the file is absent.
+    await expect(
+      fs.readFile(path.join(process.cwd(), "src/daemon.ts"), "utf8"),
+    ).rejects.toThrow(); // ENOENT expected
   });
 });
 
