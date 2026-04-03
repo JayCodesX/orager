@@ -8,7 +8,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mocked } from "./mock-helpers.js";
-import { sanitizeDaemonRunOpts } from "../src/daemon.js";
+import { sanitizeDaemonRunOpts } from "../src/agent-opts.js";
 import type { AgentLoopOptions, OpenRouterCallResult } from "../src/types.js";
 
 // ── Mock openrouter so runAgentLoop doesn't hit the network ───────────────────
@@ -25,7 +25,11 @@ vi.mock("../src/openrouter-model-meta.js", () => ({
   fetchLiveModelMeta: vi.fn().mockResolvedValue(undefined),
   getLiveModelPricing: vi.fn().mockReturnValue(null),
   isLiveModelMetaCacheWarm: vi.fn().mockReturnValue(true),
+  getLiveModelMeta: vi.fn().mockReturnValue(null),
   liveModelSupportsTools: vi.fn().mockReturnValue(null),
+  liveModelSupportsVision: vi.fn().mockReturnValue(null),
+  getCachedModelIds: vi.fn().mockReturnValue([]),
+  getMetaCacheSize: vi.fn().mockReturnValue(0),
 }));
 
 vi.mock("../src/loop-helpers.js", () => ({
@@ -36,6 +40,8 @@ vi.mock("../src/loop-helpers.js", () => ({
   isModelContextCacheWarm: vi.fn().mockReturnValue(true),
   MAX_SESSION_MESSAGES: 500,
   summarizeSession: vi.fn().mockResolvedValue([]),
+  SUMMARIZE_PROMPT: "",
+  validateSummary: vi.fn().mockReturnValue(true),
   CACHE_TTL_MS: 30_000,
   runConcurrent: vi.fn().mockImplementation(async (items: unknown[], _max: number, fn: (item: unknown) => Promise<unknown>) => {
     const results = [];
@@ -53,6 +59,18 @@ vi.mock("../src/loop-helpers.js", () => ({
   getContextWindowFromFallback: vi.fn().mockReturnValue(128_000),
   _resetModelCacheForTesting: vi.fn(),
   formatDiscordPayload: vi.fn().mockReturnValue({}),
+  MEMORY_HEADER_MASTER: "## Persistent Product Context",
+  MEMORY_HEADER_RETRIEVED: "## Your persistent memory",
+  MEMORY_HEADER_AUTO: "# Persistent memory",
+  MEMORY_HEADER_PRIOR_SESSION: "## Prior session context",
+  SKILL_HEADER: "## Learned Skills",
+  MEMORY_DYNAMIC_BUDGET_FRACTION: 0.15,
+  MEMORY_UPDATE_MAX_CHARS: 500,
+  MEMORY_UPDATE_INSTRUCTION: "",
+  parseMemoryUpdates: vi.fn().mockReturnValue([]),
+  distillMemoryEntries: vi.fn().mockResolvedValue([]),
+  DISTILL_ENTRY_THRESHOLD: 200,
+  DISTILL_BATCH_SIZE: 30,
 }));
 
 vi.mock("../src/retry.js", () => ({
