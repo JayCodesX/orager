@@ -17,7 +17,6 @@ on:
           - "false"
 
 permissions:
-  administration: write
   contents: read
 
 jobs:
