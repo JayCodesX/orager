@@ -1,18 +1,18 @@
 /**
- * Allowlist-based sanitizer for daemon /run request opts.
+ * Allowlist-based sanitizer for agent run options received from untrusted callers.
  *
- * The ALLOWED_DAEMON_OPTS set is typed as Set<keyof AgentLoopOptions> so
+ * The ALLOWED_AGENT_OPTS set is typed as Set<keyof AgentLoopOptions> so
  * TypeScript emits a compile error when a key is misspelled or removed from
  * AgentLoopOptions without updating this list.
  *
  * Security-sensitive fields (sandboxRoot, requireApproval, bashPolicy,
  * dangerouslySkipPermissions) are always stripped regardless of the allowlist
  * because they control the security boundary of every run and must be
- * configured at daemon startup, not per-request.
+ * configured at startup, not per-request.
  */
-import type { AgentLoopOptions } from "../types.js";
+import type { AgentLoopOptions } from "./types.js";
 
-const ALLOWED_DAEMON_OPTS = new Set<keyof AgentLoopOptions>([
+const ALLOWED_AGENT_OPTS = new Set<keyof AgentLoopOptions>([
   // Identity / session
   "model", "models", "sessionId", "cwd", "addDirs",
   // Run control
@@ -54,7 +54,7 @@ const ALLOWED_DAEMON_OPTS = new Set<keyof AgentLoopOptions>([
   "memoryRetrieval", "memoryEmbeddingModel", "memoryRetrievalThreshold",
   // Session lock
   "sessionLockTimeoutMs",
-  // Per-run env injection (Paperclip context vars for daemon path)
+  // Per-run env injection
   "env",
 ]);
 
@@ -64,7 +64,7 @@ export function sanitizeDaemonRunOpts(
   const safe: Record<string, unknown> = {};
   const rejected: string[] = [];
   for (const [k, v] of Object.entries(raw)) {
-    if (ALLOWED_DAEMON_OPTS.has(k as keyof AgentLoopOptions)) {
+    if (ALLOWED_AGENT_OPTS.has(k as keyof AgentLoopOptions)) {
       safe[k] = v;
     } else {
       rejected.push(k);

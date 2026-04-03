@@ -21,8 +21,7 @@ import {
   loadLatestCheckpointByContextId,
 } from "./session.js";
 import type { CliOptions, EmitResultEvent, TurnModelRule, UserMessageContentBlock, AgentLoopOptions } from "./types.js";
-import { readDaemonPort } from "./daemon.js";
-import { mintJwt, KEY_PATH } from "./jwt.js";
+
 import { applyProfileAsync } from "./profiles.js";
 import { initTelemetry } from "./telemetry.js";
 import { runSetupWizard } from "./setup.js";
@@ -258,137 +257,17 @@ DOCS
 
 // ── Status command ────────────────────────────────────────────────────────────
 
-function formatUptime(uptimeMs: number): string {
-  const uptimeSec = Math.floor(uptimeMs / 1000);
-  const h = Math.floor(uptimeSec / 3600);
-  const m = Math.floor((uptimeSec % 3600) / 60);
-  const s = uptimeSec % 60;
-  return `${h}h ${m}m ${s}s`;
-}
-
+// ADR-0003: The always-on daemon has been removed. --status is kept as a no-op
+// stub so existing scripts that call `orager --status` get a clear message
+// rather than an unrecognised flag error.
 async function handleStatus(jsonMode = false): Promise<void> {
-  const port = await readDaemonPort();
-  if (!port) {
-    if (jsonMode) {
-      process.stdout.write(JSON.stringify({ running: false, port: null, url: null, error: "no port file found" }) + "\n");
-    } else {
-      process.stdout.write("orager daemon: not running (no port file found)\n");
-    }
-    process.exit(1);
-  }
-
-  const url = `http://127.0.0.1:${port}`;
-  try {
-    const healthRes = await fetch(`${url}/health`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    if (!healthRes.ok) {
-      if (jsonMode) {
-        process.stdout.write(JSON.stringify({ running: false, port, url, error: `/health returned HTTP ${healthRes.status}` }) + "\n");
-      } else {
-        process.stdout.write(
-          `orager daemon: port file found (port ${port}) but /health returned HTTP ${healthRes.status}\n`,
-        );
-      }
-      process.exit(1);
-    }
-  } catch {
-    const msg = "daemon not responding (connection refused or timeout)";
-    if (jsonMode) {
-      process.stdout.write(JSON.stringify({ running: false, port, url, error: msg }) + "\n");
-    } else {
-      process.stdout.write(`orager daemon: port file found (port ${port}) but ${msg}\n`);
-    }
-    process.exit(1);
-  }
-
-  // Daemon is alive — fetch full metrics for extended status display.
-  // Non-fatal: if the key can't be read or /metrics fails, we still report running.
-  interface MetricsBody {
-    uptimeMs?: number;
-    activeRuns?: number;
-    completedRuns?: number;
-    errorRuns?: number;
-    circuitBreakersByAgent?: Record<string, unknown>;
-    recentModels?: string[];
-    keyInfo?: {
-      label?: string;
-      disabled?: boolean;
-      remaining?: number | null;
-      usage?: number;
-      limit?: number | null;
-      isUnlimited?: boolean;
-    } | null;
-  }
-  let metrics: MetricsBody | null = null;
-  try {
-    const keyData = await fs.readFile(KEY_PATH, "utf8");
-    const signingKey = keyData.trim();
-    if (signingKey) {
-      const token = mintJwt(signingKey, "orager-cli-status");
-      const metricsRes = await fetch(`${url}/metrics`, {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(3000),
-      });
-      if (metricsRes.ok) {
-        metrics = await metricsRes.json() as MetricsBody;
-      }
-    }
-  } catch {
-    // Key not found or metrics call failed — proceed without metrics
-  }
-
-  const uptimeMs = metrics?.uptimeMs ?? null;
-
+  const msg = "orager daemon has been removed (ADR-0003). Use `orager serve` to start the UI server.";
   if (jsonMode) {
-    const out: Record<string, unknown> = { running: true, port, url, uptimeMs };
-    if (metrics) {
-      out["activeRuns"] = metrics.activeRuns ?? null;
-      out["completedRuns"] = metrics.completedRuns ?? null;
-      out["errorRuns"] = metrics.errorRuns ?? null;
-      out["circuitBreakersByAgent"] = metrics.circuitBreakersByAgent ?? {};
-      out["recentModels"] = metrics.recentModels ?? [];
-      if (typeof uptimeMs === "number") out["uptime"] = formatUptime(uptimeMs);
-      if (metrics.keyInfo !== undefined) out["credits"] = metrics.keyInfo;
-    }
-    process.stdout.write(JSON.stringify(out) + "\n");
+    process.stdout.write(JSON.stringify({ running: false, error: msg }) + "\n");
   } else {
-    process.stdout.write(`orager daemon: running on port ${port}\n`);
-    process.stdout.write(`  url: ${url}\n`);
-    if (uptimeMs !== null) {
-      process.stdout.write(`  uptime: ${formatUptime(uptimeMs)}\n`);
-    }
-    if (metrics) {
-      process.stdout.write(`  activeRuns: ${metrics.activeRuns ?? "n/a"}\n`);
-      process.stdout.write(`  completedRuns: ${metrics.completedRuns ?? "n/a"}\n`);
-      process.stdout.write(`  errorRuns: ${metrics.errorRuns ?? "n/a"}\n`);
-      const cbStates = metrics.circuitBreakersByAgent ?? {};
-      const cbEntries = Object.entries(cbStates);
-      if (cbEntries.length > 0) {
-        process.stdout.write(`  circuitBreakers:\n`);
-        for (const [agent, state] of cbEntries) {
-          process.stdout.write(`    ${agent}: ${JSON.stringify(state)}\n`);
-        }
-      }
-      const recentModels = metrics.recentModels ?? [];
-      if (recentModels.length > 0) {
-        process.stdout.write(`  recentModels: ${recentModels.join(", ")}\n`);
-      }
-      const ki = metrics.keyInfo;
-      if (ki) {
-        const credLine = ki.isUnlimited
-          ? `  credits: unlimited (key: ${ki.label ?? "?"})`
-          : ki.remaining !== null && ki.remaining !== undefined
-            ? `  credits: $${ki.remaining.toFixed(4)} remaining of $${(ki.limit ?? 0).toFixed(2)} (key: ${ki.label ?? "?"})`
-            : `  credits: $${(ki.usage ?? 0).toFixed(4)} used (key: ${ki.label ?? "?"})`;
-        process.stdout.write(credLine + "\n");
-        if (ki.disabled) {
-          process.stdout.write("  WARNING: API key is disabled\n");
-        }
-      }
-    }
+    process.stdout.write(msg + "\n");
   }
-  process.exit(0);
+  process.exit(1);
 }
 
 // ── Clear model cache command ─────────────────────────────────────────────────
@@ -691,87 +570,31 @@ async function handlePrune(argv: string[]): Promise<void> {
 
 // ── Sessions table command ───────────────────────────────────────────────────
 
+// ADR-0003: --sessions now queries the local SQLite store directly instead of
+// proxying to the removed daemon. Equivalent to --list-sessions but with a
+// richer cost-aware table format.
 async function handleSessionsCommand(argv: string[]): Promise<void> {
   const jsonMode = argv.includes("--json");
-
-  const port = await readDaemonPort();
-  if (!port) {
-    process.stderr.write("Daemon is not running\n");
-    process.exit(1);
-  }
-
-  const url = `http://127.0.0.1:${port}`;
-
-  // Mint JWT for authenticated requests
-  let token: string;
-  try {
-    const keyData = await fs.readFile(KEY_PATH, "utf8");
-    token = mintJwt(keyData.trim(), "orager-cli-sessions");
-  } catch {
-    process.stderr.write("orager: could not read signing key\n");
-    process.exit(1);
-  }
-
-  // Fetch sessions list
-  let sessions: Array<{
-    sessionId: string;
-    updatedAt: string;
-    turnCount: number;
-    model: string;
-  }>;
-  try {
-    const res = await fetch(`${url}/sessions?limit=20`, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!res.ok) {
-      process.stderr.write(`orager: GET /sessions returned HTTP ${res.status}\n`);
-      process.exit(1);
-    }
-    const body = await res.json() as { sessions: typeof sessions };
-    sessions = body.sessions ?? [];
-  } catch {
-    process.stderr.write("Daemon is not running\n");
-    process.exit(1);
-  }
-
-  // Fetch cost for each session
-  const costMap = new Map<string, number>();
-  await Promise.all(
-    sessions.map(async (s) => {
-      try {
-        const res = await fetch(`${url}/sessions/${encodeURIComponent(s.sessionId)}/cost`, {
-          headers: { Authorization: `Bearer ${token}` },
-          signal: AbortSignal.timeout(3000),
-        });
-        if (res.ok) {
-          const body = await res.json() as { cumulativeCostUsd: number };
-          costMap.set(s.sessionId, body.cumulativeCostUsd ?? 0);
-        }
-      } catch { /* non-fatal */ }
-    }),
-  );
+  const sessions = (await listSessions()).slice(0, 20);
 
   if (jsonMode) {
     const result = sessions.map((s) => ({
       sessionId: s.sessionId,
       lastRunAt: s.updatedAt,
-      cumulativeCostUsd: costMap.get(s.sessionId) ?? 0,
+      cumulativeCostUsd: s.cumulativeCostUsd ?? 0,
       runCount: s.turnCount,
     }));
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");
     process.exit(0);
   }
 
-  // Print formatted table
   const header = `${"SESSION ID".padEnd(22)} ${"LAST RUN AT".padEnd(20)} ${"COST USD".padStart(10)} ${"TURNS".padStart(6)}`;
   process.stdout.write(header + "\n");
   process.stdout.write("-".repeat(header.length) + "\n");
-
   for (const s of sessions) {
     const id = s.sessionId.slice(0, 20).padEnd(22);
     const lastRun = (s.updatedAt ?? "").slice(0, 16).replace("T", " ").padEnd(20);
-    const cost = `$${(costMap.get(s.sessionId) ?? 0).toFixed(4)}`.padStart(10);
+    const cost = `$${((s.cumulativeCostUsd ?? 0)).toFixed(4)}`.padStart(10);
     const turns = String(s.turnCount).padStart(6);
     process.stdout.write(`${id} ${lastRun} ${cost} ${turns}\n`);
   }
@@ -1302,35 +1125,10 @@ async function main(): Promise<void> {
   // ── Sessions table command ────────────────────────────────────────────────
   if (argv.includes("--sessions")) { await handleSessionsCommand(argv); return; }
 
-  // ── Rotate-key command ────────────────────────────────────────────────────
+  // ── Rotate-key command (ADR-0003: daemon removed) ────────────────────────
   if (argv.includes("--rotate-key")) {
-    const port = await readDaemonPort();
-    if (!port) {
-      process.stderr.write("orager: daemon not running (no port file found).\n");
-      process.exit(1);
-    }
-    try {
-      const keyData = await fs.readFile(KEY_PATH, "utf8");
-      const signingKey = keyData.trim();
-      const token = mintJwt(signingKey, "orager-cli-rotate-key");
-      const res = await fetch(`http://127.0.0.1:${port}/rotate-key`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!res.ok) {
-        const body = await res.text();
-        process.stderr.write(`orager: rotate-key failed (HTTP ${res.status}): ${body}\n`);
-        process.exit(1);
-      }
-      const result = await res.json() as { rotated: boolean; previousKeyExpiresAt: string };
-      process.stdout.write(`Signing key rotated successfully.\n`);
-      process.stdout.write(`Old key accepted until: ${result.previousKeyExpiresAt}\n`);
-    } catch (err) {
-      process.stderr.write(`orager: rotate-key error: ${err instanceof Error ? err.message : String(err)}\n`);
-      process.exit(1);
-    }
-    process.exit(0);
+    process.stderr.write("orager: --rotate-key has been removed (ADR-0003 — daemon is gone).\n");
+    process.exit(1);
   }
 
   // Session management commands — no API key needed
