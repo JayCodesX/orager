@@ -85,9 +85,15 @@ describe("--sessions command", () => {
       fs.readFile(path.join(process.cwd(), "src/daemon.ts"), "utf8"),
     ).rejects.toThrow(); // ENOENT — daemon is gone
 
-    // The new implementation in index.ts must call listSessions directly.
+    // After Sprint 7 decomposition, listSessions is called from session-commands.ts
+    // (imported by index.ts). Verify the command module calls it directly.
+    const sessionCmdSrc = await fs.readFile(
+      path.join(process.cwd(), "src/commands/session-commands.ts"),
+      "utf8",
+    );
+    expect(sessionCmdSrc).toContain("listSessions");
     const indexSrc = await fs.readFile(path.join(process.cwd(), "src/index.ts"), "utf8");
-    expect(indexSrc).toContain("listSessions");
+    expect(indexSrc).toContain("handleListSessions");
     expect(indexSrc).not.toContain("readDaemonPort");
   });
 

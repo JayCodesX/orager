@@ -22,7 +22,7 @@ import type { OragerSettings } from "./settings.js";
 import { listSessions, loadSessionRaw } from "./session.js";
 import { getSpanBuffer, type BufferedSpan } from "./telemetry.js";
 import { isBlockedHost } from "./tools/web-fetch.js";
-import { formatDiscordPayload } from "./loop-helpers.js";
+import { formatDiscordPayload } from "./webhook.js";
 import {
   isDailyRotation,
   getLogDir,

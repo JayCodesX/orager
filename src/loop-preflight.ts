@@ -9,7 +9,7 @@
 
 import type { AgentLoopOptions } from "./types.js";
 import { shouldUseDirect } from "./openrouter.js";
-import { fetchModelContextLengths, isModelContextCacheWarm } from "./loop-helpers.js";
+import { fetchModelContextLengths, isModelContextCacheWarm } from "./model-cache.js";
 import { fetchLiveModelMeta, isLiveModelMetaCacheWarm, liveModelSupportsTools, liveModelSupportsVision } from "./openrouter-model-meta.js";
 import { checkDeprecatedModel } from "./deprecated-models.js";
 import { getModelCapabilities } from "./model-capabilities.js";
