@@ -25,12 +25,13 @@ import { fireHooks } from "./hooks.js";
 import type { HookConfig, HookPayload } from "./hooks.js";
 import { loadSettings, mergeSettings, loadClaudeDesktopMcpServers } from "./settings.js";
 import { exitPlanModeTool, PLAN_MODE_TOOL_NAME } from "./tools/plan.js";
-import path from "node:path";
+// path is used in loop-executor.ts (extracted in Sprint 6)
 import { loadSession, saveSession, newSessionId, acquireSessionLock, saveSessionCheckpoint, loadLatestCheckpointByContextId } from "./session.js";
 import { callWithRetry } from "./retry.js";
 import { fetchGenerationMeta, shouldUseDirect, callEmbeddings } from "./openrouter.js";
-import { isOllamaRunning, resolveOllamaBaseUrl, toOllamaTag, isModelPulled } from "./ollama.js";
-import { fetchLiveModelMeta, getLiveModelPricing, isLiveModelMetaCacheWarm, liveModelSupportsTools, liveModelSupportsVision } from "./openrouter-model-meta.js";
+// isOllamaRunning, resolveOllamaBaseUrl, toOllamaTag, isModelPulled used in loop-preflight.ts (Sprint 6)
+import { getLiveModelPricing } from "./openrouter-model-meta.js";
+// fetchLiveModelMeta, isLiveModelMetaCacheWarm, liveModelSupportsTools, liveModelSupportsVision used in loop-preflight.ts (Sprint 6)
 import { recordProviderSuccess } from "./provider-health.js";
 import { loadSkillsFromDirs, buildSkillsSystemPrompt, buildSkillTools } from "./skills.js";
 import { retrieveSkills, buildSkillsPromptSection, updateSkillOutcomes } from "./skillbank.js";
@@ -41,25 +42,23 @@ import { processInput, detectModalitiesFromBlocks } from "./input-processor.js";
 import type { RouterSignal } from "./types.js";
 import { ALL_TOOLS, finishTool, BROWSER_TOOLS, makeAgentTool, buildAgentsSystemPrompt } from "./tools/index.js";
 import { FINISH_TOOL_NAME } from "./tools/finish.js";
-import { promptApproval } from "./approval.js";
+// promptApproval is used in loop-executor.ts (extracted in Sprint 6)
 import { getAgentCircuitBreaker } from "./circuit-breaker.js";
 import { log } from "./logger.js";
-import { auditApproval, logToolCall } from "./audit.js";
+// auditApproval, logToolCall are used in loop-executor.ts (extracted in Sprint 6)
 import { truncateContent } from "./truncate.js";
-import { checkDeprecatedModel } from "./deprecated-models.js";
-import { getModelCapabilities } from "./model-capabilities.js";
+// checkDeprecatedModel, getModelCapabilities used in loop-preflight.ts (Sprint 6)
 import { withSpan, spanSetAttributes } from "./telemetry.js";
 import { getCachedQueryEmbedding, setCachedQueryEmbedding } from "./embedding-cache.js";
 import { RateLimitTracker, isNearRateLimit, rateLimitSummary, getRateLimitState } from "./rate-limit-tracker.js";
 import { gatherContext, formatContext } from "./context-injector.js";
 import { makeStuckMessage } from "./prompt-variation.js";
 import type { CacheEntry } from "./loop-helpers.js";
+// fetchModelContextLengths, isModelContextCacheWarm used in loop-preflight.ts (Sprint 6)
 import {
   postWebhook,
   estimateTokens,
-  fetchModelContextLengths,
   getContextWindow,
-  isModelContextCacheWarm,
   MAX_SESSION_MESSAGES,
   summarizeSession,
   validateSummary,
@@ -78,7 +77,10 @@ import {
   distillMemoryEntries,
   MEMORY_DYNAMIC_BUDGET_FRACTION,
 } from "./loop-helpers.js";
-import { recordTokens, recordToolCall, recordSession } from "./metrics.js";
+import { recordTokens, recordSession } from "./metrics.js";
+// recordToolCall is used in loop-executor.ts (extracted in Sprint 6)
+import { executeOne as _executeOneImpl, type ToolExecCtx } from "./loop-executor.js";
+import { runPreflight } from "./loop-preflight.js";
 
 // ── Cost anomaly detection ────────────────────────────────────────────────────
 //
@@ -295,134 +297,19 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   const rlTracker = new RateLimitTracker();
 
   // Fetch live model metadata (context windows + pricing + capabilities) from OpenRouter.
-  // Skipped for the direct Anthropic path — the OpenRouter /models endpoint requires an
-  // OpenRouter key and returns no data the direct path can use. The static fallback map
-  // (200k for anthropic/* models) is authoritative and used instead.
-  // Also skipped when both caches are warm (e.g. pre-warmed at daemon startup) to avoid
-  // the function-call overhead on every run in long-lived daemon processes.
-  if (!shouldUseDirect(model) && !(isModelContextCacheWarm() && isLiveModelMetaCacheWarm())) {
-    await Promise.all([
-      fetchModelContextLengths(apiKey),
-      fetchLiveModelMeta(apiKey),
-    ]);
-  }
-  const contextWindow = getContextWindow(model);
-
-  // ── Deprecation check ────────────────────────────────────────────────────
-  const deprecation = checkDeprecatedModel(model);
-  if (deprecation) {
-    onLog?.(
-      "stderr",
-      `[orager] WARNING: model '${model}' is deprecated (${deprecation.deprecated}). ` +
-      `Suggested replacement: '${deprecation.replacement}'.` +
-      (deprecation.reason ? ` Reason: ${deprecation.reason}` : "") + "\n",
-    );
-    log.warn("deprecated_model", { sessionId: opts.sessionId ?? "(new)", model, replacement: deprecation.replacement });
-  }
-
-  // ── Capability check ─────────────────────────────────────────────────────
-  if (opts.requiredCapabilities && opts.requiredCapabilities.length > 0) {
-    const caps = getModelCapabilities(model);
-    const missing = opts.requiredCapabilities.filter(
-      (c) => !caps[c as keyof typeof caps],
-    );
-    if (missing.length > 0) {
-      onLog?.(
-        "stderr",
-        `[orager] WARNING: model '${model}' may not support: ${missing.join(", ")}. ` +
-        `Run may fail or produce degraded results.\n`,
-      );
-      log.warn("capability_mismatch", {
-        sessionId: opts.sessionId ?? "(new)",
-        model,
-        missing,
-      });
-    }
-  }
-
-  // ── Vision model routing ─────────────────────────────────────────────────
-  // If the prompt contains image_url blocks and the primary model does not
-  // support vision, swap to opts.visionModel for this run.  The model meta
-  // cache is warm at this point (fetched above), so liveModelSupportsVision is
-  // a cheap synchronous lookup — no extra network call.
-  const hasImages = (_effectivePromptContent ?? opts.promptContent ?? []).some((b) => b.type === "image_url");
-  if (hasImages) {
-    const visionOk = liveModelSupportsVision(model);
-    if (visionOk === false) {
-      if (opts.visionModel) {
-        onLog?.(
-          "stderr",
-          `[orager] model '${model}' does not support vision — switching to visionModel '${opts.visionModel}' for this run.\n`,
-        );
-        log.warn("vision_model_swap", {
-          sessionId: opts.sessionId ?? "(new)",
-          originalModel: model,
-          visionModel: opts.visionModel,
-        });
-        model = opts.visionModel;
-      } else {
-        onLog?.(
-          "stderr",
-          `[orager] WARNING: model '${model}' does not support vision and no visionModel is configured. ` +
-          `Images may be silently stripped or cause an API error. ` +
-          `Set visionModel in ~/.orager/config.json or pass --vision-model.\n`,
-        );
-        log.warn("vision_not_supported", {
-          sessionId: opts.sessionId ?? "(new)",
-          model,
-          message: "no visionModel configured",
-        });
-      }
-    } else if (visionOk === null) {
-      // Could not verify from cache — soft warning only, proceed as-is.
-      onLog?.(
-        "stderr",
-        `[orager] WARNING: could not verify vision support for '${model}' — proceeding. ` +
-        `If the run fails, set visionModel in config.\n`,
-      );
-    }
-    // visionOk === true: confirmed, no action needed.
-  }
-
-  // ── Ollama backend startup check ──────────────────────────────────────────
-  const _ollamaCfg = opts.ollama;
+  // ── Pre-flight: model metadata, deprecation, capability, vision swap, Ollama ─
+  // Extracted to loop-preflight.ts (Sprint 6 decomposition).
+  // runPreflight may swap `model` (vision model routing) and returns the Ollama URL.
   let _ollamaBaseUrl: string | undefined;
-  if (_ollamaCfg?.enabled) {
-    const ollamaUrl = resolveOllamaBaseUrl(_ollamaCfg);
-    const running = await isOllamaRunning(ollamaUrl);
-    if (!running) {
-      const msg = `[orager] Ollama is not running at ${ollamaUrl}. ` +
-        `Start Ollama with \`ollama serve\` and retry, or set opts.ollama.enabled = false to use OpenRouter.\n`;
-      onLog?.("stderr", msg);
-      throw new Error(`Ollama not reachable at ${ollamaUrl}`);
-    }
-    const ollamaTag = toOllamaTag(model, _ollamaCfg);
-    if (_ollamaCfg.checkModel !== false) {
-      const pulled = await isModelPulled(ollamaTag, ollamaUrl);
-      if (!pulled) {
-        const msg = `[orager] Ollama model "${ollamaTag}" is not pulled. ` +
-          `Run \`ollama pull ${ollamaTag}\` then retry.\n`;
-        onLog?.("stderr", msg);
-        throw new Error(`Ollama model "${ollamaTag}" not pulled`);
-      }
-    }
-    _ollamaBaseUrl = ollamaUrl;
-    onLog?.("stderr", `[orager] using local Ollama backend: ${ollamaTag} @ ${ollamaUrl}\n`);
-  }
-
-  // Log if direct Anthropic mode is active (bypasses OpenRouter)
-  if (!_ollamaBaseUrl && shouldUseDirect(model)) {
-    onLog?.("stderr", `[orager] using direct Anthropic API for model ${model} (ANTHROPIC_API_KEY is set)\n`);
-  }
-
-  // ── Tool use capability check ─────────────────────────────────────────────
-  // Prefer live tool-support data over static regex table
-  const liveToolSupport = liveModelSupportsTools(model);
-  if (liveToolSupport === false) {
-    onLog?.("stderr", `[orager] WARNING: model '${model}' does not support tool/function calling (confirmed via OpenRouter model metadata).\n`);
-  } else if (liveToolSupport === null && !getModelCapabilities(model).toolUse) {
-    onLog?.("stderr", `[orager] WARNING: model '${model}' may not support tool/function calling (based on static table).\n`);
-  }
+  ({ model, ollamaBaseUrl: _ollamaBaseUrl } = await runPreflight(
+    model,
+    apiKey,
+    opts,
+    opts.sessionId ?? "(new)",
+    _effectivePromptContent ?? opts.promptContent,
+    onLog,
+  ));
+  const contextWindow = getContextWindow(model);
 
   // Per-invocation tool result cache (never persisted). Capped at 200 entries
   // (FIFO eviction) to prevent unbounded memory growth on long read-heavy runs.
@@ -1244,285 +1131,32 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   // File change tracking
   const filesChanged = new Set<string>();
 
-  // Helper: execute a single tool call, returning its result content and error flag.
-  // Never throws — all errors are captured as error tool results.
+  // ── Tool execution context (shared across all executeOne calls in this run) ──
+  // Passed by reference so mutable sets/maps (filesChanged, toolMetrics, cache)
+  // are updated in-place from loop-executor.ts without needing closure capture.
+  const _toolExecCtx: ToolExecCtx = {
+    allTools,
+    opts,
+    effectiveOpts,
+    cwd,
+    sessionId,
+    filesChanged,
+    toolResultCache,
+    setCached,
+    toolMetrics,
+    _hookOpts,
+    _effectiveToolTimeout,
+    onLog,
+  };
+
+  // Helper: execute a single tool call. Delegates to loop-executor.ts.
+  // Captures _pendingApprovalRequest from the result into the loop-level variable.
   async function executeOne(toolCall: ToolCall): Promise<{ id: string; content: string; isError: boolean; imageUrl?: string; _approvalPending?: true }> {
-    const toolName = toolCall.function.name;
-    const executor = allTools.find((t) => t.definition.function.name === toolName)
-      ?? (toolName === PLAN_MODE_TOOL_NAME ? exitPlanModeTool : undefined);
-
-    if (!executor) {
-      return { id: toolCall.id, content: `Unknown tool: ${toolName}`, isError: true };
+    const result = await _executeOneImpl(toolCall, _toolExecCtx, inPlanMode);
+    if (result._pendingApprovalRequest) {
+      pendingApprovalRequest = result._pendingApprovalRequest;
     }
-
-    // ── Plan mode enforcement ─────────────────────────────────────────────────
-    // Blocks non-readonly tools until exit_plan_mode is called.  The tool list
-    // sent to the LLM is already restricted, but this guard prevents misbehaving
-    // or adversarially injected tool calls from sneaking through.
-    if (inPlanMode && toolName !== PLAN_MODE_TOOL_NAME && !executor.definition.readonly) {
-      return {
-        id: toolCall.id,
-        content: `Tool '${toolName}' is not available in plan mode. ` +
-          "Call exit_plan_mode first to enable full tool execution.",
-        isError: true,
-      };
-    }
-
-    let parsedInput: Record<string, unknown>;
-    try {
-      parsedInput = JSON.parse(toolCall.function.arguments) as Record<string, unknown>;
-    } catch {
-      return {
-        id: toolCall.id,
-        content: `Invalid JSON arguments for tool ${toolName}: ${toolCall.function.arguments}`,
-        isError: true,
-      };
-    }
-
-    // ── File change tracking ──────────────────────────────────────────────
-    if (opts.trackFileChanges) {
-      const filePathTools = new Set(["write_file", "edit_file", "edit_files", "delete_file"]);
-      if (filePathTools.has(toolName)) {
-        const p = parsedInput["path"] as string | undefined;
-        if (p) {
-          const abs = path.isAbsolute(p) ? p : path.join(cwd, p);
-          filesChanged.add(abs);
-        }
-        // edit_files has an array of files
-        if (toolName === "edit_files" && Array.isArray(parsedInput["files"])) {
-          for (const f of parsedInput["files"] as Array<{ path?: string }>) {
-            if (f.path) {
-              const abs = path.isAbsolute(f.path) ? f.path : path.join(cwd, f.path);
-              filesChanged.add(abs);
-            }
-          }
-        }
-      }
-    }
-
-    // ── Tool result cache (read-only tools only) ─────────────────────────────
-    // Use the explicit readonly flag on the tool definition only.
-    // The old name-pattern heuristic (isReadOnlyTool) has been removed to
-    // prevent false cache hits on write tools that happen to contain "get"/"list"
-    // in their name.  Tools without readonly: true are never cached.
-    const readOnly = executor.definition.readonly === true;
-    const sortedArgs = Object.fromEntries(
-      Object.entries(parsedInput).sort(([a], [b]) => a.localeCompare(b)),
-    );
-    const cacheKey = `${toolName}:${JSON.stringify(sortedArgs)}`;
-
-    if (readOnly) {
-      const cached = toolResultCache.get(cacheKey);
-      if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
-        return { id: toolCall.id, content: cached.result, isError: false };
-      }
-    }
-
-    // ── Delegated tool ──────────────────────────────────────────────────────
-    if (executor.execute === false) {
-      if (opts.onToolCall) {
-        auditApproval({
-          ts: new Date().toISOString(),
-          sessionId,
-          toolName,
-          inputSummary: parsedInput,
-          decision: "delegated",
-          mode: "delegated",
-        });
-        const delegatedStart = Date.now();
-        try {
-          const delegatedTimeoutMs = _effectiveToolTimeout(toolName);
-          const delegatedPromise = opts.onToolCall(toolName, parsedInput);
-          const result = delegatedTimeoutMs != null
-            ? await Promise.race([
-                delegatedPromise,
-                new Promise<never>((_, reject) =>
-                  setTimeout(
-                    () => reject(new Error(`Delegated tool '${toolName}' timed out after ${delegatedTimeoutMs}ms`)),
-                    delegatedTimeoutMs,
-                  ),
-                ),
-              ])
-            : await delegatedPromise;
-          const content = result ?? "(delegated tool returned no result)";
-          const isError = result === null;
-          if (readOnly && !isError) {
-            setCached(cacheKey, { result: content, timestamp: Date.now() });
-          } else if (!readOnly) {
-            toolResultCache.clear();
-          }
-          logToolCall({
-            event: "tool_call",
-            ts: new Date().toISOString(),
-            sessionId,
-            toolName,
-            inputSummary: parsedInput,
-            isError,
-            durationMs: Date.now() - delegatedStart,
-            resultSummary: String(content).slice(0, 200),
-          });
-          return { id: toolCall.id, content, isError };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          logToolCall({
-            event: "tool_call",
-            ts: new Date().toISOString(),
-            sessionId,
-            toolName,
-            inputSummary: parsedInput,
-            isError: true,
-            durationMs: Date.now() - delegatedStart,
-            resultSummary: `error: ${msg}`.slice(0, 200),
-          });
-          return { id: toolCall.id, content: `Delegated tool '${toolName}' threw: ${msg}`, isError: true };
-        }
-      }
-      return {
-        id: toolCall.id,
-        content: `Tool '${toolName}' requires external handling but no onToolCall handler was provided`,
-        isError: true,
-      };
-    }
-
-    // ── Approval check ──────────────────────────────────────────────────────
-    if (opts.dangerouslySkipPermissions) {
-      auditApproval({
-        ts: new Date().toISOString(),
-        sessionId,
-        toolName,
-        inputSummary: parsedInput,
-        decision: "skipped_permissions",
-        mode: "skip_permissions",
-      });
-    } else if (effectiveOpts.requireApproval != null) {
-      const needsApproval =
-        effectiveOpts.requireApproval === "all" ||
-        (Array.isArray(effectiveOpts.requireApproval) && effectiveOpts.requireApproval.includes(toolName));
-
-      if (needsApproval) {
-        if (opts.approvalMode === "question") {
-          pendingApprovalRequest = {
-            toolCallId: toolCall.id,
-            toolName,
-            input: parsedInput,
-          };
-          auditApproval({
-            ts: new Date().toISOString(),
-            sessionId,
-            toolName,
-            inputSummary: parsedInput,
-            decision: "approved", // will be resolved on resume
-            mode: "question",
-          });
-          return { id: toolCall.id, content: `[approval pending]`, isError: false, _approvalPending: true as const };
-        }
-
-        const approvalStart = Date.now();
-        const approve = opts.onApprovalRequest
-          ? await opts.onApprovalRequest(toolName, parsedInput)
-          : await promptApproval(toolName, parsedInput, opts.approvalTimeoutMs);
-        const approvalDurationMs = Date.now() - approvalStart;
-
-        auditApproval({
-          ts: new Date().toISOString(),
-          sessionId,
-          toolName,
-          inputSummary: parsedInput,
-          decision: approve ? "approved" : "denied",
-          mode: opts.onApprovalRequest ? "callback" : "tty",
-          durationMs: approvalDurationMs,
-        });
-
-        if (!approve) {
-          // ── ToolDenied hook ─────────────────────────────────────────────
-          if (effectiveOpts.hooks?.ToolDenied) {
-            await fireHooks("ToolDenied", effectiveOpts.hooks.ToolDenied, { event: "ToolDenied", sessionId, toolName, toolInput: parsedInput, ts: new Date().toISOString() }, _hookOpts, (msg) => onLog?.("stderr", msg));
-          }
-          return { id: toolCall.id, content: `Tool '${toolName}' was denied by the user`, isError: true };
-        }
-      }
-    }
-
-    // ── PreToolCall hook ──────────────────────────────────────────────────
-    if (effectiveOpts.hooks?.PreToolCall) {
-      const _pr = await fireHooks("PreToolCall", effectiveOpts.hooks.PreToolCall, { event: "PreToolCall", sessionId, toolName, toolInput: parsedInput, ts: new Date().toISOString() }, _hookOpts, (msg) => onLog?.("stderr", msg));
-      if (!_pr.ok && effectiveOpts.hookErrorMode === "fail") {
-        return { id: toolCall.id, content: `PreToolCall hook failed: ${_pr.error}`, isError: true };
-      }
-    }
-
-    const executeFn = executor.execute as Exclude<typeof executor.execute, false>;
-    const toolResult = await withSpan(
-      `tool.${toolName}`,
-      { "orager.tool": toolName, "orager.session_id": sessionId },
-      async () => {
-        const metricStart = Date.now();
-        let metricIsError = false;
-        let metricResultSummary: string | undefined;
-        try {
-          const toolTimeoutMs = _effectiveToolTimeout(toolName);
-          const toolExecOpts = { sandboxRoot: opts.sandboxRoot, bashPolicy: effectiveOpts.bashPolicy, sessionId, additionalEnv: opts.env };
-          const result = toolTimeoutMs != null
-            ? await Promise.race([
-                executeFn(parsedInput, cwd, toolExecOpts),
-                new Promise<never>((_, reject) =>
-                  setTimeout(() => reject(new Error(`Tool '${toolName}' timed out after ${toolTimeoutMs}ms`)), toolTimeoutMs),
-                ),
-              ])
-            : await executeFn(parsedInput, cwd, toolExecOpts);
-          if (readOnly && !result.isError) {
-            // Store truncated content in cache — prevents untruncated hits from
-            // exceeding context limits when consumed by the message assembly loop
-            const MAX_TOOL_CACHE_CHARS = 50_000;
-            setCached(cacheKey, { result: result.content.slice(0, MAX_TOOL_CACHE_CHARS), timestamp: Date.now() });
-          } else if (!readOnly) {
-            toolResultCache.clear();
-          }
-          metricIsError = result.isError;
-          metricResultSummary = result.content.slice(0, 200);
-          return { id: toolCall.id, content: result.content, isError: result.isError, imageUrl: result.imageUrl };
-        } catch (err) {
-          metricIsError = true;
-          const msg = err instanceof Error ? err.message : String(err);
-          metricResultSummary = `error: ${msg}`.slice(0, 200);
-          // ── ToolTimeout hook ──────────────────────────────────────────────
-          if (msg.includes("timed out") && effectiveOpts.hooks?.ToolTimeout) {
-            await fireHooks("ToolTimeout", effectiveOpts.hooks.ToolTimeout, { event: "ToolTimeout", sessionId, toolName, toolInput: parsedInput, isError: true, ts: new Date().toISOString() }, _hookOpts, (m) => onLog?.("stderr", m));
-          }
-          return { id: toolCall.id, content: `Tool threw an unexpected error: ${msg}`, isError: true };
-        } finally {
-          const elapsed = Date.now() - metricStart;
-          const m = toolMetrics.get(toolName) ?? { calls: 0, errors: 0, totalMs: 0 };
-          m.calls++;
-          if (metricIsError) m.errors++;
-          m.totalMs += elapsed;
-          toolMetrics.set(toolName, m);
-          // ── OTel metrics: tool call counts ──────────────────────────────
-          recordToolCall(toolName, metricIsError);
-          // ── Structured tool-call audit log ──────────────────────────────
-          logToolCall({
-            event: "tool_call",
-            ts: new Date().toISOString(),
-            sessionId,
-            toolName,
-            inputSummary: parsedInput,
-            isError: metricIsError,
-            durationMs: elapsed,
-            resultSummary: metricResultSummary,
-          });
-        }
-      },
-    );
-
-    // ── PostToolCall hook ─────────────────────────────────────────────────
-    if (effectiveOpts.hooks?.PostToolCall) {
-      const _por = await fireHooks("PostToolCall", effectiveOpts.hooks.PostToolCall, { event: "PostToolCall", sessionId, toolName, toolInput: parsedInput, isError: toolResult.isError, ts: new Date().toISOString() }, _hookOpts, (msg) => onLog?.("stderr", msg));
-      if (!_por.ok && effectiveOpts.hookErrorMode === "fail") {
-        return { id: toolCall.id, content: `PostToolCall hook failed: ${_por.error}`, isError: true };
-      }
-    }
-
-    return toolResult;
+    return result;
   }
 
   const _sessionStartMs = Date.now();
