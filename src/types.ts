@@ -817,6 +817,8 @@ export interface CliOptions {
   tagToolOutputs?: boolean;
   /** Enable auto-memory tools (read_memory, write_memory, list_memories). */
   autoMemory?: boolean;
+  /** Route LLM calls to a local Ollama server instead of OpenRouter. */
+  ollama?: OllamaConfig;
 }
 
 // ── Bash policy ──────────────────────────────────────────────────────────────
