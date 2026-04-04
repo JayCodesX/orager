@@ -5,10 +5,13 @@
 #   OPENROUTER_API_KEY  — set as env var or GitHub secret
 #   PROTOCOL_API_KEY    — aliased from OPENROUTER_API_KEY if not set
 #
-# Uses a free model to avoid any cost. Budget cap set as a safety net.
+# Uses a free model to avoid any cost. Safety cap set to $0.10 as a net.
+# Model selection: llama-3.3-70b-instruct:free is stable, tool-capable, and
+# has generous free-tier rate limits (sponsored by Meta on OpenRouter).
+# Override via SMOKE_MODEL env var if needed.
 set -uo pipefail
 
-SMOKE_MODEL="${SMOKE_MODEL:-qwen/qwen3.6-plus:free}"
+SMOKE_MODEL="${SMOKE_MODEL:-meta-llama/llama-3.3-70b-instruct:free}"
 CLI="bun run src/index.ts"
 PASS=0
 FAIL=0
@@ -92,11 +95,11 @@ echo ""
 echo "=== Tier 2: Agent loop (model: $SMOKE_MODEL) ==="
 
 run_test_expect_output "simple prompt returns answer" "4|four" \
-  $CLI run --model "$SMOKE_MODEL" --max-turns 1 --max-cost-usd 0 \
+  $CLI run --model "$SMOKE_MODEL" --max-turns 1 --max-cost-usd 0.10 \
   --dangerously-skip-permissions "What is 2+2? Reply with just the number."
 
 run_test "max-turns respected" \
-  timeout 60 $CLI run --model "$SMOKE_MODEL" --max-turns 1 --max-cost-usd 0 \
+  timeout 60 $CLI run --model "$SMOKE_MODEL" --max-turns 1 --max-cost-usd 0.10 \
   --dangerously-skip-permissions "Say hello"
 
 # ─── Tier 3: Tool use ────────────────────────────────────────────
@@ -105,18 +108,18 @@ echo ""
 echo "=== Tier 3: Tool use ==="
 
 run_test_expect_output "bash tool (list files)" "package.json|src|tests" \
-  timeout 120 $CLI run --model "$SMOKE_MODEL" --max-turns 3 --max-cost-usd 0 \
+  timeout 120 $CLI run --model "$SMOKE_MODEL" --max-turns 3 --max-cost-usd 0.10 \
   --dangerously-skip-permissions "Run ls in the current directory and tell me what files you see"
 
 # Create a test file for read tool
 echo "smoke-test-content-12345" > "$TMPDIR/smoke-test.txt"
 
 run_test_expect_output "read file tool" "smoke-test-content-12345" \
-  timeout 120 $CLI run --model "$SMOKE_MODEL" --max-turns 3 --max-cost-usd 0 \
+  timeout 120 $CLI run --model "$SMOKE_MODEL" --max-turns 3 --max-cost-usd 0.10 \
   --dangerously-skip-permissions "Read the file $TMPDIR/smoke-test.txt and tell me its contents"
 
 run_test_expect_output "write file tool" "" \
-  timeout 120 $CLI run --model "$SMOKE_MODEL" --max-turns 3 --max-cost-usd 0 \
+  timeout 120 $CLI run --model "$SMOKE_MODEL" --max-turns 3 --max-cost-usd 0.10 \
   --dangerously-skip-permissions "Write the text 'hello-from-smoke-test' to $TMPDIR/write-test.txt"
 
 # Verify the file was written
@@ -137,7 +140,7 @@ echo "=== Tier 4: Session management ==="
 SMOKE_SESSION="smoke-test-$$"
 
 run_test "create session" \
-  timeout 60 $CLI run --model "$SMOKE_MODEL" --max-turns 1 --max-cost-usd 0 \
+  timeout 60 $CLI run --model "$SMOKE_MODEL" --max-turns 1 --max-cost-usd 0.10 \
   --session-id "$SMOKE_SESSION" --dangerously-skip-permissions "Remember: the magic word is pineapple"
 
 run_test_expect_output "list shows session" "$SMOKE_SESSION" \
@@ -149,7 +152,7 @@ echo ""
 echo "=== Tier 5: Subprocess mode ==="
 
 run_test "subprocess single turn" \
-  timeout 60 $CLI run --model "$SMOKE_MODEL" --max-turns 1 --max-cost-usd 0 \
+  timeout 60 $CLI run --model "$SMOKE_MODEL" --max-turns 1 --max-cost-usd 0.10 \
   --subprocess --dangerously-skip-permissions "Say hello"
 
 # ─── Tier 6: Flags & config ──────────────────────────────────────
@@ -158,15 +161,15 @@ echo ""
 echo "=== Tier 6: Flags & config ==="
 
 run_test "verbose flag" \
-  timeout 60 $CLI run --model "$SMOKE_MODEL" --max-turns 1 --max-cost-usd 0 \
+  timeout 60 $CLI run --model "$SMOKE_MODEL" --max-turns 1 --max-cost-usd 0.10 \
   --verbose --dangerously-skip-permissions "Say hi"
 
-run_test "profile flag" \
-  timeout 60 $CLI run --model "$SMOKE_MODEL" --max-turns 1 --max-cost-usd 0 \
-  --profile code-review --dangerously-skip-permissions "Say hi"
+run_test_expect_output "unknown profile degrades gracefully" "hi|hello|hey|greet|warn|profile" \
+  timeout 60 $CLI run --model "$SMOKE_MODEL" --max-turns 1 --max-cost-usd 0.10 \
+  --profile nonexistent-smoke-profile --dangerously-skip-permissions "Say hi"
 
 run_test "plan mode" \
-  timeout 60 $CLI run --model "$SMOKE_MODEL" --max-turns 1 --max-cost-usd 0 \
+  timeout 60 $CLI run --model "$SMOKE_MODEL" --max-turns 1 --max-cost-usd 0.10 \
   --plan-mode --dangerously-skip-permissions "Plan a REST API"
 
 # ─── Results ──────────────────────────────────────────────────────

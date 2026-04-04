@@ -29,7 +29,9 @@ jobs:
 
     env:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-      SMOKE_MODEL: "qwen/qwen3.6-plus:free"
+      # llama-3.3-70b-instruct:free — stable, tool-capable, Meta-sponsored free tier.
+      # Override via repository variable SMOKE_MODEL if this model is ever retired.
+      SMOKE_MODEL: ${{ vars.SMOKE_MODEL || 'meta-llama/llama-3.3-70b-instruct:free' }}
 
     steps:
       - name: Checkout
@@ -50,6 +52,25 @@ jobs:
             exit 1
           fi
           echo "API key is set (${#OPENROUTER_API_KEY} chars)"
+          echo "Smoke model: $SMOKE_MODEL"
+
+      - name: Probe model availability
+        run: |
+          # Quick sanity check — if the model is rate-limited or removed, fail fast
+          # with a clear message rather than timing out across all test tiers.
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"model\":\"$SMOKE_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}" \
+            https://openrouter.ai/api/v1/chat/completions || echo "000")
+          if [ "$STATUS" = "429" ]; then
+            echo "::warning::Model $SMOKE_MODEL is rate-limited (429). Smoke tests may fail."
+          elif [ "$STATUS" = "404" ] || [ "$STATUS" = "400" ]; then
+            echo "::error::Model $SMOKE_MODEL is unavailable (HTTP $STATUS). Update SMOKE_MODEL repo variable."
+            exit 1
+          else
+            echo "Model probe: HTTP $STATUS — OK"
+          fi
 
       - name: Run smoke tests
         run: bash scripts/test-smoke.sh
