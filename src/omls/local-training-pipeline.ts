@@ -120,7 +120,7 @@ export async function runLocalTrainingPipeline(
   log("[local] Step 1/6: packaging trajectory batch…\n");
   const skillGen = await getCurrentSkillGeneration();
   const entries = await scanDistillableBuffer(skillGen);
-  const minBatch = cfg.minBatchSize ?? 32;
+  const minBatch = cfg.minBatchSize ?? 8;
   if (entries.length < minBatch) {
     fail(s1, `buffer too small (${entries.length}/${minBatch})`);
     return result;

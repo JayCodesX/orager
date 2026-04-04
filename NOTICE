@@ -1,0 +1,42 @@
+orager
+Copyright 2026 JayCodesX
+
+This product includes software developed by third parties under the following licenses:
+
+--------------------------------------------------------------------------------
+Apache License 2.0
+--------------------------------------------------------------------------------
+
+The following packages are licensed under the Apache License, Version 2.0:
+
+  @opentelemetry/api
+  @opentelemetry/exporter-trace-otlp-http
+  @opentelemetry/resources
+  @opentelemetry/sdk-node
+  @opentelemetry/semantic-conventions
+
+You may obtain a copy of the Apache License at:
+  https://www.apache.org/licenses/LICENSE-2.0
+
+--------------------------------------------------------------------------------
+MIT License
+--------------------------------------------------------------------------------
+
+The following packages are licensed under the MIT License:
+
+  @modelcontextprotocol/sdk  (Copyright Anthropic)
+  sqlite-vec                 (MIT OR Apache-2.0)
+  tiktoken                   (Copyright OpenAI)
+
+--------------------------------------------------------------------------------
+ISC License
+--------------------------------------------------------------------------------
+
+The following packages are licensed under the ISC License:
+
+  split2
+
+--------------------------------------------------------------------------------
+
+Full license texts for all dependencies are available in the node_modules
+directory or at the URLs listed in their respective package.json files.

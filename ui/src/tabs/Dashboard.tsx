@@ -4,49 +4,6 @@ import { type DateRangePreset, presetToFromIso, DATE_RANGE_OPTIONS } from "../da
 
 // ── API types ─────────────────────────────────────────────────────────────────
 
-interface HealthCheck {
-  status: "ok" | "degraded";
-  checks?: Record<string, { ok: boolean; error?: string }>;
-}
-
-interface DaemonStatusResponse {
-  running: boolean;
-  port: number | null;
-  pid: number | null;
-  health: HealthCheck | null;
-  error?: string;
-}
-
-interface ProviderHealth {
-  provider: string;
-  degraded: boolean;
-  errorCount?: number;
-  lastError?: string | null;
-}
-
-interface CircuitBreakerState {
-  state: "closed" | "open" | "half-open";
-  failures: number;
-  lastFailureAt?: string | null;
-}
-
-interface MetricsResponse {
-  running?: boolean;
-  activeRuns?: number;
-  maxConcurrent?: number;
-  completedRuns?: number;
-  errorRuns?: number;
-  uptimeMs?: number;
-  recentModels?: string[];
-  providerHealth?: ProviderHealth[];
-  circuitBreakersByAgent?: Record<string, CircuitBreakerState>;
-  rateLimitState?: {
-    requestsInWindow?: number;
-    limitRpm?: number;
-    windowResetAt?: string;
-  };
-}
-
 interface Session {
   sessionId: string;
   model?: string;
@@ -57,7 +14,6 @@ interface Session {
 }
 
 interface SessionsResponse {
-  running?: boolean;
   sessions?: Session[];
   total?: number;
 }
@@ -94,18 +50,8 @@ interface CreditsResponse {
   is_free_tier?: boolean;
 }
 
-async function fetchStatus(): Promise<DaemonStatusResponse> {
-  const r = await fetch("/api/daemon/status", { headers: authHeaders(), signal: AbortSignal.timeout(4000) });
-  return r.json() as Promise<DaemonStatusResponse>;
-}
-
-async function fetchMetrics(): Promise<MetricsResponse> {
-  const r = await fetch("/api/daemon/metrics", { headers: authHeaders(), signal: AbortSignal.timeout(4000) });
-  return r.json() as Promise<MetricsResponse>;
-}
-
-async function fetchSessions(limit = 20, offset = 0): Promise<SessionsResponse> {
-  const r = await fetch(`/api/daemon/sessions?limit=${limit}&offset=${offset}`, {
+async function fetchSessions(limit = 500, offset = 0): Promise<SessionsResponse> {
+  const r = await fetch(`/api/sessions?limit=${limit}&offset=${offset}`, {
     headers: authHeaders(),
     signal: AbortSignal.timeout(4000),
   });
@@ -123,16 +69,6 @@ async function fetchCredits(): Promise<CreditsResponse> {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function formatUptime(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  if (h > 0) return `${h}h ${m}m`;
-  if (m > 0) return `${m}m ${sec}s`;
-  return `${sec}s`;
-}
 
 function Badge({ label, variant }: { label: string; variant: "green" | "red" | "yellow" | "blue" | "gray" }) {
   const colors: Record<string, React.CSSProperties> = {
@@ -176,8 +112,6 @@ function StatCard({ label, value, sub }: { label: string; value: React.ReactNode
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
-  const [status, setStatus] = useState<DaemonStatusResponse | null>(null);
-  const [metrics, setMetrics] = useState<MetricsResponse | null>(null);
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [credits, setCredits] = useState<CreditsResponse | null>(null);
   const [omlsStatus, setOmlsStatus] = useState<OmlsStatusResponse>(null);
@@ -203,19 +137,6 @@ export default function Dashboard() {
   const totalCost = useMemo(() => {
     return filteredSessions.reduce((sum, s) => sum + (s.cumulativeCostUsd ?? 0), 0);
   }, [filteredSessions]);
-
-  const refresh = useCallback(async () => {
-    try {
-      const [s, m] = await Promise.all([fetchStatus(), fetchMetrics()]);
-      setStatus(s);
-      setMetrics(m);
-      setLastRefreshed(new Date());
-    } catch {
-      // network errors are non-fatal; keep showing stale data
-    } finally {
-      setLoading(false);
-    }
-  }, []);
 
   const loadSessions = useCallback(async () => {
     try {
@@ -250,21 +171,29 @@ export default function Dashboard() {
     }
   }, []);
 
-  // Initial load + polling
+  const refresh = useCallback(async () => {
+    try {
+      await Promise.all([loadSessions(), loadConfig(), loadCredits(), loadOmlsStatus()]);
+      setLastRefreshed(new Date());
+    } catch {
+      // non-fatal
+    } finally {
+      setLoading(false);
+    }
+  }, [loadSessions, loadConfig, loadCredits, loadOmlsStatus]);
+
+  // Initial load
   useEffect(() => {
     void refresh();
-    void loadSessions();
-    void loadConfig();
-    void loadCredits();
-    void loadOmlsStatus();
-  }, [refresh, loadSessions, loadConfig, loadCredits, loadOmlsStatus]);
+  }, [refresh]);
 
+  // Polling
   useEffect(() => {
     if (!autoRefresh) {
       if (intervalRef.current) clearInterval(intervalRef.current);
       return;
     }
-    intervalRef.current = setInterval(() => { void refresh(); }, 5000);
+    intervalRef.current = setInterval(() => { void refresh(); }, 15000);
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [autoRefresh, refresh]);
 
@@ -274,7 +203,7 @@ export default function Dashboard() {
       if (document.hidden) {
         if (intervalRef.current) clearInterval(intervalRef.current);
       } else if (autoRefresh) {
-        intervalRef.current = setInterval(() => { void refresh(); }, 5000);
+        intervalRef.current = setInterval(() => { void refresh(); }, 15000);
         void refresh();
       }
     };
@@ -282,25 +211,29 @@ export default function Dashboard() {
     return () => document.removeEventListener("visibilitychange", handler);
   }, [autoRefresh, refresh]);
 
+  // Count unique models from sessions
+  const recentModels = useMemo(() => {
+    const models = new Set<string>();
+    for (const s of filteredSessions) {
+      if (s.model) models.add(s.model);
+    }
+    return [...models];
+  }, [filteredSessions]);
+
   // Reset page when date range changes
   useEffect(() => { setSessionsPage(0); }, [dateRange]);
 
   if (loading) {
-    return <div className="placeholder"><p>Loading…</p></div>;
+    return <div className="placeholder"><p>Loading...</p></div>;
   }
 
-  const isRunning = status?.running ?? false;
   const totalPages = Math.ceil(sessionsTotal / PAGE_SIZE);
 
   return (
     <div>
       {/* ── Header bar ── */}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
-        {isRunning
-          ? <Badge label="Daemon running" variant="green" />
-          : <Badge label="Daemon offline" variant="red" />}
-        {status?.port && <span style={{ fontSize: 12, color: "var(--text-muted)" }}>port {status.port}</span>}
-        {status?.pid  && <span style={{ fontSize: 12, color: "var(--text-muted)" }}>pid {status.pid}</span>}
+        <Badge label="orager" variant="blue" />
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
           {lastRefreshed && (
             <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
@@ -311,24 +244,22 @@ export default function Dashboard() {
             <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} style={{ accentColor: "var(--accent)" }} />
             Auto-refresh
           </label>
-          <button className="btn-ghost" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => { void refresh(); void loadSessions(); }}>
+          <button className="btn-ghost" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => { void refresh(); }}>
             Refresh
           </button>
         </div>
       </div>
 
-      {!isRunning && (
-        <div className="card" style={{ marginBottom: 20 }}>
-          <div style={{ padding: "20px 16px", color: "var(--text-muted)", fontSize: 13 }}>
-            The daemon is not running. Start it with{" "}
-            <code style={{ background: "var(--bg-input)", padding: "2px 6px", borderRadius: 4, color: "var(--text)" }}>
-              orager --serve
-            </code>{" "}
-            then refresh.
-            {status?.error && <div style={{ marginTop: 8, color: "var(--warn)" }}>{status.error}</div>}
-          </div>
-        </div>
-      )}
+      {/* ── Stat cards ── */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 12, marginBottom: 20 }}>
+        <StatCard label="Sessions" value={sessionsTotal} />
+        <StatCard
+          label="Total cost"
+          value={`$${totalCost.toFixed(4)}`}
+          sub={config?.maxCostUsd ? `limit $${config.maxCostUsd}` : undefined}
+        />
+        <StatCard label="Models used" value={recentModels.length} />
+      </div>
 
       {/* ── Configured models ── */}
       {config && (
@@ -447,128 +378,18 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* ── Stat cards ── */}
-      {isRunning && metrics && (
-        <>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 12, marginBottom: 20 }}>
-            <StatCard
-              label="Active runs"
-              value={`${metrics.activeRuns ?? 0} / ${metrics.maxConcurrent ?? "–"}`}
-            />
-            <StatCard label="Completed" value={metrics.completedRuns ?? 0} />
-            <StatCard label="Errors" value={metrics.errorRuns ?? 0} />
-            <StatCard
-              label="Uptime"
-              value={metrics.uptimeMs !== undefined ? formatUptime(metrics.uptimeMs) : "–"}
-            />
-            <StatCard
-              label="Total cost"
-              value={`$${totalCost.toFixed(4)}`}
-              sub={config?.maxCostUsd ? `limit $${config.maxCostUsd}` : undefined}
-            />
-            {metrics.rateLimitState && (
-              <StatCard
-                label="Rate (rpm)"
-                value={`${metrics.rateLimitState.requestsInWindow ?? 0} / ${metrics.rateLimitState.limitRpm ?? "–"}`}
-              />
-            )}
+      {/* ── Recent models ── */}
+      {recentModels.length > 0 && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="card-header" style={{ cursor: "default" }}>
+            <span className="card-title">Models used</span>
           </div>
-
-          {/* Recent models */}
-          {(metrics.recentModels?.length ?? 0) > 0 && (
-            <div className="card" style={{ marginBottom: 16 }}>
-              <div className="card-header" style={{ cursor: "default" }}>
-                <span className="card-title">Recent models</span>
-              </div>
-              <div style={{ padding: "10px 16px", display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {metrics.recentModels!.map((m) => (
-                  <Badge key={m} label={m} variant="blue" />
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Provider health */}
-          {(metrics.providerHealth?.length ?? 0) > 0 && (
-            <div className="card" style={{ marginBottom: 16 }}>
-              <div className="card-header" style={{ cursor: "default" }}>
-                <span className="card-title">Provider health</span>
-              </div>
-              <div style={{ padding: "10px 16px", display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {metrics.providerHealth!.map((p) => (
-                  <Badge
-                    key={p.provider}
-                    label={p.provider}
-                    variant={p.degraded ? "red" : "green"}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Circuit breakers */}
-          {metrics.circuitBreakersByAgent && Object.keys(metrics.circuitBreakersByAgent).length > 0 && (
-            <div className="card" style={{ marginBottom: 16 }}>
-              <div className="card-header" style={{ cursor: "default" }}>
-                <span className="card-title">Circuit breakers</span>
-              </div>
-              <div style={{ padding: "0 0 4px" }}>
-                <table className="perm-table">
-                  <thead>
-                    <tr>
-                      <th>Agent</th>
-                      <th>State</th>
-                      <th>Failures</th>
-                      <th>Last failure</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {Object.entries(metrics.circuitBreakersByAgent).map(([agent, cb]) => (
-                      <tr key={agent}>
-                        <td style={{ fontFamily: "monospace", fontSize: 12 }}>{agent}</td>
-                        <td>
-                          <Badge
-                            label={cb.state}
-                            variant={cb.state === "closed" ? "green" : cb.state === "open" ? "red" : "yellow"}
-                          />
-                        </td>
-                        <td>{cb.failures}</td>
-                        <td style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                          {cb.lastFailureAt ? new Date(cb.lastFailureAt).toLocaleString() : "—"}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* Health checks */}
-          {status?.health?.checks && (
-            <div className="card" style={{ marginBottom: 16 }}>
-              <div className="card-header" style={{ cursor: "default" }}>
-                <span className="card-title">Health checks</span>
-              </div>
-              <div style={{ padding: "0 0 4px" }}>
-                <table className="perm-table">
-                  <thead>
-                    <tr><th>Check</th><th>Status</th><th>Detail</th></tr>
-                  </thead>
-                  <tbody>
-                    {Object.entries(status.health.checks).map(([name, result]) => (
-                      <tr key={name}>
-                        <td>{name}</td>
-                        <td><Badge label={result.ok ? "ok" : "fail"} variant={result.ok ? "green" : "red"} /></td>
-                        <td style={{ fontSize: 12, color: "var(--text-muted)" }}>{result.error ?? "—"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </>
+          <div style={{ padding: "10px 16px", display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {recentModels.map((m) => (
+              <Badge key={m} label={m} variant="blue" />
+            ))}
+          </div>
+        </div>
       )}
 
       {/* ── Sessions ── */}
@@ -585,7 +406,7 @@ export default function Dashboard() {
         </div>
         {sessions.length === 0 ? (
           <div style={{ padding: "20px 16px", color: "var(--text-muted)", fontSize: 13 }}>
-            {isRunning ? "No sessions found." : "Start the daemon to see sessions."}
+            No sessions found. Run <code style={{ background: "var(--bg-input)", padding: "2px 6px", borderRadius: 4, color: "var(--text)" }}>orager run "prompt"</code> or <code style={{ background: "var(--bg-input)", padding: "2px 6px", borderRadius: 4, color: "var(--text)" }}>orager chat</code> to create one.
           </div>
         ) : (
           <div style={{ overflowX: "auto" }}>
@@ -622,13 +443,13 @@ export default function Dashboard() {
             {totalPages > 1 && (
               <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", borderTop: "1px solid var(--border)" }}>
                 <button className="btn-ghost" style={{ padding: "4px 10px", fontSize: 12 }} disabled={sessionsPage === 0} onClick={() => setSessionsPage((p) => p - 1)}>
-                  ← Prev
+                  Prev
                 </button>
                 <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
                   Page {sessionsPage + 1} of {totalPages}
                 </span>
                 <button className="btn-ghost" style={{ padding: "4px 10px", fontSize: 12 }} disabled={sessionsPage >= totalPages - 1} onClick={() => setSessionsPage((p) => p + 1)}>
-                  Next →
+                  Next
                 </button>
               </div>
             )}

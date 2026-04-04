@@ -15,7 +15,7 @@
 
 import type { Message } from "./types.js";
 import type { MemoryEntry } from "./memory.js";
-import { callOpenRouter } from "./openrouter.js";
+import { getOpenRouterProvider } from "./providers/index.js";
 
 // ── Session summarization ─────────────────────────────────────────────────────
 
@@ -190,7 +190,7 @@ export async function summarizeSession(
 
   const sessionText = safeLines.join("\n");
 
-  const result = await callOpenRouter({
+  const result = await getOpenRouterProvider().chat({
     apiKey,
     model: summarizeModel || model,
     messages: [
@@ -245,7 +245,7 @@ export async function distillMemoryEntries(
     )
     .join("\n");
 
-  const result = await callOpenRouter({
+  const result = await getOpenRouterProvider().chat({
     apiKey,
     model: summarizeModel || model,
     messages: [

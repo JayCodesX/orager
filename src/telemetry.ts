@@ -61,10 +61,37 @@ let _sdkInitialized = false;
 
 /**
  * Initialize the OTEL SDK. Call once at process start (CLI entry point / daemon start).
- * No-op if OTEL_EXPORTER_OTLP_ENDPOINT is not set.  Idempotent — safe to call more than once.
+ *
+ * Activation priority (first match wins):
+ *   1. `telemetryConfig.enabled === false` → always disabled (explicit opt-out)
+ *   2. `telemetryConfig.enabled === true` + `telemetryConfig.endpoint` → use that endpoint
+ *   3. `OTEL_EXPORTER_OTLP_ENDPOINT` env var set → use env var (legacy / CI)
+ *   4. No config and no env var → no-op
+ *
+ * Idempotent — safe to call more than once.
  */
-export async function initTelemetry(serviceName = "orager"): Promise<void> {
-  if (!process.env["OTEL_EXPORTER_OTLP_ENDPOINT"]) return;
+export async function initTelemetry(
+  serviceName = "orager",
+  telemetryConfig?: { enabled?: boolean; endpoint?: string },
+): Promise<void> {
+  // Explicit opt-out wins over everything
+  if (telemetryConfig?.enabled === false) return;
+
+  // Determine endpoint: settings file > env var
+  const endpoint = telemetryConfig?.endpoint ?? process.env["OTEL_EXPORTER_OTLP_ENDPOINT"];
+
+  // If enabled is not explicitly true, require an endpoint to be configured
+  if (!telemetryConfig?.enabled && !endpoint) return;
+
+  // If enabled=true but no endpoint, warn and bail
+  if (telemetryConfig?.enabled && !endpoint) {
+    process.stderr.write(
+      `[orager] WARNING: telemetry.enabled=true but no endpoint configured.\n` +
+      `[orager] Set telemetry.endpoint in settings.json or OTEL_EXPORTER_OTLP_ENDPOINT env var.\n`,
+    );
+    return;
+  }
+
   if (_sdkInitialized) return; // prevent duplicate SDK + SIGTERM handler registration
   _sdkInitialized = true;
 
@@ -78,6 +105,12 @@ export async function initTelemetry(serviceName = "orager"): Promise<void> {
     // Use a plain object cast rather than inferring from the constructor signature
     // (Parameters<typeof NodeSDK.prototype.constructor> resolves to `Function`
     // in some TS / SDK version combinations and causes a type error).
+    // If endpoint comes from settings.json, set the env var so the OTLP exporter picks it up.
+    // The OTLP exporter reads OTEL_EXPORTER_OTLP_ENDPOINT by convention.
+    if (endpoint && !process.env["OTEL_EXPORTER_OTLP_ENDPOINT"]) {
+      process.env["OTEL_EXPORTER_OTLP_ENDPOINT"] = endpoint;
+    }
+
     const sdkConfig: Record<string, unknown> = {
       traceExporter: new OTLPTraceExporter(),
       serviceName,

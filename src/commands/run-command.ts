@@ -232,9 +232,8 @@ export async function handleRunCommand(
     await trajLogger.finalize().catch(() => { /* non-fatal */ });
 
     const skillbank = DEFAULT_SKILLBANK_CONFIG;
-    const isFailed = _runSubtype !== "success" && _runSubtype !== "interrupted" && _runSubtype !== "unknown";
     const _embeddingModel = process.env["ORAGER_EMBEDDING_MODEL"] ?? "";
-    if (skillbank.autoExtract && isFailed && _runSessionId && _embeddingModel) {
+    if (skillbank.autoExtract && _runSessionId && _embeddingModel) {
       const embeddingModel = _embeddingModel;
       const model = opts.model;
       const sid = _runSessionId;

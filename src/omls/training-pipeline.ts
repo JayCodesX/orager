@@ -246,7 +246,7 @@ export async function runTrainingPipeline(opts: PipelineOptions): Promise<Pipeli
     log("Step 1/8: packaging trajectory batch…");
     const skillGen = await getCurrentSkillGeneration();
     const entries = await scanDistillableBuffer(skillGen);
-    const minBatch = cfg.minBatchSize ?? 32;
+    const minBatch = cfg.minBatchSize ?? 8;
     if (entries.length < minBatch) {
       fail(s1, `buffer too small (${entries.length}/${minBatch})`);
       return result;
