@@ -256,13 +256,21 @@ export async function updateSkillOutcomes(
 
 // ── Extraction ────────────────────────────────────────────────────────────────
 
-const EXTRACTION_SYSTEM_PROMPT = `You are extracting a reusable strategy from a failed AI agent run.
-Analyse the trajectory and produce ONE concise skill instruction (≤ 150 words) describing what the agent should do differently on similar tasks in the future.
+const EXTRACTION_SYSTEM_PROMPT = `You are extracting a reusable strategy from an AI agent run.
+Analyse the trajectory and produce ONE concise skill instruction (≤ 150 words) describing a pattern the agent should apply on similar tasks in the future.
+
+Focus on:
+- User corrections or preferences expressed during the run
+- Coding style patterns the user enforced (e.g., control flow style, abstraction level, naming conventions)
+- Strategies that led to successful outcomes
+- Mistakes or anti-patterns the agent should avoid
 
 The instruction must be:
 - Task-agnostic (avoid specific file names, session IDs, or repository names)
 - Actionable (start with a verb phrase: "When X, always Y", "Before X, verify Y", "Never X without first Y")
-- A strategy, not a fact about the specific run
+- A strategy or preference, not a fact about the specific run
+
+If the trajectory contains no learnable pattern (e.g., simple one-shot success with no corrections), output exactly "NO_SKILL".
 
 Output ONLY the instruction text — no preamble, no markdown, no JSON, no explanation.`;
 
@@ -303,12 +311,18 @@ export async function extractSkillFromTrajectory(
     let charCount = 0;
     const CHAR_LIMIT = 8_000; // ~2000 tokens — keeps extraction cheap
 
+    // ── Correction detection counters ────────────────────────────────────────
+    let assistantTurns = 0;
+    let userTurns = 0;
+    let hasFailureResult = false;
+
     for (const line of lines) {
       try {
         const event = JSON.parse(line) as Record<string, unknown>;
         let excerpt: string | null = null;
 
         if (event.type === "assistant") {
+          assistantTurns++;
           // Capture assistant text (first 400 chars per turn)
           const msg = event.message as Record<string, unknown> | undefined;
           if (msg && Array.isArray(msg.content)) {
@@ -319,11 +333,27 @@ export async function extractSkillFromTrajectory(
               }
             }
           }
+        } else if (event.type === "user") {
+          userTurns++;
+          // Capture user text for correction detection
+          const msg = event.message as Record<string, unknown> | undefined;
+          if (msg && Array.isArray(msg.content)) {
+            for (const block of msg.content as Array<Record<string, unknown>>) {
+              if (block.type === "text" && typeof block.text === "string") {
+                excerpt = `[user] ${block.text.slice(0, 400)}`;
+                break;
+              }
+            }
+          }
         } else if (event.type === "tool") {
           // Capture tool name only (not results — no sensitive data sent to LLM)
           excerpt = `[tool:${event.name ?? "?"}]`;
         } else if (event.type === "result") {
-          excerpt = `[result:${event.subtype ?? "?"}] ${String(event.message ?? "").slice(0, 200)}`;
+          const subtype = String(event.subtype ?? "");
+          if (subtype !== "success" && subtype !== "interrupted" && subtype !== "unknown") {
+            hasFailureResult = true;
+          }
+          excerpt = `[result:${subtype}] ${String(event.message ?? "").slice(0, 200)}`;
         }
 
         if (excerpt) {
@@ -335,6 +365,18 @@ export async function extractSkillFromTrajectory(
     }
 
     if (condensed.length === 0) return;
+
+    // ── 1b. Skip extraction if no learnable signal ───────────────────────────
+    // A single-turn success with no user corrections has nothing to learn from.
+    // This saves 1 LLM call + 1 embedding call per clean session.
+    const hasCorrection = userTurns > 0;
+    const isMultiAssistantTurn = assistantTurns > 1;
+    if (!hasCorrection && !isMultiAssistantTurn && !hasFailureResult) {
+      process.stderr.write(
+        `[skillbank] skipping extraction for ${sourceSession}: no corrections or failures detected\n`,
+      );
+      return;
+    }
 
     const trajectoryText = condensed.join("\n");
 
@@ -360,7 +402,7 @@ export async function extractSkillFromTrajectory(
       return;
     }
 
-    if (!skillText || skillText.length < 20) return; // too short to be useful
+    if (!skillText || skillText.length < 20 || skillText === "NO_SKILL") return; // too short, empty, or no learnable pattern
 
     // ── 3. Embed the candidate skill ──────────────────────────────────────────
     let candidateEmbedding: number[];

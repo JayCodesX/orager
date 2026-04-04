@@ -14,6 +14,8 @@ import { runAgentLoop } from "../loop.js";
 import { emit } from "../emit.js";
 import { parseArgs } from "../cli/parse-args.js";
 import { extractFlag } from "./cli-helpers.js";
+import { createTrajectoryLogger, pruneOldTrajectories } from "../trajectory-logger.js";
+import { extractSkillFromTrajectory, trajectoryPath, DEFAULT_SKILLBANK_CONFIG } from "../skillbank.js";
 import type { AgentLoopOptions, TurnModelRule, UserMessageContentBlock } from "../types.js";
 
 export async function handleChatCommand(
@@ -43,6 +45,9 @@ export async function handleChatCommand(
   }
 
   const rl = readline.createInterface({ input: process.stdin, terminal: false });
+
+  const retentionDays = DEFAULT_SKILLBANK_CONFIG.retentionDays;
+  pruneOldTrajectories(retentionDays).catch(() => { /* non-fatal */ });
 
   // ── Build reasoning / provider routing objects ───────────────────────────────
   const reasoning = (opts.reasoningEffort || opts.reasoningMaxTokens || opts.reasoningExclude)
@@ -84,7 +89,10 @@ export async function handleChatCommand(
 
     let capturedSessionId: string | null = null;
 
+    const trajLogger = createTrajectoryLogger(userPrompt, opts.model, process.cwd());
+
     const chatOnEmit = (event: Parameters<typeof emit>[0]) => {
+      trajLogger.onEvent(event);
       if (event.type === "assistant") {
         for (const block of event.message.content) {
           if (block.type === "text") process.stdout.write(block.text);
@@ -165,6 +173,20 @@ export async function handleChatCommand(
       });
     } catch (err) {
       process.stderr.write(`\norager: error: ${err instanceof Error ? err.message : String(err)}\n`);
+    } finally {
+      await trajLogger.finalize().catch(() => { /* non-fatal */ });
+
+      const sid = capturedSessionId ?? sessionId;
+      const _embeddingModel = process.env["ORAGER_EMBEDDING_MODEL"] ?? "";
+      if (DEFAULT_SKILLBANK_CONFIG.autoExtract && sid && _embeddingModel) {
+        extractSkillFromTrajectory(
+          trajectoryPath(sid),
+          sid,
+          opts.model,
+          apiKey,
+          _embeddingModel,
+        ).catch(() => { /* non-fatal */ });
+      }
     }
 
     if (capturedSessionId) {
