@@ -28,13 +28,15 @@ import { exitPlanModeTool, PLAN_MODE_TOOL_NAME } from "./tools/plan.js";
 // path is used in loop-executor.ts (extracted in Sprint 6)
 import { loadSession, saveSession, newSessionId, acquireSessionLock, saveSessionCheckpoint, loadLatestCheckpointByContextId } from "./session.js";
 import { callWithRetry } from "./retry.js";
-import { fetchGenerationMeta, shouldUseDirect, callEmbeddings } from "./openrouter.js";
+import { shouldUseDirect } from "./openrouter.js";
+import { getOpenRouterProvider } from "./providers/index.js";
 // isOllamaRunning, resolveOllamaBaseUrl, toOllamaTag, isModelPulled used in loop-preflight.ts (Sprint 6)
 import { getLiveModelPricing } from "./openrouter-model-meta.js";
 // fetchLiveModelMeta, isLiveModelMetaCacheWarm, liveModelSupportsTools, liveModelSupportsVision used in loop-preflight.ts (Sprint 6)
 import { recordProviderSuccess } from "./provider-health.js";
 import { loadSkillsFromDirs, buildSkillsSystemPrompt, buildSkillTools } from "./skills.js";
 import { retrieveSkills, buildSkillsPromptSection, updateSkillOutcomes } from "./skillbank.js";
+import { localEmbed } from "./local-embeddings.js";
 import { routeRequest, checkConfidenceToken, selectTeachers, checkModalityMismatch } from "./omls/confidence-router.js";
 import { getCurrentEndpoint } from "./omls/together-hosting.js";
 import { resolveLocalAdapterServer } from "./omls/local-adapter-server.js";
@@ -81,6 +83,7 @@ import { recordTokens, recordSession } from "./metrics.js";
 // recordToolCall is used in loop-executor.ts (extracted in Sprint 6)
 import { executeOne as _executeOneImpl, type ToolExecCtx } from "./loop-executor.js";
 import { runPreflight } from "./loop-preflight.js";
+import { isShutdownRequested } from "./shutdown.js";
 
 // ── Cost anomaly detection ────────────────────────────────────────────────────
 //
@@ -486,19 +489,26 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   // ── SkillBank injection (ADR-0006) ────────────────────────────────────────
   // Retrieve top-K learned skills by cosine similarity to the run prompt and
   // inject them as a "## Learned Skills" block. Non-fatal — errors are swallowed.
+  // Embedding priority: local (Transformers.js, free) → OpenRouter API (fallback).
   const _injectedSkillIds: string[] = [];
-  if (opts.skillbank?.enabled !== false && opts.memoryEmbeddingModel && apiKey) {
+  if (opts.skillbank?.enabled !== false) {
     try {
-      let skillQueryVec = getCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt);
+      const embModel = opts.memoryEmbeddingModel ?? "local";
+      let skillQueryVec = getCachedQueryEmbedding(embModel, prompt);
       if (!skillQueryVec) {
-        const vecs = await callEmbeddings(apiKey, opts.memoryEmbeddingModel, [prompt]);
-        skillQueryVec = vecs[0] ?? [];
-        if (skillQueryVec.length > 0) {
-          setCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt, skillQueryVec);
+        // Try local embeddings first (free, fast, no API key needed)
+        skillQueryVec = await localEmbed(prompt);
+        // Fall back to OpenRouter API
+        if (!skillQueryVec && opts.memoryEmbeddingModel && apiKey) {
+          const vecs = await getOpenRouterProvider().callEmbeddings!(apiKey, opts.memoryEmbeddingModel, [prompt]);
+          skillQueryVec = vecs[0] ?? [];
+        }
+        if (skillQueryVec && skillQueryVec.length > 0) {
+          setCachedQueryEmbedding(embModel, prompt, skillQueryVec);
         }
       }
       if (skillQueryVec && skillQueryVec.length > 0) {
-        const learnedSkills = await retrieveSkills(skillQueryVec, opts.skillbank);
+        const learnedSkills = await retrieveSkills(skillQueryVec, opts.skillbank, prompt);
         if (learnedSkills.length > 0) {
           const skillsSection = buildSkillsPromptSection(learnedSkills);
           if (skillsSection) {
@@ -515,21 +525,21 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   // All failures are non-fatal — leaves _rlEndpoint null (use base model).
   let _rlEndpoint: string | null = null;
   let _localAdapterBaseUrl: string | undefined;
-  const _omlsEnabled = opts.omls?.enabled === true;
+  const _omlsEnabled = effectiveOpts.omls?.enabled === true;
   if (_omlsEnabled) {
     // 1. Try local adapter (MLX server, Apple Silicon)
-    const localEnabled = opts.omls?.localTraining?.enabled !== false;
+    const localEnabled = effectiveOpts.omls?.localTraining?.enabled !== false;
     if (localEnabled) {
       try {
         const { detectHardware } = await import("./omls/hardware-detector.js");
         const hw = await detectHardware();
         if (hw.recommendedBackend) {
-          const cfgBackend = opts.omls?.localTraining?.backend;
+          const cfgBackend = effectiveOpts.omls?.localTraining?.backend;
           const backend = (cfgBackend && cfgBackend !== "auto")
             ? cfgBackend as import("./omls/hardware-detector.js").LocalBackend
             : hw.recommendedBackend;
           const memKey = opts.memoryKey ?? "default";
-          const baseModelId = opts.omls?.rl?.training?.baseModel ?? "unsloth/Meta-Llama-3.1-8B-Instruct";
+          const baseModelId = effectiveOpts.omls?.rl?.training?.baseModel ?? "unsloth/Meta-Llama-3.1-8B-Instruct";
           const serverInfo = await resolveLocalAdapterServer(
             typeof memKey === "string" ? memKey : memKey[0] ?? "default",
             baseModelId,
@@ -652,18 +662,26 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       let _retrievalPath = "full_store";
       let _retrievalCount = 0;
       const _retrievalStartMs = Date.now();
-      if (retrieval === "embedding" && opts.memoryEmbeddingModel && apiKey) {
+      if (retrieval === "embedding") {
         try {
           // Check in-memory cache before calling the embeddings API
-          let queryVec = getCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt);
+          const embModel = opts.memoryEmbeddingModel ?? "local";
+          let queryVec = getCachedQueryEmbedding(embModel, prompt);
           if (!queryVec) {
-            queryVec = await withSpan("memory.embed_query", {
-              model: opts.memoryEmbeddingModel,
-            }, async () => {
-              const vecs = await callEmbeddings(apiKey, opts.memoryEmbeddingModel!, [prompt]);
-              return vecs[0] ?? [];
-            });
-            setCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt, queryVec);
+            // Try local embeddings first (free, fast)
+            queryVec = await localEmbed(prompt);
+            // Fall back to OpenRouter API
+            if (!queryVec && opts.memoryEmbeddingModel && apiKey) {
+              queryVec = await withSpan("memory.embed_query", {
+                model: opts.memoryEmbeddingModel,
+              }, async () => {
+                const vecs = await getOpenRouterProvider().callEmbeddings!(apiKey, opts.memoryEmbeddingModel!, [prompt]);
+                return vecs[0] ?? [];
+              });
+            }
+            if (queryVec && queryVec.length > 0) {
+              setCachedQueryEmbedding(embModel, prompt, queryVec);
+            }
           }
           const embEntries = await withSpan("memory.retrieve_embeddings", {
             totalEntries: memStore.entries.length,
@@ -697,21 +715,27 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         if (deduped.length > 0) {
           memBlock = renderRetrievedBlock(deduped, memoryMaxChars);
           _retrievalPath = "fts"; _retrievalCount = deduped.length;
-        } else if (opts.memoryEmbeddingModel && apiKey) {
+        } else {
           // Phase 6A: FTS returned nothing — fall back to embedding-based retrieval.
           // The memStore is already loaded above; retrieveEntriesWithEmbeddings scores
           // entries that have a stored _embedding vector by cosine similarity.
           try {
-            let queryVec = getCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt);
+            const embModel = opts.memoryEmbeddingModel ?? "local";
+            let queryVec = getCachedQueryEmbedding(embModel, prompt);
             if (!queryVec) {
-              queryVec = await withSpan("memory.embed_query_fts_fallback", {
-                model: opts.memoryEmbeddingModel,
-              }, async () => {
-                const vecs = await callEmbeddings(apiKey, opts.memoryEmbeddingModel!, [prompt]);
-                return vecs[0] ?? [];
-              });
+              // Try local embeddings first (free, fast)
+              queryVec = await localEmbed(prompt);
+              // Fall back to OpenRouter API
+              if (!queryVec && opts.memoryEmbeddingModel && apiKey) {
+                queryVec = await withSpan("memory.embed_query_fts_fallback", {
+                  model: opts.memoryEmbeddingModel,
+                }, async () => {
+                  const vecs = await getOpenRouterProvider().callEmbeddings!(apiKey, opts.memoryEmbeddingModel!, [prompt]);
+                  return vecs[0] ?? [];
+                });
+              }
               if (queryVec && queryVec.length > 0) {
-                setCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt, queryVec);
+                setCachedQueryEmbedding(embModel, prompt, queryVec);
               }
             }
             const embResults = queryVec && queryVec.length > 0
@@ -737,9 +761,6 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             memBlock = renderMemoryBlock(memStore, memoryMaxChars);
             _retrievalPath = "full_store"; _retrievalCount = memStore.entries.length;
           }
-        } else {
-          memBlock = renderMemoryBlock(memStore, memoryMaxChars);
-          _retrievalPath = "full_store"; _retrievalCount = memStore.entries.length;
         }
       } else {
         // Phase 1 path (existing logic from Phase 1)
@@ -1307,7 +1328,15 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
 
     // maxTurns <= 0 means unlimited
     while (maxTurns <= 0 || turn < maxTurns) {
-      // ── Cancellation check ────────────────────────────────────────────────
+      // ── Cancellation / graceful shutdown check ────────────────────────────
+      // isShutdownRequested() is set by the SIGINT/SIGTERM handler in index.ts.
+      // Breaking here lets the finally block run normally: session is saved,
+      // locks released, MCP handles closed.
+      if (isShutdownRequested()) {
+        onLog?.("stderr", "[orager] shutdown requested — stopping loop cleanly\n");
+        log.warn("loop_shutdown", { sessionId, turn });
+        break;
+      }
       if (_effectiveAbortSignal?.aborted) {
         onLog?.("stderr", "[orager] run cancelled via abort signal\n");
         log.warn("loop_cancelled", { sessionId, turn });
@@ -1441,7 +1470,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       let _omlsRouted = false;
       if (_omlsEnabled && _rlEndpoint && turn === 1) {
         try {
-          const teachers = selectTeachers(opts.omls!);
+          const teachers = selectTeachers(effectiveOpts.omls!);
           const teacherModel = teachers[0] ?? model;
           const promptVec = opts.memoryEmbeddingModel
             ? getCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt) ?? null
@@ -1453,7 +1482,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             teacherModel,
             apiKey,
             opts.memoryEmbeddingModel ?? null,
-            opts.omls,
+            effectiveOpts.omls,
             _inputModalities,
           );
           if (decision.escalated) {
@@ -1566,9 +1595,9 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       // If low, log the escalation signal (the next turn's routing will use teacher).
       if (_omlsEnabled && _rlEndpoint && !_omlsRouted && response.content) {
         try {
-          const teachers = selectTeachers(opts.omls!);
+          const teachers = selectTeachers(effectiveOpts.omls!);
           const teacherModel = teachers[0] ?? model;
-          const escalation = checkConfidenceToken(response.content, teacherModel, opts.omls);
+          const escalation = checkConfidenceToken(response.content, teacherModel, effectiveOpts.omls);
           if (escalation) {
             opts.onOmlsEscalation?.(escalation.model, escalation.signal as RouterSignal);
             log.info("omls_self_ref_escalation", {
@@ -1621,7 +1650,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
 
       // ── Generation metadata (fire-and-forget) ────────────────────────────
       if (response.generationId) {
-        fetchGenerationMeta(apiKey, response.generationId).then((meta) => {
+        getOpenRouterProvider().fetchGenerationMeta!(apiKey, response.generationId).then((meta) => {
           if (!meta) return;
           // Use actual cost if available (overrides token-based estimate)
           if (meta.totalCost > 0) {
@@ -1704,7 +1733,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
                 let embeddingModel: string | undefined;
                 if (opts.memoryEmbeddingModel && apiKey) {
                   try {
-                    const vecs = await callEmbeddings(apiKey, opts.memoryEmbeddingModel, [upd.content]);
+                    const vecs = await getOpenRouterProvider().callEmbeddings!(apiKey, opts.memoryEmbeddingModel, [upd.content]);
                     if (vecs[0] && vecs[0].length > 0) {
                       embeddingVec = vecs[0];
                       embeddingModel = opts.memoryEmbeddingModel;

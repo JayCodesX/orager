@@ -13,7 +13,7 @@
  * All functions are non-fatal — errors return a default score of 0.5.
  */
 
-import { callOpenRouter } from "../openrouter.js";
+import { getOpenRouterProvider } from "../providers/index.js";
 import type { TrajectoryMeta } from "../trajectory-logger.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -69,7 +69,7 @@ export async function scoreTurn(
   const turnIndex = 0; // caller sets this
 
   try {
-    const result = await callOpenRouter({
+    const result = await getOpenRouterProvider().chat({
       apiKey,
       model: judgeModel,
       messages: [

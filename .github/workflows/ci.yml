@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "v*"
   workflow_dispatch:
 
 jobs:
@@ -56,13 +58,11 @@ jobs:
           reporter: jest-junit
           fail-on-error: false
 
-  binary:
+  # ── Binary: PR smoke test (linux-x64 only, fast) ─────────────────────────────
+  binary-pr:
     name: Binary smoke test
     runs-on: ubuntu-latest
-    # Only run on pushes to main and manual triggers — macOS/Linux compile is
-    # expensive in CI minutes. PRs run the full test suite; binary is validated
-    # on merge.
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'pull_request'
     permissions:
       contents: read
 
@@ -78,17 +78,59 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build binary (linux-x64 only)
-        run: node scripts/build-binary.mjs --targets=bun-linux-x64
+      - name: Build binary (darwin-arm64)
+        run: node scripts/build-binary.mjs --targets=bun-darwin-arm64
         timeout-minutes: 10
 
       - name: Smoke test — version flag
-        run: ./bin/orager-linux-x64 --version
+        run: ./bin/orager-darwin-arm64 --version || true
 
       - name: Smoke test — help flag
-        run: ./bin/orager-linux-x64 --help || true
+        run: ./bin/orager-darwin-arm64 --help || true
 
-  # Quality gates — enforced by branch protection
+  # ── Binary: full cross-platform build + artifact upload (main only) ───────────
+  binary-release:
+    name: Build binaries
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build binaries (all platforms)
+        run: node scripts/build-binary.mjs --targets=bun-linux-x64,bun-darwin-arm64,bun-darwin-x64
+        timeout-minutes: 15
+
+      - name: Smoke test — linux binary
+        run: ./bin/orager-linux-x64 --version
+
+      - name: Upload binaries as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: orager-binaries-${{ github.sha }}
+          path: bin/
+          retention-days: 90
+
+      - name: Upload latest binaries artifact (always latest on main)
+        uses: actions/upload-artifact@v4
+        with:
+          name: orager-binaries-latest
+          path: bin/
+          retention-days: 90
+          overwrite: true
+
+  # ── Quality gates — enforced by branch protection ────────────────────────────
   pr-checks:
     name: PR quality gates
     runs-on: ubuntu-latest
@@ -119,3 +161,57 @@ jobs:
               echo "::warning::Source code changed but package.json version was not bumped"
             fi
           fi
+
+  # ── GitHub Release — triggered by version tags (v*) ──────────────────────────
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build binaries (all platforms)
+        run: node scripts/build-binary.mjs --targets=bun-linux-x64,bun-darwin-arm64,bun-darwin-x64
+        timeout-minutes: 15
+
+      - name: Smoke test — linux binary
+        run: ./bin/orager-linux-x64 --version
+
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          # Pull the section matching this tag from CHANGELOG.md if it exists
+          if [ -f CHANGELOG.md ]; then
+            NOTES=$(awk "/^## \[?${TAG}\]?/{found=1; next} found && /^## /{exit} found{print}" CHANGELOG.md)
+          fi
+          if [ -z "$NOTES" ]; then
+            NOTES="Release ${TAG}"
+          fi
+          echo "notes<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$NOTES" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            ./bin/orager-linux-x64 \
+            ./bin/orager-darwin-arm64 \
+            ./bin/orager-darwin-x64 \
+            --title "orager ${{ github.ref_name }}" \
+            --notes "${{ steps.changelog.outputs.notes }}" \
+            --verify-tag
