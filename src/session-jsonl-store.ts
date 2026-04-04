@@ -109,6 +109,12 @@ export class JsonlSessionStore implements SessionStore {
     {
       version: 2,
       name: "add_cumulative_cost_usd",
+      // Guard: column may already exist on DBs created before this migration was
+      // tracked (lost migration record). Skip the ALTER but still record as applied.
+      guard: (db) => {
+        const cols = db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
+        return cols.some((c) => c.name === "cumulative_cost_usd");
+      },
       sql: `ALTER TABLE sessions ADD COLUMN cumulative_cost_usd REAL NOT NULL DEFAULT 0`,
     },
   ];

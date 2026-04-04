@@ -22,6 +22,13 @@ export interface Migration {
   name: string;
   /** SQL to execute (can be multiple statements separated by semicolons). */
   sql: string;
+  /**
+   * Optional guard: called before executing `sql`. If it returns `true` the
+   * migration is already in the desired state — skip the SQL but still record
+   * it as applied. Useful when a column was added outside the migration system
+   * and the tracking row was never written ("lost migration record" scenario).
+   */
+  guard?: (db: SqliteDatabase) => boolean;
 }
 
 /**
@@ -60,7 +67,9 @@ export function runMigrations(db: SqliteDatabase, migrations: Migration[]): void
     try {
       // Run each migration + record it atomically
       db.exec("BEGIN");
-      db.exec(migration.sql);
+      if (!migration.guard?.(db)) {
+        db.exec(migration.sql);
+      }
       insertMigration.run(migration.version, migration.name);
       db.exec("COMMIT");
     } catch (err) {
