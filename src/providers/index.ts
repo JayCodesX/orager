@@ -12,6 +12,9 @@ export type {
   ChatCallResult,
   OpenRouterProviderConfig,
   AnthropicProviderConfig,
+  OpenAIProviderConfig,
+  DeepSeekProviderConfig,
+  GeminiProviderConfig,
   OllamaProviderConfig,
   ProvidersConfig,
 } from "./types.js";
@@ -19,6 +22,9 @@ export type {
 // Provider implementations
 export { OpenRouterProvider } from "./openrouter-provider.js";
 export { AnthropicDirectProvider } from "./anthropic-provider.js";
+export { OpenAIDirectProvider, callOpenAIDirect } from "./openai-provider.js";
+export { DeepSeekDirectProvider, callDeepSeekDirect } from "./deepseek-provider.js";
+export { GeminiDirectProvider, callGeminiDirect } from "./gemini-provider.js";
 export { OllamaProvider } from "./ollama-provider.js";
 
 // Registry

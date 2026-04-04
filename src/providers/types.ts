@@ -128,13 +128,60 @@ export interface OllamaProviderConfig {
 }
 
 /**
+ * OpenAI Direct API configuration.
+ */
+export interface OpenAIProviderConfig {
+  /** OpenAI API key (or use OPENAI_API_KEY env var). */
+  apiKey?: string;
+  /** OpenAI organization ID (or use OPENAI_ORG_ID env var). */
+  orgId?: string;
+}
+
+/**
+ * DeepSeek Direct API configuration.
+ * Note: DeepSeek explicitly permits using outputs to train other models (ToS §4.2).
+ * Primary OMLS teacher model source.
+ */
+export interface DeepSeekProviderConfig {
+  /** DeepSeek API key (or use DEEPSEEK_API_KEY env var). */
+  apiKey?: string;
+}
+
+/**
+ * Google Gemini Direct API configuration.
+ * Note: Gemini outputs may NOT be used to train competing models (Google ToS).
+ * The OMLS training pipeline hard-blocks gemini/* trajectories.
+ */
+export interface GeminiProviderConfig {
+  /** Gemini API key (or use GEMINI_API_KEY / GOOGLE_API_KEY env var). */
+  apiKey?: string;
+}
+
+/**
  * Top-level provider configuration block for settings.json.
  *
  * Backward compatible: when this block is absent, orager falls back to
  * the existing flat config fields (apiKey, siteUrl, ollama, etc.).
+ *
+ * Example settings.json:
+ * {
+ *   "providers": {
+ *     "openai":    { "apiKey": "sk-..." },
+ *     "deepseek":  { "apiKey": "sk-..." },
+ *     "gemini":    { "apiKey": "AIza..." },
+ *     "anthropic": { "apiKey": "sk-ant-..." },
+ *     "openrouter": { "apiKey": "sk-or-..." }
+ *   }
+ * }
+ *
+ * Provider selection: if a direct key is set, direct provider wins over OpenRouter.
+ * If no direct key is set, OpenRouter handles it (universal fallback).
  */
 export interface ProvidersConfig {
   openrouter?: OpenRouterProviderConfig;
   anthropic?: AnthropicProviderConfig;
+  openai?: OpenAIProviderConfig;
+  deepseek?: DeepSeekProviderConfig;
+  gemini?: GeminiProviderConfig;
   ollama?: OllamaProviderConfig;
 }
