@@ -25,7 +25,7 @@ import {
   upsertMasterContext,
   MASTER_CONTEXT_MAX_CHARS,
 } from "../memory-sqlite.js";
-import { callEmbeddings } from "../openrouter.js";
+import { getOpenRouterProvider } from "../providers/index.js";
 import { withSpan } from "../telemetry.js";
 import type { MemoryStore } from "../memory.js";
 import type { ToolExecutor, ToolResult } from "../types.js";
@@ -191,7 +191,7 @@ export function makeRememberTool(
           let embeddingModel: string | undefined;
           if (embeddingOpts) {
             try {
-              const vectors = await callEmbeddings(embeddingOpts.apiKey, embeddingOpts.model, [content]);
+              const vectors = await getOpenRouterProvider().callEmbeddings!(embeddingOpts.apiKey, embeddingOpts.model, [content]);
               embedding = vectors[0];
               embeddingModel = embeddingOpts.model;
             } catch {
@@ -231,7 +231,7 @@ export function makeRememberTool(
           // Attempt to embed the new entry if embeddingOpts provided
           if (embeddingOpts) {
             try {
-              const vectors = await callEmbeddings(embeddingOpts.apiKey, embeddingOpts.model, [content]);
+              const vectors = await getOpenRouterProvider().callEmbeddings!(embeddingOpts.apiKey, embeddingOpts.model, [content]);
               const lastIdx = lockedStore.entries.length - 1;
               const updatedEntry = embedEntryIfNeeded(lockedStore.entries[lastIdx], vectors[0], embeddingOpts.model);
               lockedStore = {
