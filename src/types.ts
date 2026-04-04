@@ -1655,7 +1655,7 @@ export interface OmlsConfig {
   sleepEnd?: string;
   /** Minutes of keyboard inactivity before training may start. Default: 10. */
   idleThresholdMinutes?: number;
-  /** Minimum distillable trajectory buffer size before RL fires. Default: 32. */
+  /** Minimum distillable trajectory buffer size before RL fires. Default: 8. */
   minBatchSize?: number;
   /** Path to Google Calendar OAuth credentials JSON (optional). */
   calendarCredentials?: string;

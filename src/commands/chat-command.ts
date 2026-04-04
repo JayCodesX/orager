@@ -170,6 +170,9 @@ export async function handleChatCommand(
         memoryKey: (G.__oragerMemoryKey as string | undefined) ?? memoryKey,
         memoryRetrieval: G.__oragerMemoryRetrieval as "local" | "embedding" | undefined,
         memoryEmbeddingModel: G.__oragerMemoryEmbeddingModel as string | undefined,
+        onOmlsEscalation: (teacherModel, signal) => {
+          trajLogger.markDistillable(teacherModel, signal);
+        },
       });
     } catch (err) {
       process.stderr.write(`\norager: error: ${err instanceof Error ? err.message : String(err)}\n`);
