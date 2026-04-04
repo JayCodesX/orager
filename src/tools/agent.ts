@@ -22,6 +22,9 @@
 
 import type { ToolExecutor, ToolExecuteOptions, AgentDefinition, AgentLoopOptions } from "../types.js";
 import { withSpan } from "../telemetry.js";
+import { getAgentsDb } from "../agents/registry.js";
+import { recordAgentScore } from "../agents/score.js";
+import { generateAgentDefinition, sanitizeId } from "../agents/generate.js";
 
 // ── Tool factory ──────────────────────────────────────────────────────────────
 
@@ -35,27 +38,41 @@ export function makeAgentTool(
   agents: Record<string, AgentDefinition>,
   parentOpts: AgentLoopOptions,
 ): ToolExecutor {
-  // Build the enum of valid agent names for the JSON schema.
-  const agentNames = Object.keys(agents);
+  // NOTE: agents is a mutable reference — generate_agent tool adds to this map
+  // at runtime, and the execute() closure reads agents[subagentType] fresh on
+  // each call. No enum is used so dynamically added agents are immediately valid.
+
+  // Build a snapshot of names for the description (refreshed on each schema read
+  // via a getter so new agents appear in future tool_choice descriptions).
+  const buildDescription = () => {
+    const names = Object.keys(agents);
+    const list = names.map((n) => `  • ${n}: ${agents[n]!.description}`).join("\n");
+    return (
+      "Spawn a named sub-agent to handle a specialised task. " +
+      "The sub-agent runs to completion and returns its final output. " +
+      "You can call Agent multiple times in one turn — they run concurrently. " +
+      "If none of the named agents fit, use generate_agent first to synthesize one.\n" +
+      "Available agents:\n" + list
+    );
+  };
 
   return {
     definition: {
       type: "function",
       function: {
         name: "Agent",
-        description:
-          "Spawn a sub-agent to handle a specialised task. " +
-          "The sub-agent runs to completion and returns its final output. " +
-          "You can call Agent multiple times in one turn — they run concurrently. " +
-          "Available agents:\n" +
-          agentNames.map((n) => `  • ${n}: ${agents[n]!.description}`).join("\n"),
+        get description() { return buildDescription(); },
         parameters: {
           type: "object",
           properties: {
             subagent_type: {
               type: "string",
-              enum: agentNames,
-              description: "The agent to spawn.",
+              // No enum — agents can be added dynamically by generate_agent.
+              // The description lists all available agents. Unknown types trigger
+              // dynamic generation as a fallback.
+              description:
+                "The agent to spawn. Must match a name from the list above, " +
+                "or a name you just registered with generate_agent.",
             },
             prompt: {
               type: "string",
@@ -74,18 +91,47 @@ export function makeAgentTool(
       const subagentType = input["subagent_type"] as string;
       const prompt = input["prompt"] as string;
 
-      const defn = agents[subagentType];
+      let defn = agents[subagentType];
+
+      // ── Dynamic generation fallback ───────────────────────────────────────
+      // Unknown subagent_type: synthesize a definition on the fly using the
+      // task description as the generation prompt. The generated definition is
+      // added to the mutable agents map and optionally persisted to the registry.
       if (!defn) {
-        return {
-          toolCallId,
-          content: `[Agent] Unknown sub-agent type: "${subagentType}". Valid types: ${agentNames.join(", ")}`,
-          isError: true,
-        };
+        try {
+          process.stderr.write(
+            `[orager/agent] "${subagentType}" not in catalog — generating definition...\n`,
+          );
+          const generated = await generateAgentDefinition({
+            task: prompt,
+            suggestedId: sanitizeId(subagentType),
+            model: parentOpts.model,
+            apiKey: parentOpts.apiKey,
+            persist: true,
+          });
+          // Add to live map (visible to future Agent tool calls this session)
+          agents[generated.id] = generated.definition;
+          // Resolve: if our sanitized ID differs from the original call, use it
+          defn = generated.definition;
+          process.stderr.write(
+            `[orager/agent] generated "${generated.id}" (${generated.persisted ? "persisted" : "ephemeral"})\n`,
+          );
+        } catch (genErr) {
+          const knownNames = Object.keys(agents).join(", ") || "(none)";
+          return {
+            toolCallId,
+            content:
+              `[Agent] Unknown sub-agent type: "${subagentType}". ` +
+              `Auto-generation failed: ${genErr instanceof Error ? genErr.message : String(genErr)}. ` +
+              `Known types: ${knownNames}`,
+            isError: true,
+          };
+        }
       }
 
       // ── Depth guard ──────────────────────────────────────────────────────
       const currentDepth = parentOpts._spawnDepth ?? 0;
-      const maxDepth = parentOpts.maxSpawnDepth ?? 3;
+      const maxDepth = parentOpts.maxSpawnDepth ?? 2;
       if (currentDepth >= maxDepth) {
         return {
           toolCallId,
@@ -93,6 +139,18 @@ export function makeAgentTool(
           isError: true,
         };
       }
+
+      // ── Session spawn count guard ─────────────────────────────────────────
+      const spawnCounter = parentOpts._sessionSpawnCount ?? { value: 0 };
+      const maxSpawns = parentOpts.maxSpawnsPerSession ?? 50;
+      if (maxSpawns > 0 && spawnCounter.value >= maxSpawns) {
+        return {
+          toolCallId,
+          content: `[Agent] Session spawn limit (${maxSpawns}) reached. Cannot spawn "${subagentType}".`,
+          isError: true,
+        };
+      }
+      spawnCounter.value += 1;
 
       return withSpan(
         "agent.spawn",
@@ -111,21 +169,43 @@ export function makeAgentTool(
           // parent opts.
 
           // Resolve the tool allow-list for the sub-agent.
-          // If defn.tools is set, filter; otherwise pass undefined (inherit all
-          // tools via the parent's extraTools minus the Agent tool itself — the
-          // Agent tool is not added to sub-agents to prevent recursive spawning).
+          // If defn.tools is set, use as allowlist; otherwise inherit all tools
+          // from the parent (minus the Agent tool — sub-agents don't recurse).
           const allowedTools: string[] | undefined = defn.tools;
+
+          // Apply the denylist on top of the allowlist.
+          // We pass allowed tools resolved minus denied ones when both are set.
+          const effectiveAllowedTools: string[] | undefined =
+            allowedTools && defn.disallowedTools
+              ? allowedTools.filter(
+                  (t) =>
+                    !defn.disallowedTools!.map((d) => d.toLowerCase()).includes(
+                      t.toLowerCase(),
+                    ),
+                )
+              : allowedTools;
+
+          // Resolve model based on effort when defn.model is not set.
+          // "high" effort agents get a reasoning-capable model hint via the model
+          // selection (the loop itself handles model capability routing).
+          const subModel = defn.model ?? parentOpts.model;
+
+          const startMs = Date.now();
+          let subTurns = 0;
+          let subCostUsd = 0;
 
           const subOpts: AgentLoopOptions = {
             // Core
             prompt: defn.prompt ? `${defn.prompt}\n\n${prompt}` : prompt,
-            model: defn.model ?? parentOpts.model,
+            model: subModel,
             apiKey: parentOpts.apiKey,
             cwd: parentOpts.cwd,
 
             // Depth tracking
             _spawnDepth: currentDepth + 1,
             maxSpawnDepth: maxDepth,
+            _sessionSpawnCount: spawnCounter,
+            maxSpawnsPerSession: parentOpts.maxSpawnsPerSession,
 
             // Memory: inherit parent's namespace for reads; suppress writes by default
             memoryKey: defn.memoryKey ?? parentOpts.memoryKey,
@@ -142,8 +222,12 @@ export function makeAgentTool(
             maxCostUsd: defn.maxCostUsd ?? undefined,
             maxRetries: parentOpts.maxRetries,
 
-            // Tool filtering: pass the allowed list so loop can filter extraTools
-            ...(allowedTools ? { _allowedTools: allowedTools } : {}),
+            // Tool filtering: pass the effective allow-list so loop can filter
+            ...(effectiveAllowedTools ? { _allowedTools: effectiveAllowedTools } : {}),
+            // Pass denylist separately so loop can apply it even without an allowlist
+            ...(defn.disallowedTools && !allowedTools
+              ? { _disallowedTools: defn.disallowedTools }
+              : {}),
 
             // Filesystem
             addDirs: parentOpts.addDirs ?? [],
@@ -165,15 +249,13 @@ export function makeAgentTool(
             // Collect output silently — forward to parent's onEmit tagged with role
             onEmit: (event) => {
               // Tag with subagent identity so consumers can filter/display.
-              // Cast through unknown because _subagentType is not part of the
-              // EmitEvent discriminated union — it's an out-of-band annotation.
               const tagged = event as unknown as Record<string, unknown>;
               tagged["_subagentType"] = subagentType;
               parentOpts.onEmit(event);
             },
 
-            // Sub-agents don't read project instructions (already in parent context)
-            readProjectInstructions: false,
+            // Project instructions: opt-in per definition (default false for sub-agents)
+            readProjectInstructions: defn.readProjectInstructions ?? false,
 
             // No recursive agent spawning — sub-agents don't get the agents map
             agents: undefined,
@@ -181,6 +263,7 @@ export function makeAgentTool(
 
           // ── Run ──────────────────────────────────────────────────────────
           let finalText = "";
+          let runSuccess = true;
           const collectingEmit = subOpts.onEmit;
           subOpts.onEmit = (event) => {
             if (event.type === "assistant") {
@@ -188,10 +271,30 @@ export function makeAgentTool(
                 if (block.type === "text") finalText += block.text;
               }
             }
+            if (event.type === "result") {
+              subTurns = event.turnCount ?? 0;
+              subCostUsd = event.total_cost_usd ?? 0;
+              if (event.subtype !== "success") runSuccess = false;
+            }
             collectingEmit(event);
           };
 
-          await runAgentLoop(subOpts);
+          try {
+            await runAgentLoop(subOpts);
+          } finally {
+            // Record score regardless of success/failure
+            const durationMs = Date.now() - startMs;
+            getAgentsDb().then((db) => {
+              recordAgentScore(db, {
+                agentId: subagentType,
+                sessionId: null,
+                success: runSuccess,
+                turns: subTurns,
+                costUsd: subCostUsd,
+                durationMs,
+              });
+            }).catch(() => { /* non-fatal */ });
+          }
 
           return {
             toolCallId,
@@ -231,6 +334,8 @@ export function buildAgentsSystemPrompt(agents: Record<string, AgentDefinition>)
     "- Pass all necessary context in the prompt — sub-agents have no conversation history.",
     "- For independent parallel tasks, call Agent multiple times in one response.",
     "- Do the work yourself when a task is straightforward or needs your full context.",
+    "- If no existing agent fits, call generate_agent to synthesize one, then use Agent.",
+    "  The generated agent is saved to the catalog and available in future sessions.",
   ];
 
   return lines.join("\n");

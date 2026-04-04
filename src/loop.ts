@@ -43,6 +43,9 @@ import { resolveLocalAdapterServer } from "./omls/local-adapter-server.js";
 import { processInput, detectModalitiesFromBlocks } from "./input-processor.js";
 import type { RouterSignal } from "./types.js";
 import { ALL_TOOLS, finishTool, BROWSER_TOOLS, makeAgentTool, buildAgentsSystemPrompt } from "./tools/index.js";
+import { getAgentsDb, loadAllAgents, loadAgentsForTask } from "./agents/registry.js";
+import { recordAgentScore } from "./agents/score.js";
+import { makeGenerateAgentTool } from "./agents/generate.js";
 import { FINISH_TOOL_NAME } from "./tools/finish.js";
 // promptApproval is used in loop-executor.ts (extracted in Sprint 6)
 import { getAgentCircuitBreaker } from "./circuit-breaker.js";
@@ -465,6 +468,33 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     if (commandsSection) systemPrompt += "\n\n" + commandsSection;
   }
 
+  // ── Auto-load agent catalog (top-level runs only) ────────────────────────
+  // Load seeds + user/project files + DB into opts.agents at depth 0.
+  // Sub-agents (depth > 0) never auto-load — they receive agents: undefined
+  // from their parent to prevent recursive spawning.
+  //
+  // When the catalog is large, loadAgentsForTask uses semantic search to
+  // retrieve only the most relevant DB agents for this specific prompt.
+  // For small catalogs (< 10 DB agents), all agents are loaded as-is.
+  const isTopLevel = (opts._spawnDepth ?? 0) === 0;
+  if (isTopLevel && !opts.agents) {
+    try {
+      const taskText = typeof opts.prompt === "string"
+        ? opts.prompt
+        : Array.isArray(opts.prompt)
+          ? (opts.prompt as Array<{ text?: string }>).map((b) => b.text ?? "").join(" ")
+          : "";
+      opts = {
+        ...opts,
+        agents: taskText
+          ? await loadAgentsForTask(taskText, cwd)
+          : await loadAllAgents(cwd),
+      };
+    } catch {
+      // Non-fatal — registry unavailable, continue without catalog agents
+    }
+  }
+
   // ── Available sub-agents ──────────────────────────────────────────────────
   // Injected before the frozen boundary so it's part of the stable cached prefix.
   if (opts.agents && Object.keys(opts.agents).length > 0) {
@@ -597,11 +627,27 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     );
   }
 
-  // ── Agent tool (dynamic spawning) ────────────────────────────────────────
-  // Only added when agents are configured AND we're not already inside a
-  // sub-agent (depth > 0 with no agents map means we stripped it intentionally).
+  // ── _disallowedTools filter (sub-agents) ─────────────────────────────────
+  // Applied after the allowlist — removes explicitly blocked tools from the
+  // AgentDefinition.disallowedTools denylist.
+  const _disallowedToolNames = (opts as { _disallowedTools?: string[] })._disallowedTools;
+  if (_disallowedToolNames && _disallowedToolNames.length > 0) {
+    const blocked = new Set(_disallowedToolNames.map((n) => n.toLowerCase()));
+    allTools = allTools.filter((t) =>
+      !blocked.has((t.definition.function.name ?? "").toLowerCase())
+    );
+  }
+
+  // ── Agent tool + generate_agent tool ─────────────────────────────────────
+  // Only at top-level (depth 0) or when the agents map was explicitly provided.
+  // Sub-agents never get these tools — they operate with a fixed tool set.
   if (opts.agents && Object.keys(opts.agents).length > 0) {
+    // Agent: spawn from catalog (with dynamic generation fallback for unknowns)
     allTools.push(makeAgentTool(opts.agents, opts));
+    // generate_agent: proactive synthesis + registration of new agent types
+    // Share the same mutable agents map so newly generated agents are immediately
+    // available to the Agent tool in the same session.
+    allTools.push(makeGenerateAgentTool(opts.agents, opts));
   }
 
   // ── Todo tools (session-scoped) ───────────────────────────────────────────
@@ -879,8 +925,12 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   }
 
   // ── Spawn-agent tool (inline closure — avoids circular import) ────────────
-  const maxSpawnDepth = opts.maxSpawnDepth ?? 3;
+  const maxSpawnDepth = opts.maxSpawnDepth ?? 2;
   const currentSpawnDepth = opts._spawnDepth ?? 0;
+  // Session spawn counter: shared ref so all nested calls increment the same counter
+  const sessionSpawnCounter = opts._sessionSpawnCount ?? { value: 0 };
+  const maxSpawnsPerSession = opts.maxSpawnsPerSession ?? 50;
+
   if (maxSpawnDepth > 0 && currentSpawnDepth < maxSpawnDepth) {
     allTools.push({
       definition: {
@@ -894,7 +944,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             "all spawn_agent calls in the same turn execute concurrently. " +
             "Use parallel agents for independent subtasks: researching while editing, running tests while writing docs, etc. " +
             "Each agent has access to the same tools and working directory. " +
-            `Maximum nesting depth: ${maxSpawnDepth - currentSpawnDepth} more level(s).`,
+            `Maximum nesting depth: ${maxSpawnDepth - currentSpawnDepth} more level(s). ` +
+            `Session spawn budget remaining: ${maxSpawnsPerSession > 0 ? Math.max(0, maxSpawnsPerSession - sessionSpawnCounter.value) : "unlimited"}.`,
           parameters: {
             type: "object",
             properties: {
@@ -923,19 +974,32 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         if (typeof input["task"] !== "string" || !input["task"]) {
           return { toolCallId: "", content: "task must be a non-empty string", isError: true };
         }
+
+        // ── Session spawn budget guard ──────────────────────────────────────
+        if (maxSpawnsPerSession > 0 && sessionSpawnCounter.value >= maxSpawnsPerSession) {
+          return {
+            toolCallId: "",
+            content: `Session spawn limit (${maxSpawnsPerSession}) reached. Cannot spawn another agent.`,
+            isError: true,
+          };
+        }
+        sessionSpawnCounter.value += 1;
+
         const subTask = input["task"] as string;
         const subModel = typeof input["model"] === "string" ? input["model"] : model;
         const subMaxTurns = typeof input["max_turns"] === "number" ? (input["max_turns"] as number) : 20;
         const agentId = typeof input["agent_id"] === "string" ? input["agent_id"] : null;
         const agentLabel = agentId ? ` [${agentId}]` : "";
+        const spawnKey = agentId ?? "spawn_agent";
 
         let subResult = "";
         let subError: string | null = null;
         let subTurns = 0;
         let subCostUsd = 0;
         let subFilesChanged: string[] | undefined;
+        const spawnStartMs = Date.now();
 
-        onLog?.("stderr", `[orager] spawning sub-agent${agentLabel} (depth ${currentSpawnDepth + 1}/${maxSpawnDepth}): ${subTask.slice(0, 100)}\n`);
+        onLog?.("stderr", `[orager] spawning sub-agent${agentLabel} (depth ${currentSpawnDepth + 1}/${maxSpawnDepth}, session spawns: ${sessionSpawnCounter.value}/${maxSpawnsPerSession > 0 ? maxSpawnsPerSession : "∞"}): ${subTask.slice(0, 100)}\n`);
 
         await runAgentLoop({
           ...opts,
@@ -945,6 +1009,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           sessionId: null, // fresh session for each sub-agent
           trackFileChanges: true,
           _spawnDepth: currentSpawnDepth + 1,
+          _sessionSpawnCount: sessionSpawnCounter,
+          maxSpawnsPerSession,
           _parentSessionIds: [..._earlyParentIds, ...(sessionId ? [sessionId] : [])],
           onEmit: (event) => {
             if (event.type === "result") {
@@ -961,6 +1027,19 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
           },
           onLog: opts.onLog,
         });
+
+        // ── Record score ────────────────────────────────────────────────────
+        const spawnDurationMs = Date.now() - spawnStartMs;
+        getAgentsDb().then((db) => {
+          recordAgentScore(db, {
+            agentId: spawnKey,
+            sessionId: sessionId ?? null,
+            success: !subError,
+            turns: subTurns,
+            costUsd: subCostUsd,
+            durationMs: spawnDurationMs,
+          });
+        }).catch(() => { /* non-fatal */ });
 
         if (subError) {
           return { toolCallId: "", content: subError, isError: true };

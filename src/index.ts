@@ -264,6 +264,7 @@ OTHER
   ui [--port <n>]           Start the browser-based UI server (default port: 3457)
   memory <list|inspect|export|clear>  Manage memory namespaces
   skills <list|show|delete|stats|extract>  Manage learned skills (SkillBank)
+  agents <list|show|generate|add|remove|export|stats>  Manage agent catalog (seed + user + project + AI-generated)
   skill-train [--rl] [--status] [--rollback] [--setup-cron]  OMLS RL training
 
 SERVER
@@ -385,6 +386,13 @@ async function main(): Promise<void> {
   if (argv[0] === "compare") {
     const { handleCompareCommand } = await import("./commands/compare-command.js");
     await handleCompareCommand(argv.slice(1));
+    return;
+  }
+
+  // ── agents subcommand ─────────────────────────────────────────────────────────
+  if (argv[0] === "agents") {
+    const { runAgentsCommand } = await import("./commands/agents-command.js");
+    await runAgentsCommand(argv.slice(1));
     return;
   }
 

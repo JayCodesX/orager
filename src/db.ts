@@ -49,6 +49,30 @@ export function resolveDbPath(): string | null {
 // ── ADR-0008 per-namespace path resolvers ─────────────────────────────────────
 
 /**
+ * Path to the agents registry SQLite database.
+ * Stores agent definitions (user/project-level) and per-run score data.
+ * Override with ORAGER_AGENTS_DB_PATH env var.
+ */
+export function resolveAgentsDbPath(): string {
+  return process.env["ORAGER_AGENTS_DB_PATH"] ?? path.join(os.homedir(), ".orager", "agents", "agents.sqlite");
+}
+
+/**
+ * Directory for user-level agent definition JSON files.
+ * Override with ORAGER_AGENTS_DIR env var.
+ */
+export function resolveUserAgentsDir(): string {
+  return process.env["ORAGER_AGENTS_DIR"] ?? path.join(os.homedir(), ".orager", "agents");
+}
+
+/**
+ * Directory for project-level agent definition JSON files (relative to cwd).
+ */
+export function resolveProjectAgentsDir(cwd: string): string {
+  return path.join(cwd, ".orager", "agents");
+}
+
+/**
  * Directory for per-namespace memory SQLite files.
  * Override with ORAGER_MEMORY_SQLITE_DIR env var.
  */

@@ -1038,16 +1038,35 @@ export interface AgentLoopOptions {
   bashPolicy?: BashPolicy;
 
   /**
-   * Maximum depth of nested agent tool calls. Default 3. Set to 0 to disable
-   * sub-agent spawning entirely.
+   * Maximum depth of nested agent spawning via spawn_agent or the Agent tool.
+   * Default 2 (parent → worker, no further nesting).
+   *
+   * Background: Claude Code enforces depth=1; CrewAI uses depth=2 (manager→worker).
+   * Production incidents at depth 3+ include token explosion (27M tokens/4.6 hrs),
+   * circular delegation loops ($47K undetected), and unbounded context accumulation.
+   * Set to 0 to disable all sub-agent spawning.
    */
   maxSpawnDepth?: number;
+
+  /**
+   * Maximum total spawn_agent/Agent calls allowed in a single session, across all
+   * depths. Guards against runaway orchestration even when individual spawns look
+   * innocuous. Default 50. Set to 0 to disable.
+   */
+  maxSpawnsPerSession?: number;
 
   /**
    * Internal — current spawn depth. Incremented automatically by the Agent tool.
    * Do not set this manually.
    */
   _spawnDepth?: number;
+
+  /**
+   * Internal — running count of total spawns in this session (all depths).
+   * Shared via reference across the session so every nested spawn increments
+   * the same counter. Do not set this manually.
+   */
+  _sessionSpawnCount?: { value: number };
 
   /**
    * When true, suppress <memory_update> block processing for this run.
@@ -1428,12 +1447,25 @@ export interface AgentDefinition {
   prompt: string;
 
   /**
+   * Human-readable display name. Defaults to the registry key when omitted.
+   * Shown in CLI listings, logs, and the UI agent panel.
+   */
+  name?: string;
+
+  /**
    * Restrict the sub-agent to a named subset of the parent's tools.
    * Use tool names exactly as registered (e.g. "Read", "Bash", "WebSearch").
    * Omit to inherit all tools from the parent (minus the Agent tool itself —
    * sub-agents cannot spawn further sub-agents).
    */
   tools?: string[];
+
+  /**
+   * Tool denylist — explicitly block these tools even if they appear in the
+   * parent's toolset or the tools allowlist above.
+   * Applied after the allowlist: disallowedTools wins over tools.
+   */
+  disallowedTools?: string[];
 
   /**
    * Model override for this sub-agent. Any OpenRouter model ID or "inherit".
@@ -1464,6 +1496,62 @@ export interface AgentDefinition {
 
   /** Per-sub-agent cost ceiling in USD. Default: no limit (parent's maxCostUsd applies). */
   maxCostUsd?: number;
+
+  /**
+   * Compute effort level for this sub-agent.
+   *   "low"    — fast, cheap; suitable for quick lookups and formatting tasks.
+   *   "medium" — balanced default.
+   *   "high"   — deep reasoning; routes to thinking-capable models where available.
+   * Default: "medium".
+   */
+  effort?: "low" | "medium" | "high";
+
+  /**
+   * Arbitrary tags for catalog organization and filtering.
+   * Examples: ["code", "review"], ["research", "web"], ["planning"]
+   */
+  tags?: string[];
+
+  /**
+   * Hex color for UI display (e.g. "#6366f1"). Optional cosmetic field.
+   */
+  color?: string;
+
+  /**
+   * Where this definition came from. Set automatically by the registry loader;
+   * do not set manually.
+   *   "seed"    — shipped with orager, always available
+   *   "user"    — from ~/.orager/agents/*.json
+   *   "project" — from .orager/agents/*.json in the current project
+   *   "db"      — created/modified via `orager agents add`
+   */
+  source?: "seed" | "user" | "project" | "db";
+
+  /**
+   * When true, read the project's CLAUDE.md / project instructions.
+   * Default false — sub-agents typically don't need the full project context.
+   * Enable for agents that need to understand project conventions (e.g. a coder agent).
+   */
+  readProjectInstructions?: boolean;
+}
+
+// ── Agent score / stats ──────────────────────────────────────────────────────
+
+/**
+ * Aggregate performance statistics for a single agent definition.
+ * Computed from the agent_scores table in the agents registry database.
+ */
+export interface AgentStats {
+  agentId: string;
+  totalRuns: number;
+  successRuns: number;
+  /** 0–1 fraction */
+  successRate: number;
+  avgTurns: number;
+  avgCostUsd: number;
+  totalCostUsd: number;
+  avgDurationMs: number;
+  lastUsedAt: string | null;
 }
 
 // ── Multi-agent workflow types ───────────────────────────────────────────────
