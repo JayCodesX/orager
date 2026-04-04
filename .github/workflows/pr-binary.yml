@@ -1,0 +1,27 @@
+name: PR binary check (darwin)
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-darwin:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build macOS ARM64 binary
+        run: node scripts/build-binary.mjs --targets=bun-darwin-arm64
+
+      - name: Verify binary exists
+        run: ls -lh bin/orager-darwin-arm64 bin/orager-mcp-darwin-arm64
