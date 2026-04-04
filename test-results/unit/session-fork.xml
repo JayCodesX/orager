@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="15" assertions="35" failures="0" skipped="0" time="0.104509">
+  <testsuite name="tests/session-fork.test.ts" file="tests/session-fork.test.ts" tests="15" assertions="35" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="forkSession — basic behaviour" file="tests/session-fork.test.ts" line="73" tests="8" assertions="13" failures="0" skipped="0" time="0.04" hostname="JMac-2021.local">
+      <testcase name="returns a new unique sessionId and the forkedFrom source id" classname="forkSession — basic behaviour" time="0.011507" file="tests/session-fork.test.ts" line="74" assertions="2" />
+      <testcase name="saves the forked session so loadSession returns it" classname="forkSession — basic behaviour" time="0.004453" file="tests/session-fork.test.ts" line="81" assertions="2" />
+      <testcase name="forks with full message history when atTurn is not specified" classname="forkSession — basic behaviour" time="0.005908" file="tests/session-fork.test.ts" line="89" assertions="2" />
+      <testcase name="resets cumulativeCostUsd to 0 on the fork" classname="forkSession — basic behaviour" time="0.004318" file="tests/session-fork.test.ts" line="97" assertions="1" />
+      <testcase name="clears pendingApproval on the fork" classname="forkSession — basic behaviour" time="0.004708" file="tests/session-fork.test.ts" line="104" assertions="1" />
+      <testcase name="preserves model, cwd, source from the original session" classname="forkSession — basic behaviour" time="0.004227" file="tests/session-fork.test.ts" line="124" assertions="2" />
+      <testcase name="sets fresh createdAt and updatedAt timestamps" classname="forkSession — basic behaviour" time="0.004478" file="tests/session-fork.test.ts" line="132" assertions="2" />
+      <testcase name="throws when source session does not exist" classname="forkSession — basic behaviour" time="0.004523" file="tests/session-fork.test.ts" line="143" assertions="1" />
+    </testsuite>
+    <testsuite name="forkSession — atTurn slicing" file="tests/session-fork.test.ts" line="150" tests="6" assertions="18" failures="0" skipped="0" time="0.025" hostname="JMac-2021.local">
+      <testcase name="fork at turn 0 keeps only the system message" classname="forkSession — atTurn slicing" time="0.004651" file="tests/session-fork.test.ts" line="151" assertions="4" />
+      <testcase name="fork at turn 1 keeps system + first user + first assistant" classname="forkSession — atTurn slicing" time="0.003924" file="tests/session-fork.test.ts" line="162" assertions="6" />
+      <testcase name="fork at turn 2 out of 3 includes first two turns" classname="forkSession — atTurn slicing" time="0.005533" file="tests/session-fork.test.ts" line="175" assertions="2" />
+      <testcase name="fork at turn &gt;= turnCount uses all messages" classname="forkSession — atTurn slicing" time="0.005429" file="tests/session-fork.test.ts" line="184" assertions="2" />
+      <testcase name="fork at exact turnCount uses all messages" classname="forkSession — atTurn slicing" time="0.004618" file="tests/session-fork.test.ts" line="192" assertions="1" />
+      <testcase name="includes tool-result messages attached to the target assistant turn" classname="forkSession — atTurn slicing" time="0.004775" file="tests/session-fork.test.ts" line="199" assertions="3" />
+    </testsuite>
+    <testsuite name="forkSession — return value" file="tests/session-fork.test.ts" line="232" tests="1" assertions="4" failures="0" skipped="0" time="0.006" hostname="JMac-2021.local">
+      <testcase name="returns { sessionId, forkedFrom, atTurn } with correct shape" classname="forkSession — return value" time="0.006694" file="tests/session-fork.test.ts" line="233" assertions="4" />
+    </testsuite>
+  </testsuite>
+</testsuites>

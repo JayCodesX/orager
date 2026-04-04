@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="7" assertions="16" failures="0" skipped="0" time="0.797406">
+  <testsuite name="tests/agent-api-key.test.ts" file="tests/agent-api-key.test.ts" tests="7" assertions="16" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="P1-1 agentApiKey — API key resolution" file="tests/agent-api-key.test.ts" line="107" tests="3" assertions="6" failures="0" skipped="0" time="0.447" hostname="JMac-2021.local">
+      <testcase name="uses agentApiKey instead of the env apiKey when set" classname="P1-1 agentApiKey — API key resolution" time="0.423564" file="tests/agent-api-key.test.ts" line="108" assertions="2" />
+      <testcase name="falls back to apiKey when agentApiKey is not set" classname="P1-1 agentApiKey — API key resolution" time="0.019062" file="tests/agent-api-key.test.ts" line="134" assertions="2" />
+      <testcase name="treats whitespace-only agentApiKey as unset and falls back to apiKey" classname="P1-1 agentApiKey — API key resolution" time="0.005996" file="tests/agent-api-key.test.ts" line="158" assertions="2" />
+    </testsuite>
+    <testsuite name="P1-1 agentApiKey — daemon opts allowlist" file="tests/agent-api-key.test.ts" line="186" tests="3" assertions="6" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="agentApiKey is stripped by sanitizeDaemonRunOpts (security-sensitive)" classname="P1-1 agentApiKey — daemon opts allowlist" time="0.000322" file="tests/agent-api-key.test.ts" line="187" assertions="2" />
+      <testcase name="sessionLockTimeoutMs passes through sanitizeDaemonRunOpts" classname="P1-1 agentApiKey — daemon opts allowlist" time="0.000345" file="tests/agent-api-key.test.ts" line="195" assertions="2" />
+      <testcase name="model is included in safe opts" classname="P1-1 agentApiKey — daemon opts allowlist" time="0.000028" file="tests/agent-api-key.test.ts" line="202" assertions="2" />
+    </testsuite>
+    <testsuite name="P1-1 rate-limit isolation" file="tests/agent-api-key.test.ts" line="215" tests="1" assertions="4" failures="0" skipped="0" time="0.006" hostname="JMac-2021.local">
+      <testcase name="two agents with different keys each receive the correct key in callWithRetry opts" classname="P1-1 rate-limit isolation" time="0.006358" file="tests/agent-api-key.test.ts" line="216" assertions="4" />
+    </testsuite>
+  </testsuite>
+</testsuites>

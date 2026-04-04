@@ -1548,6 +1548,21 @@ export interface SkillBankConfig {
   retentionDays?: number;
   /** Automatically attempt skill extraction after every failed run. Default: true. */
   autoExtract?: boolean;
+  /**
+   * Live skill count at which the auto-merge pipeline fires.
+   * Set to 0 to disable auto-merge. Default: 100.
+   */
+  mergeAt?: number;
+  /**
+   * Minimum cosine similarity between two skills to consider them merge candidates.
+   * Higher = more conservative (fewer merges). Default: 0.78.
+   */
+  mergeThreshold?: number;
+  /**
+   * Minimum number of similar skills that must form a cluster before merging.
+   * Prevents merging isolated pairs. Default: 3.
+   */
+  mergeMinClusterSize?: number;
 }
 
 // ── OMLS types (ADR-0007) ────────────────────────────────────────────────────
@@ -1617,10 +1632,33 @@ export type HostingProvider = "together" | "fireworks";
 /** RL training method. "auto" selects OPSD when teacher responses are available, else GRPO. */
 export type TrainingMethod = "auto" | "grpo" | "opsd";
 
+/**
+ * Controls how OMLS applies learning from collected trajectories:
+ * - "prompt": SkillBank-only. No LoRA training is ever triggered.
+ * - "lora":   Always train LoRA adapters when idle + buffer conditions are met.
+ * - "auto":   Starts in prompt mode; suggests switching to LoRA when active skill
+ *             count exceeds autoLoraThreshold. Default: "auto".
+ */
+export type OmlsMode = "prompt" | "lora" | "auto";
+
 /** Full OMLS configuration block. All fields are optional; defaults apply when not set. */
 export interface OmlsConfig {
   /** Master enable switch. Default: false (opt-in). */
   enabled?: boolean;
+
+  /**
+   * Controls how OMLS applies learning. Default: "auto".
+   * - "prompt": SkillBank only — no LoRA training, no cloud spend.
+   * - "lora":   Always train LoRA adapters when conditions are met.
+   * - "auto":   Prompt mode until skill count >= autoLoraThreshold, then LoRA.
+   */
+  mode?: OmlsMode;
+
+  /**
+   * Skill count at which "auto" mode transitions from prompt to LoRA training.
+   * Default: 150.
+   */
+  autoLoraThreshold?: number;
 
   // ── Teacher model configuration ───────────────────────────────────────────
   /**

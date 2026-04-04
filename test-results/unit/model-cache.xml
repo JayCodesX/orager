@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="2" assertions="2" failures="0" skipped="0" time="0.022747">
+  <testsuite name="tests/model-cache.test.ts" file="tests/model-cache.test.ts" tests="2" assertions="2" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="isModelContextCacheWarm — exported for daemon prewarm guard" file="tests/model-cache.test.ts" line="4" tests="2" assertions="2" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns a boolean (cache state depends on prior fetchModelContextLengths calls)" classname="isModelContextCacheWarm — exported for daemon prewarm guard" time="0" file="tests/model-cache.test.ts" line="5" assertions="1" />
+      <testcase name="returns false when never fetched (initial module state)" classname="isModelContextCacheWarm — exported for daemon prewarm guard" time="0" file="tests/model-cache.test.ts" line="9" assertions="1" />
+    </testsuite>
+  </testsuite>
+</testsuites>

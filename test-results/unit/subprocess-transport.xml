@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="10" assertions="21" failures="0" skipped="0" time="1.022023">
+  <testsuite name="tests/subprocess-transport.test.ts" file="tests/subprocess-transport.test.ts" tests="10" assertions="21" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="JSON-RPC 2.0 wire format" file="tests/subprocess-transport.test.ts" line="74" tests="4" assertions="12" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="notification format: method + params, no id" classname="JSON-RPC 2.0 wire format" time="0.000164" file="tests/subprocess-transport.test.ts" line="75" assertions="4" />
+      <testcase name="response format: id + result, no method" classname="JSON-RPC 2.0 wire format" time="0" file="tests/subprocess-transport.test.ts" line="89" assertions="3" />
+      <testcase name="error response format: id + error object" classname="JSON-RPC 2.0 wire format" time="0.000112" file="tests/subprocess-transport.test.ts" line="98" assertions="2" />
+      <testcase name="each message is a single newline-delimited line" classname="JSON-RPC 2.0 wire format" time="0.000086" file="tests/subprocess-transport.test.ts" line="106" assertions="3" />
+    </testsuite>
+    <testsuite name="orchestrator protocol parsing" file="tests/subprocess-transport.test.ts" line="120" tests="3" assertions="5" failures="0" skipped="0" time="0.055" hostname="JMac-2021.local">
+      <testcase name="parses agent/event notification from stdout" classname="orchestrator protocol parsing" time="0.021454" file="tests/subprocess-transport.test.ts" line="121" assertions="2" />
+      <testcase name="parses error response from stdout" classname="orchestrator protocol parsing" time="0.017622" file="tests/subprocess-transport.test.ts" line="136" assertions="1" />
+      <testcase name="multiple notifications before final response" classname="orchestrator protocol parsing" time="0.017271" file="tests/subprocess-transport.test.ts" line="147" assertions="2" />
+    </testsuite>
+    <testsuite name="runAgentLoopSubprocess" file="tests/subprocess-transport.test.ts" line="200" tests="3" assertions="4" failures="0" skipped="0" time="0.873" hostname="JMac-2021.local">
+      <testcase name="rejects when child exits with non-zero code and no JSON-RPC response" classname="runAgentLoopSubprocess" time="0.439628" file="tests/subprocess-transport.test.ts" line="201" assertions="1" />
+      <testcase name="rejects when child exits cleanly (code 0) without sending a JSON-RPC response" classname="runAgentLoopSubprocess" time="0.202099" file="tests/subprocess-transport.test.ts" line="207" assertions="1" />
+      <testcase name="resolves and logs a stderr warning when child emits malformed JSON before the final response" classname="runAgentLoopSubprocess" time="0.23289" file="tests/subprocess-transport.test.ts" line="227" assertions="2" />
+    </testsuite>
+  </testsuite>
+</testsuites>

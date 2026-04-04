@@ -145,6 +145,11 @@ Configure the SkillBank self-improvement system (ADR-0006).
 | `deduplicationThreshold` | `number` | `0.92` | Cosine similarity above which two skills are considered duplicates |
 | `retentionDays` | `number` | `30` | Days after which unused skills are pruned |
 | `extractionModel` | `string` | session model | Model used to extract skills from run history |
+| `mergeAt` | `number` | `100` | Live skill count at which the merge pipeline fires automatically. Set to `0` to disable. |
+| `mergeThreshold` | `number` | `0.78` | Minimum cosine similarity to group two skills into a merge cluster |
+| `mergeMinClusterSize` | `number` | `3` | Minimum cluster size before LLM synthesis is attempted |
+
+Run `orager skills merge --dry-run` to preview clusters without writing, or `orager skills merge` to trigger a merge pass manually.
 
 ---
 
@@ -155,8 +160,16 @@ Configure the Opportunistic Model Learning System (ADR-0007). This feature train
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | `boolean` | `false` | Enable OMLS. Disabled by default |
+| `mode` | `"prompt" \| "lora" \| "auto"` | `"auto"` | Learning mode. `prompt` = SkillBank only (no LoRA, no cloud spend). `lora` = always train adapters. `auto` = prompt until `autoLoraThreshold` skills, then LoRA. |
+| `autoLoraThreshold` | `number` | `150` | Skill count at which `auto` mode transitions from prompt to LoRA training |
+| `minBatchSize` | `number` | `8` | Minimum distillable trajectories required before a training run fires |
+| `teacherModels` | `string[]` | `["deepseek/deepseek-r1", "qwen/qwen3-72b"]` | Frontier models used as oracles for distillation and PRM scoring |
+| `schedule` | `string` | `*/15 * * * *` | Cron expression for the idle check |
+| `sleepStart` | `string` | `"23:00"` | Start of guaranteed idle window (HH:MM, 24h) |
+| `sleepEnd` | `string` | `"07:00"` | End of guaranteed idle window (HH:MM, 24h) |
+| `idleThresholdMinutes` | `number` | `10` | Minutes of keyboard inactivity before training may start |
 
-Use `orager skill-train` to manage training runs manually.
+Use `orager skill-train --status` to see the current mode and buffer size, and `orager skill-train --rl` to trigger a training run manually.
 
 ---
 

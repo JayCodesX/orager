@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="3" assertions="5" failures="0" skipped="0" time="0.018356">
+  <testsuite name="tests/model-meta-cache.test.ts" file="tests/model-meta-cache.test.ts" tests="3" assertions="5" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="model-meta disk cache persistence" file="tests/model-meta-cache.test.ts" line="20" tests="3" assertions="5" failures="0" skipped="0" time="0.001" hostname="JMac-2021.local">
+      <testcase name="disk cache file has expected shape when written" classname="model-meta disk cache persistence" time="0.001113" file="tests/model-meta-cache.test.ts" line="32" assertions="3" />
+      <testcase name="stale disk cache (older than 6h) is not loaded" classname="model-meta disk cache persistence" time="0.000329" file="tests/model-meta-cache.test.ts" line="57" assertions="1" />
+      <testcase name="missing disk cache file is handled gracefully (no throw)" classname="model-meta disk cache persistence" time="0.000115" file="tests/model-meta-cache.test.ts" line="74" assertions="1" />
+    </testsuite>
+  </testsuite>
+</testsuites>

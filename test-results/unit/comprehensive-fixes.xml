@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="25" assertions="47" failures="0" skipped="0" time="0.169102">
+  <testsuite name="tests/comprehensive-fixes.test.ts" file="tests/comprehensive-fixes.test.ts" tests="25" assertions="47" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="MCP HTTP header sanitization" file="tests/comprehensive-fixes.test.ts" line="40" tests="3" assertions="14" failures="0" skipped="0" time="0.073" hostname="JMac-2021.local">
+      <testcase name="McpServerConfig accepts headers field for HTTP configs" classname="MCP HTTP header sanitization" time="0.072605" file="tests/comprehensive-fixes.test.ts" line="46" assertions="1" />
+      <testcase name="sanitizes headers with CR/LF injection attempts (validation logic)" classname="MCP HTTP header sanitization" time="0.001267" file="tests/comprehensive-fixes.test.ts" line="53" assertions="7" />
+      <testcase name="rejects header names with invalid RFC 7230 characters" classname="MCP HTTP header sanitization" time="0.000915" file="tests/comprehensive-fixes.test.ts" line="89" assertions="6" />
+    </testsuite>
+    <testsuite name="OTel prompt_id derivation" file="tests/comprehensive-fixes.test.ts" line="102" tests="5" assertions="6" failures="0" skipped="0" time="0.002" hostname="JMac-2021.local">
+      <testcase name="SHA-256(model + newline + prompt) produces a 16-char hex string" classname="OTel prompt_id derivation" time="0.000798" file="tests/comprehensive-fixes.test.ts" line="103" assertions="2" />
+      <testcase name="same model+prompt always produces the same prompt_id" classname="OTel prompt_id derivation" time="0.002121" file="tests/comprehensive-fixes.test.ts" line="115" assertions="1" />
+      <testcase name="different prompts produce different prompt_ids" classname="OTel prompt_id derivation" time="0.000521" file="tests/comprehensive-fixes.test.ts" line="123" assertions="1" />
+      <testcase name="different models produce different prompt_ids even for the same prompt" classname="OTel prompt_id derivation" time="0.000346" file="tests/comprehensive-fixes.test.ts" line="130" assertions="1" />
+      <testcase name="prompt_id does not equal the session ID" classname="OTel prompt_id derivation" time="0.000413" file="tests/comprehensive-fixes.test.ts" line="137" assertions="1" />
+    </testsuite>
+    <testsuite name="session lock clock-skew defence" file="tests/comprehensive-fixes.test.ts" line="148" tests="4" assertions="4" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="age clamped to 0 when JSON timestamp is in the future (clock jumped backward)" classname="session lock clock-skew defence" time="0.000351" file="tests/comprehensive-fixes.test.ts" line="149" assertions="1" />
+      <testcase name="takes minimum of json age and mtime age (freshest reading)" classname="session lock clock-skew defence" time="0.00031" file="tests/comprehensive-fixes.test.ts" line="156" assertions="1" />
+      <testcase name="uses json age when mtime age is larger (mtime not updated by heartbeat yet)" classname="session lock clock-skew defence" time="0.000261" file="tests/comprehensive-fixes.test.ts" line="166" assertions="1" />
+      <testcase name="LOCK_STALE_MS env override is respected" classname="session lock clock-skew defence" time="0.000316" file="tests/comprehensive-fixes.test.ts" line="173" assertions="1" />
+    </testsuite>
+    <testsuite name="compactSession — exported from session.ts" file="tests/comprehensive-fixes.test.ts" line="186" tests="2" assertions="2" failures="0" skipped="0" time="0.026" hostname="JMac-2021.local">
+      <testcase name="compactSession is exported from session.ts" classname="compactSession — exported from session.ts" time="0.013017" file="tests/comprehensive-fixes.test.ts" line="187" assertions="1" />
+      <testcase name="throws when session does not exist" classname="compactSession — exported from session.ts" time="0.013939" file="tests/comprehensive-fixes.test.ts" line="192" assertions="1" />
+    </testsuite>
+    <testsuite name="MCP HTTP rate-limit backoff logic" file="tests/comprehensive-fixes.test.ts" line="202" tests="4" assertions="7" failures="0" skipped="0" time="0.005" hostname="JMac-2021.local">
+      <testcase name="connectMcpServer is exported and accepts HttpMcpServerConfig" classname="MCP HTTP rate-limit backoff logic" time="0.000398" file="tests/comprehensive-fixes.test.ts" line="203" assertions="1" />
+      <testcase name="connectMcpServer rejects gracefully for unavailable HTTP server" classname="MCP HTTP rate-limit backoff logic" time="0.005213" file="tests/comprehensive-fixes.test.ts" line="208" assertions="1" />
+      <testcase name="retry delay sequence: 0ms, 2000ms, 5000ms for HTTP transport" classname="MCP HTTP rate-limit backoff logic" time="0.000263" file="tests/comprehensive-fixes.test.ts" line="216" assertions="4" />
+      <testcase name="stdio transport gets 1 attempt (no retry)" classname="MCP HTTP rate-limit backoff logic" time="0.000798" file="tests/comprehensive-fixes.test.ts" line="224" assertions="1" />
+    </testsuite>
+    <testsuite name="spawn_agent structured result format" file="tests/comprehensive-fixes.test.ts" line="234" tests="5" assertions="9" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="includes cost in result string when subCostUsd &gt; 0" classname="spawn_agent structured result format" time="0.000354" file="tests/comprehensive-fixes.test.ts" line="235" assertions="3" />
+      <testcase name="omits cost string when subCostUsd is 0" classname="spawn_agent structured result format" time="0.000175" file="tests/comprehensive-fixes.test.ts" line="247" assertions="1" />
+      <testcase name="includes filesChanged in result string when present" classname="spawn_agent structured result format" time="0.000172" file="tests/comprehensive-fixes.test.ts" line="253" assertions="2" />
+      <testcase name="omits filesChanged when undefined" classname="spawn_agent structured result format" time="0.000179" file="tests/comprehensive-fixes.test.ts" line="262" assertions="1" />
+      <testcase name="includes both cost and filesChanged" classname="spawn_agent structured result format" time="0.000184" file="tests/comprehensive-fixes.test.ts" line="270" assertions="2" />
+    </testsuite>
+    <testsuite name=".gitignore covers AUDIT_REPORT files" file="tests/comprehensive-fixes.test.ts" line="286" tests="2" assertions="5" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="AUDIT_REPORT*.md pattern matches audit report filenames" classname=".gitignore covers AUDIT_REPORT files" time="0.000322" file="tests/comprehensive-fixes.test.ts" line="287" assertions="4" />
+      <testcase name=".gitignore file contains the AUDIT_REPORT pattern" classname=".gitignore covers AUDIT_REPORT files" time="0.000573" file="tests/comprehensive-fixes.test.ts" line="295" assertions="1" />
+    </testsuite>
+  </testsuite>
+</testsuites>

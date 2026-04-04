@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="18" assertions="29" failures="0" skipped="0" time="0.025372">
+  <testsuite name="tests/memory-update-parser.test.ts" file="tests/memory-update-parser.test.ts" tests="18" assertions="29" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="parseMemoryUpdates" file="tests/memory-update-parser.test.ts" line="11" tests="15" assertions="23" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns empty array when no blocks are present" classname="parseMemoryUpdates" time="0.000084" file="tests/memory-update-parser.test.ts" line="12" assertions="1" />
+      <testcase name="parses a single valid block" classname="parseMemoryUpdates" time="0.000119" file="tests/memory-update-parser.test.ts" line="16" assertions="4" />
+      <testcase name="parses multiple blocks in a single response" classname="parseMemoryUpdates" time="0.000032" file="tests/memory-update-parser.test.ts" line="25" assertions="3" />
+      <testcase name="skips blocks with invalid JSON" classname="parseMemoryUpdates" time="0.000058" file="tests/memory-update-parser.test.ts" line="37" assertions="1" />
+      <testcase name="skips blocks with empty content string" classname="parseMemoryUpdates" time="0.000017" file="tests/memory-update-parser.test.ts" line="42" assertions="1" />
+      <testcase name="skips blocks missing the content field" classname="parseMemoryUpdates" time="0.000001" file="tests/memory-update-parser.test.ts" line="47" assertions="1" />
+      <testcase name="defaults importance to 2 when not a valid value" classname="parseMemoryUpdates" time="0.000013" file="tests/memory-update-parser.test.ts" line="52" assertions="1" />
+      <testcase name="defaults importance to 2 when importance is absent" classname="parseMemoryUpdates" time="0.000024" file="tests/memory-update-parser.test.ts" line="58" assertions="1" />
+      <testcase name="defaults tags to empty array when absent" classname="parseMemoryUpdates" time="0.000015" file="tests/memory-update-parser.test.ts" line="64" assertions="1" />
+      <testcase name="coerces non-string tags to strings" classname="parseMemoryUpdates" time="0.000017" file="tests/memory-update-parser.test.ts" line="70" assertions="1" />
+      <testcase name="limits tags to 10 items" classname="parseMemoryUpdates" time="0.000103" file="tests/memory-update-parser.test.ts" line="76" assertions="1" />
+      <testcase name="truncates content to 500 chars" classname="parseMemoryUpdates" time="0" file="tests/memory-update-parser.test.ts" line="83" assertions="1" />
+      <testcase name="trims leading/trailing whitespace from content" classname="parseMemoryUpdates" time="0" file="tests/memory-update-parser.test.ts" line="90" assertions="1" />
+      <testcase name="handles multi-line JSON inside the block" classname="parseMemoryUpdates" time="0.000049" file="tests/memory-update-parser.test.ts" line="96" assertions="3" />
+      <testcase name="ignores content between blocks (only extracts blocks)" classname="parseMemoryUpdates" time="0.000028" file="tests/memory-update-parser.test.ts" line="104" assertions="2" />
+    </testsuite>
+    <testsuite name="MEMORY_UPDATE_INSTRUCTION" file="tests/memory-update-parser.test.ts" line="112" tests="3" assertions="6" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="is a non-empty string" classname="MEMORY_UPDATE_INSTRUCTION" time="0.000002" file="tests/memory-update-parser.test.ts" line="113" assertions="2" />
+      <testcase name="contains the memory_update tag name" classname="MEMORY_UPDATE_INSTRUCTION" time="0.000029" file="tests/memory-update-parser.test.ts" line="118" assertions="1" />
+      <testcase name="describes importance levels" classname="MEMORY_UPDATE_INSTRUCTION" time="0.000007" file="tests/memory-update-parser.test.ts" line="122" assertions="3" />
+    </testsuite>
+  </testsuite>
+</testsuites>

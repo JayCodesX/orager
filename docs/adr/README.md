@@ -9,7 +9,17 @@ ADRs document significant architectural choices: the context that drove them, th
 | # | Title | Status | Date |
 |---|---|---|---|
 | [0001](./0001-hierarchical-memory-system.md) | Hierarchical memory system for cross-session context retention | Accepted | 2026-04-01 |
-| [0002](./0002-ann-vector-index.md) | ANN vector index for semantic memory retrieval at scale | Proposed (deferred) | 2026-04-01 |
+| [0002](./0002-ann-vector-index.md) | ANN vector index for semantic memory retrieval at scale | Accepted | 2026-04-01 |
+| [0003](./0003-in-process-agents-remove-daemon.md) | In-process agents, remove HTTP daemon exec path | Accepted | 2026-04-02 |
+| [0004](./0004-semantic-memory-retrieval-distillation.md) | Semantic memory retrieval and distillation | Accepted | 2026-04-02 |
+| [0005](./0005-multi-context-cross-agent-memory.md) | Multi-context cross-agent memory | Accepted | 2026-04-02 |
+| [0006](./0006-skillbank-persistent-skill-memory.md) | SkillBank — persistent skill memory | Accepted | 2026-04-02 |
+| [0007](./0007-omls-opportunistic-rl-training.md) | OMLS — opportunistic RL training pipeline | Accepted | 2026-04-02 |
+| [0008](./0008-storage-architecture-overhaul.md) | Storage architecture overhaul (native SQLite) | Accepted | 2026-04-03 |
+| [0009](./0009-local-first-inference-client-architecture.md) | Local-first inference client architecture | Accepted | 2026-04-03 |
+| [0010](./0010-provider-adapter-system.md) | Provider adapter system — decouple model routing from OpenRouter | Accepted | 2026-04-03 |
+| [0011](./0011-skill-merge-pipeline.md) | Skill merge pipeline — consolidate similar skills into meta-skills | Accepted | 2026-04-04 |
+| [0012](./0012-omls-mode.md) | OMLS mode — graduated learning from prompt to LoRA | Accepted | 2026-04-04 |
 
 ## Format
 

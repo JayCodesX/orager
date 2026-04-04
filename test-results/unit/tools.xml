@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="28" assertions="60" failures="0" skipped="0" time="0.19853">
+  <testsuite name="tests/tools.test.ts" file="tests/tools.test.ts" tests="28" assertions="60" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="bash tool" file="tests/tools.test.ts" line="22" tests="3" assertions="6" failures="0" skipped="0" time="0.12" hostname="JMac-2021.local">
+      <testcase name="runs a simple command and returns output" classname="bash tool" time="0.007729" file="tests/tools.test.ts" line="23" assertions="2" />
+      <testcase name="non-zero exit returns isError: true with output" classname="bash tool" time="0.009566" file="tests/tools.test.ts" line="29" assertions="2" />
+      <testcase name="timeout resolves with isError: true and content includes &apos;timed out&apos;" classname="bash tool" time="0.104971" file="tests/tools.test.ts" line="38" assertions="2" />
+    </testsuite>
+    <testsuite name="write_file tool" file="tests/tools.test.ts" line="50" tests="2" assertions="4" failures="0" skipped="0" time="0.004" hostname="JMac-2021.local">
+      <testcase name="writes a file and the content can be read back" classname="write_file tool" time="0.003335" file="tests/tools.test.ts" line="51" assertions="2" />
+      <testcase name="creates intermediate directories if they don&apos;t exist" classname="write_file tool" time="0.001192" file="tests/tools.test.ts" line="62" assertions="2" />
+    </testsuite>
+    <testsuite name="str_replace tool" file="tests/tools.test.ts" line="76" tests="4" assertions="8" failures="0" skipped="0" time="0.003" hostname="JMac-2021.local">
+      <testcase name="replaces a unique string in a file correctly" classname="str_replace tool" time="0.000878" file="tests/tools.test.ts" line="77" assertions="2" />
+      <testcase name="returns error when old_str not found" classname="str_replace tool" time="0.003446" file="tests/tools.test.ts" line="90" assertions="2" />
+      <testcase name="returns error when old_str appears multiple times" classname="str_replace tool" time="0.000604" file="tests/tools.test.ts" line="102" assertions="2" />
+      <testcase name="handles replacement strings containing $&amp; literally (no special pattern bug)" classname="str_replace tool" time="0.000793" file="tests/tools.test.ts" line="114" assertions="2" />
+    </testsuite>
+    <testsuite name="read_file tool" file="tests/tools.test.ts" line="131" tests="3" assertions="10" failures="0" skipped="0" time="0.001" hostname="JMac-2021.local">
+      <testcase name="reads a file and returns its content" classname="read_file tool" time="0.001249" file="tests/tools.test.ts" line="132" assertions="4" />
+      <testcase name="returns isError: true for non-existent file" classname="read_file tool" time="0.000486" file="tests/tools.test.ts" line="144" assertions="1" />
+      <testcase name="respects start_line / end_line range" classname="read_file tool" time="0.000845" file="tests/tools.test.ts" line="152" assertions="5" />
+    </testsuite>
+    <testsuite name="list_dir tool" file="tests/tools.test.ts" line="171" tests="3" assertions="8" failures="0" skipped="0" time="0.002" hostname="JMac-2021.local">
+      <testcase name="lists files in a dir (non-recursive)" classname="list_dir tool" time="0.001931" file="tests/tools.test.ts" line="172" assertions="4" />
+      <testcase name="recursive listing works and skips node_modules" classname="list_dir tool" time="0.00145" file="tests/tools.test.ts" line="184" assertions="3" />
+      <testcase name="returns error for non-existent directory" classname="list_dir tool" time="0.000481" file="tests/tools.test.ts" line="197" assertions="1" />
+    </testsuite>
+    <testsuite name="sandbox enforcement" file="tests/tools.test.ts" line="205" tests="7" assertions="13" failures="0" skipped="0" time="0.003" hostname="JMac-2021.local">
+      <testcase name="read_file allows access inside sandbox root" classname="sandbox enforcement" time="0.000536" file="tests/tools.test.ts" line="206" assertions="2" />
+      <testcase name="read_file blocks access outside sandbox root" classname="sandbox enforcement" time="0.003013" file="tests/tools.test.ts" line="215" assertions="2" />
+      <testcase name="read_file blocks path traversal" classname="sandbox enforcement" time="0.000591" file="tests/tools.test.ts" line="225" assertions="2" />
+      <testcase name="write_file allows writes inside sandbox root" classname="sandbox enforcement" time="0.000619" file="tests/tools.test.ts" line="235" assertions="1" />
+      <testcase name="write_file blocks writes outside sandbox root" classname="sandbox enforcement" time="0.000412" file="tests/tools.test.ts" line="245" assertions="2" />
+      <testcase name="str_replace blocks writes outside sandbox root" classname="sandbox enforcement" time="0.000367" file="tests/tools.test.ts" line="255" assertions="2" />
+      <testcase name="list_dir blocks listing outside sandbox root" classname="sandbox enforcement" time="0.000282" file="tests/tools.test.ts" line="266" assertions="2" />
+    </testsuite>
+    <testsuite name="bash tool edge cases" file="tests/tools.test.ts" line="279" tests="2" assertions="3" failures="0" skipped="0" time="0.007" hostname="JMac-2021.local">
+      <testcase name="returns error for negative timeout_ms" classname="bash tool edge cases" time="0.000245" file="tests/tools.test.ts" line="280" assertions="2" />
+      <testcase name="stderr output is included in content" classname="bash tool edge cases" time="0.007962" file="tests/tools.test.ts" line="286" assertions="1" />
+    </testsuite>
+    <testsuite name="read_file edge cases" file="tests/tools.test.ts" line="294" tests="4" assertions="8" failures="0" skipped="0" time="0.002" hostname="JMac-2021.local">
+      <testcase name="returns error when start_line is 0" classname="read_file edge cases" time="0.000967" file="tests/tools.test.ts" line="295" assertions="2" />
+      <testcase name="returns error when end_line is 0" classname="read_file edge cases" time="0.000962" file="tests/tools.test.ts" line="303" assertions="2" />
+      <testcase name="returns error when start_line &gt; end_line" classname="read_file edge cases" time="0.001304" file="tests/tools.test.ts" line="311" assertions="2" />
+      <testcase name="returns empty content without error when range is beyond file length" classname="read_file edge cases" time="0.001615" file="tests/tools.test.ts" line="322" assertions="2" />
+    </testsuite>
+  </testsuite>
+</testsuites>

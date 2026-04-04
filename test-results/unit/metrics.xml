@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="14" assertions="15" failures="0" skipped="0" time="0.019983">
+  <testsuite name="tests/metrics.test.ts" file="tests/metrics.test.ts" tests="14" assertions="15" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="recordTokens" file="tests/metrics.test.ts" line="21" tests="4" assertions="4" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="accepts positive token counts and a model string without throwing" classname="recordTokens" time="0" file="tests/metrics.test.ts" line="22" assertions="1" />
+      <testcase name="accepts zero token counts" classname="recordTokens" time="0" file="tests/metrics.test.ts" line="26" assertions="1" />
+      <testcase name="can be called multiple times for the same model" classname="recordTokens" time="0" file="tests/metrics.test.ts" line="30" assertions="1" />
+      <testcase name="accepts different model names independently" classname="recordTokens" time="0" file="tests/metrics.test.ts" line="37" assertions="1" />
+    </testsuite>
+    <testsuite name="recordToolCall" file="tests/metrics.test.ts" line="46" tests="4" assertions="4" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="records a successful tool call without throwing" classname="recordToolCall" time="0" file="tests/metrics.test.ts" line="47" assertions="1" />
+      <testcase name="records a failed tool call without throwing" classname="recordToolCall" time="0" file="tests/metrics.test.ts" line="51" assertions="1" />
+      <testcase name="handles common tool names" classname="recordToolCall" time="0" file="tests/metrics.test.ts" line="55" assertions="1" />
+      <testcase name="can be called in rapid succession" classname="recordToolCall" time="0" file="tests/metrics.test.ts" line="62" assertions="1" />
+    </testsuite>
+    <testsuite name="recordSession" file="tests/metrics.test.ts" line="69" tests="4" assertions="4" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="records a successful session without throwing" classname="recordSession" time="0.000494" file="tests/metrics.test.ts" line="70" assertions="1" />
+      <testcase name="records all known result subtypes" classname="recordSession" time="0" file="tests/metrics.test.ts" line="74" assertions="1" />
+      <testcase name="accepts zero duration and zero turns" classname="recordSession" time="0.000088" file="tests/metrics.test.ts" line="91" assertions="1" />
+      <testcase name="accepts very large durations" classname="recordSession" time="0.000027" file="tests/metrics.test.ts" line="95" assertions="1" />
+    </testsuite>
+    <testsuite name="instrument lazy initialisation" file="tests/metrics.test.ts" line="101" tests="2" assertions="3" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="initialises instruments on first call and reuses them on subsequent calls" classname="instrument lazy initialisation" time="0.000018" file="tests/metrics.test.ts" line="102" assertions="2" />
+      <testcase name="re-initialises cleanly after _resetInstrumentsForTesting()" classname="instrument lazy initialisation" time="0" file="tests/metrics.test.ts" line="109" assertions="1" />
+    </testsuite>
+  </testsuite>
+</testsuites>

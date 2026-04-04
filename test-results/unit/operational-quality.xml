@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="9" assertions="26" failures="0" skipped="0" time="0.320022">
+  <testsuite name="tests/operational-quality.test.ts" file="tests/operational-quality.test.ts" tests="9" assertions="26" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="logToolCall" file="tests/operational-quality.test.ts" line="45" tests="4" assertions="15" failures="0" skipped="0" time="0.271" hostname="JMac-2021.local">
+      <testcase name="writes a valid NDJSON line with event: tool_call" classname="logToolCall" time="0.065333" file="tests/operational-quality.test.ts" line="46" assertions="7" />
+      <testcase name="truncates long input values to 500 chars in the log" classname="logToolCall" time="0.062494" file="tests/operational-quality.test.ts" line="75" assertions="3" />
+      <testcase name="records isError: true for failed tool calls" classname="logToolCall" time="0.062307" file="tests/operational-quality.test.ts" line="99" assertions="3" />
+      <testcase name="multiple tool_call entries are each on their own line (NDJSON)" classname="logToolCall" time="0.082618" file="tests/operational-quality.test.ts" line="122" assertions="2" />
+    </testsuite>
+    <testsuite name="_filePrune: compacted sessions use 3× retention" file="tests/operational-quality.test.ts" line="149" tests="3" assertions="7" failures="0" skipped="0" time="0.013" hostname="JMac-2021.local">
+      <testcase name="deletes a regular session older than the TTL but keeps a compacted one of the same age" classname="_filePrune: compacted sessions use 3× retention" time="0.013814" file="tests/operational-quality.test.ts" line="190" assertions="3" />
+      <testcase name="deletes a compacted session older than 3× the TTL" classname="_filePrune: compacted sessions use 3× retention" time="0.000887" file="tests/operational-quality.test.ts" line="214" assertions="2" />
+      <testcase name="keeps both regular and compacted sessions that are within their TTL" classname="_filePrune: compacted sessions use 3× retention" time="0.000944" file="tests/operational-quality.test.ts" line="229" assertions="2" />
+    </testsuite>
+    <testsuite name="SQLite prune: compacted sessions use 3× retention" file="tests/operational-quality.test.ts" line="247" tests="1" assertions="2" failures="0" skipped="0" time="0.01" hostname="JMac-2021.local">
+      <testcase name="respects 3× retention for summarized sessions" classname="SQLite prune: compacted sessions use 3× retention" time="0.010396" file="tests/operational-quality.test.ts" line="248" assertions="2" />
+    </testsuite>
+    <testsuite name="bunfig.toml has test preload configured" file="tests/operational-quality.test.ts" line="285" tests="1" assertions="2" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="preload includes bun-setup.ts for test isolation" classname="bunfig.toml has test preload configured" time="0.000815" file="tests/operational-quality.test.ts" line="286" assertions="2" />
+    </testsuite>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="10" assertions="21" failures="0" skipped="0" time="0.027523">
+  <testsuite name="tests/retry.test.ts" file="tests/retry.test.ts" tests="10" assertions="21" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="callWithRetry" file="tests/retry.test.ts" line="58" tests="10" assertions="21" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns immediately on first-attempt success without retrying" classname="callWithRetry" time="0.00086" file="tests/retry.test.ts" line="61" assertions="2" />
+      <testcase name="retries a transient stream error and succeeds on second attempt" classname="callWithRetry" time="0.000529" file="tests/retry.test.ts" line="74" assertions="3" />
+      <testcase name="retries up to maxRetries times then returns the error result" classname="callWithRetry" time="0.000156" file="tests/retry.test.ts" line="88" assertions="2" />
+      <testcase name="retries a thrown network error and succeeds" classname="callWithRetry" time="0.000145" file="tests/retry.test.ts" line="102" assertions="2" />
+      <testcase name="rethrows after exhausting retries on thrown errors" classname="callWithRetry" time="0.000152" file="tests/retry.test.ts" line="115" assertions="2" />
+      <testcase name="does not retry a 401 unauthorized error result" classname="callWithRetry" time="0.00006" file="tests/retry.test.ts" line="133" assertions="2" />
+      <testcase name="does not retry an invalid api key error result" classname="callWithRetry" time="0" file="tests/retry.test.ts" line="144" assertions="1" />
+      <testcase name="does not retry a thrown 401 error" classname="callWithRetry" time="0.000095" file="tests/retry.test.ts" line="154" assertions="2" />
+      <testcase name="with maxRetries=0 does not retry at all" classname="callWithRetry" time="0" file="tests/retry.test.ts" line="169" assertions="2" />
+      <testcase name="calls onLog with retry details on each retry" classname="callWithRetry" time="0.000191" file="tests/retry.test.ts" line="182" assertions="3" />
+    </testsuite>
+  </testsuite>
+</testsuites>

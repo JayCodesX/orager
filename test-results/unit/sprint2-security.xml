@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="11" assertions="20" failures="0" skipped="0" time="0.740919">
+  <testsuite name="tests/sprint2-security.test.ts" file="tests/sprint2-security.test.ts" tests="11" assertions="20" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="read_file size guard" file="tests/sprint2-security.test.ts" line="23" tests="2" assertions="4" failures="0" skipped="0" time="0.001" hostname="JMac-2021.local">
+      <testcase name="rejects a file that exceeds ORAGER_MAX_READ_FILE_BYTES" classname="read_file size guard" time="0.001262" file="tests/sprint2-security.test.ts" line="35" assertions="2" />
+      <testcase name="allows a file that fits within the limit" classname="read_file size guard" time="0.000536" file="tests/sprint2-security.test.ts" line="53" assertions="2" />
+    </testsuite>
+    <testsuite name="write_file content size guard" file="tests/sprint2-security.test.ts" line="68" tests="3" assertions="6" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="rejects content that exceeds ORAGER_MAX_WRITE_FILE_BYTES" classname="write_file content size guard" time="0.000902" file="tests/sprint2-security.test.ts" line="80" assertions="3" />
+      <testcase name="reports byte size (not char count) for multi-byte UTF-8" classname="write_file content size guard" time="0.00053" file="tests/sprint2-security.test.ts" line="95" assertions="2" />
+      <testcase name="allows content within the limit" classname="write_file content size guard" time="0.00043" file="tests/sprint2-security.test.ts" line="108" assertions="1" />
+    </testsuite>
+    <testsuite name="MCP SSRF guard — IPv6 link-local" file="tests/sprint2-security.test.ts" line="117" tests="4" assertions="5" failures="0" skipped="0" time="0.057" hostname="JMac-2021.local">
+      <testcase name="connectMcpServer throws for fe80:: (link-local) URL" classname="MCP SSRF guard — IPv6 link-local" time="0.051985" file="tests/sprint2-security.test.ts" line="118" assertions="1" />
+      <testcase name="connectMcpServer throws for fe89:: (fe80::/10 range) URL" classname="MCP SSRF guard — IPv6 link-local" time="0" file="tests/sprint2-security.test.ts" line="127" assertions="1" />
+      <testcase name="connectMcpServer throws for 169.254.x.x (IPv4 link-local) URL" classname="MCP SSRF guard — IPv6 link-local" time="0" file="tests/sprint2-security.test.ts" line="135" assertions="1" />
+      <testcase name="connectMcpServer does NOT throw for a normal localhost URL" classname="MCP SSRF guard — IPv6 link-local" time="0.006343" file="tests/sprint2-security.test.ts" line="143" assertions="2" />
+    </testsuite>
+    <testsuite name="audit log rotation" file="tests/sprint2-security.test.ts" line="160" tests="2" assertions="5" failures="0" skipped="0" time="0.662" hostname="JMac-2021.local">
+      <testcase name="rotation uses a timestamped suffix (not .1)" classname="audit log rotation" time="0.336468" file="tests/sprint2-security.test.ts" line="198" assertions="2" />
+      <testcase name="pruneAuditBackups removes oldest backups beyond AUDIT_MAX_BACKUPS" classname="audit log rotation" time="0.326139" file="tests/sprint2-security.test.ts" line="230" assertions="3" />
+    </testsuite>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="4" assertions="9" failures="0" skipped="0" time="0.298882">
+  <testsuite name="tests/cost-breakdown.test.ts" file="tests/cost-breakdown.test.ts" tests="4" assertions="9" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="cost_breakdown in result event (4-C)" file="tests/cost-breakdown.test.ts" line="88" tests="4" assertions="9" failures="0" skipped="0" time="0.201" hostname="JMac-2021.local">
+      <testcase name="cost_breakdown is populated when costPerInputToken and costPerOutputToken are set" classname="cost_breakdown in result event (4-C)" time="0.184012" file="tests/cost-breakdown.test.ts" line="91" assertions="3" />
+      <testcase name="total_cost_usd equals input_usd + output_usd when only token-based pricing is used" classname="cost_breakdown in result event (4-C)" time="0.007848" file="tests/cost-breakdown.test.ts" line="108" assertions="2" />
+      <testcase name="cost_breakdown is undefined when no pricing is configured" classname="cost_breakdown in result event (4-C)" time="0.003234" file="tests/cost-breakdown.test.ts" line="123" assertions="1" />
+      <testcase name="cost_breakdown accumulates across multiple turns" classname="cost_breakdown in result event (4-C)" time="0.00751" file="tests/cost-breakdown.test.ts" line="134" assertions="3" />
+    </testsuite>
+  </testsuite>
+</testsuites>

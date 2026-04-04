@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="14" assertions="38" failures="0" skipped="0" time="0.073211">
+  <testsuite name="tests/p09-p10-fork-subagent.test.ts" file="tests/p09-p10-fork-subagent.test.ts" tests="14" assertions="38" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="P-09: Fork session" file="tests/p09-p10-fork-subagent.test.ts" line="14" tests="7" assertions="23" failures="0" skipped="0" time="0.045" hostname="JMac-2021.local">
+      <testcase name="forks a session at the latest turn" classname="P-09: Fork session" time="0.012425" file="tests/p09-p10-fork-subagent.test.ts" line="61" assertions="6" />
+      <testcase name="forks a session at a specific turn" classname="P-09: Fork session" time="0.007401" file="tests/p09-p10-fork-subagent.test.ts" line="74" assertions="5" />
+      <testcase name="forks at turn 0 keeps only system message" classname="P-09: Fork session" time="0.006748" file="tests/p09-p10-fork-subagent.test.ts" line="86" assertions="5" />
+      <testcase name="fork at turn with tool calls includes tool results" classname="P-09: Fork session" time="0.00508" file="tests/p09-p10-fork-subagent.test.ts" line="97" assertions="4" />
+      <testcase name="forked session has fresh cost tracking" classname="P-09: Fork session" time="0.00482" file="tests/p09-p10-fork-subagent.test.ts" line="108" assertions="1" />
+      <testcase name="forked session clears pending approval" classname="P-09: Fork session" time="0.006572" file="tests/p09-p10-fork-subagent.test.ts" line="117" assertions="1" />
+      <testcase name="throws for non-existent session" classname="P-09: Fork session" time="0.005053" file="tests/p09-p10-fork-subagent.test.ts" line="133" assertions="1" />
+    </testsuite>
+    <testsuite name="P-09: CLI --fork-session flag" file="tests/p09-p10-fork-subagent.test.ts" line="140" tests="2" assertions="5" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="help text includes --fork-session" classname="P-09: CLI --fork-session flag" time="0.000169" file="tests/p09-p10-fork-subagent.test.ts" line="141" assertions="3" />
+      <testcase name="parse-args recognizes --fork-session" classname="P-09: CLI --fork-session flag" time="0.00014" file="tests/p09-p10-fork-subagent.test.ts" line="151" assertions="2" />
+    </testsuite>
+    <testsuite name="P-10: spawn_agent tool" file="tests/p09-p10-fork-subagent.test.ts" line="163" tests="5" assertions="10" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="spawn_agent tool is defined in loop.ts" classname="P-10: spawn_agent tool" time="0.000259" file="tests/p09-p10-fork-subagent.test.ts" line="164" assertions="4" />
+      <testcase name="spawn_agent has cycle detection" classname="P-10: spawn_agent tool" time="0.000194" file="tests/p09-p10-fork-subagent.test.ts" line="175" assertions="2" />
+      <testcase name="spawn_agent supports parallel execution" classname="P-10: spawn_agent tool" time="0.000099" file="tests/p09-p10-fork-subagent.test.ts" line="185" assertions="1" />
+      <testcase name="CLI supports --max-spawn-depth" classname="P-10: spawn_agent tool" time="0.0001" file="tests/p09-p10-fork-subagent.test.ts" line="193" assertions="1" />
+      <testcase name="sub-agent merges filesChanged into parent" classname="P-10: spawn_agent tool" time="0.000111" file="tests/p09-p10-fork-subagent.test.ts" line="201" assertions="2" />
+    </testsuite>
+  </testsuite>
+</testsuites>

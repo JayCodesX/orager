@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="4" assertions="12" failures="0" skipped="0" time="0.036849">
+  <testsuite name="tests/key-rotation.test.ts" file="tests/key-rotation.test.ts" tests="4" assertions="12" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="P2-6: signing key rotation" file="tests/key-rotation.test.ts" line="115" tests="4" assertions="12" failures="0" skipped="0" time="0.012" hostname="JMac-2021.local">
+      <testcase name="POST /rotate-key returns 200 with rotated: true" classname="P2-6: signing key rotation" time="0.002904" file="tests/key-rotation.test.ts" line="130" assertions="5" />
+      <testcase name="old JWTs still work for 20 minutes after rotation (dual-key verification)" classname="P2-6: signing key rotation" time="0.004296" file="tests/key-rotation.test.ts" line="147" assertions="2" />
+      <testcase name="new JWTs signed with new key are accepted after rotation" classname="P2-6: signing key rotation" time="0.003574" file="tests/key-rotation.test.ts" line="174" assertions="2" />
+      <testcase name="old JWTs are rejected after the overlap window expires" classname="P2-6: signing key rotation" time="0.003156" file="tests/key-rotation.test.ts" line="200" assertions="3" />
+    </testsuite>
+  </testsuite>
+</testsuites>

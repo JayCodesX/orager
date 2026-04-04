@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="25" assertions="43" failures="0" skipped="0" time="0.040916">
+  <testsuite name="tests/medium-severity-fixes.test.ts" file="tests/medium-severity-fixes.test.ts" tests="25" assertions="43" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="M-05: native-sqlite flush() method" file="tests/medium-severity-fixes.test.ts" line="14" tests="1" assertions="2" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="flush() method exists on SqliteDb (native-sqlite.ts)" classname="M-05: native-sqlite flush() method" time="0.000921" file="tests/medium-severity-fixes.test.ts" line="15" assertions="2" />
+    </testsuite>
+    <testsuite name="M-07: PID lock TOCTOU mitigation" file="tests/medium-severity-fixes.test.ts" line="30" tests="1" assertions="2" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="ui-server acquireUiPidLock uses exclusive write flag" classname="M-07: PID lock TOCTOU mitigation" time="0.000211" file="tests/medium-severity-fixes.test.ts" line="31" assertions="2" />
+    </testsuite>
+    <testsuite name="M-08: runConcurrent abort on error" file="tests/medium-severity-fixes.test.ts" line="47" tests="4" assertions="4" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns results in correct order for successful runs" classname="M-08: runConcurrent abort on error" time="0.00037" file="tests/medium-severity-fixes.test.ts" line="48" assertions="1" />
+      <testcase name="throws on first error" classname="M-08: runConcurrent abort on error" time="0.000095" file="tests/medium-severity-fixes.test.ts" line="57" assertions="1" />
+      <testcase name="stops picking up new items after an error" classname="M-08: runConcurrent abort on error" time="0.000093" file="tests/medium-severity-fixes.test.ts" line="66" assertions="1" />
+      <testcase name="validates limit parameter" classname="M-08: runConcurrent abort on error" time="0.000133" file="tests/medium-severity-fixes.test.ts" line="81" assertions="1" />
+    </testsuite>
+    <testsuite name="M-10: Sandbox symlink TOCTOU mitigation" file="tests/medium-severity-fixes.test.ts" line="92" tests="4" assertions="4" failures="0" skipped="0" time="0.004" hostname="JMac-2021.local">
+      <testcase name="allows normal files inside sandbox" classname="M-10: Sandbox symlink TOCTOU mitigation" time="0.001221" file="tests/medium-severity-fixes.test.ts" line="103" assertions="1" />
+      <testcase name="rejects paths outside sandbox" classname="M-10: Sandbox symlink TOCTOU mitigation" time="0.00311" file="tests/medium-severity-fixes.test.ts" line="108" assertions="1" />
+      <testcase name="rejects symlinks pointing outside sandbox" classname="M-10: Sandbox symlink TOCTOU mitigation" time="0.000876" file="tests/medium-severity-fixes.test.ts" line="114" assertions="1" />
+      <testcase name="allows symlinks pointing inside sandbox" classname="M-10: Sandbox symlink TOCTOU mitigation" time="0.000971" file="tests/medium-severity-fixes.test.ts" line="122" assertions="1" />
+    </testsuite>
+    <testsuite name="M-16: Hook tool input via stdin" file="tests/medium-severity-fixes.test.ts" line="133" tests="1" assertions="3" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="hooks pass tool input via stdin option" classname="M-16: Hook tool input via stdin" time="0.000213" file="tests/medium-severity-fixes.test.ts" line="134" assertions="3" />
+    </testsuite>
+    <testsuite name="M-22: Rate limit uses socket address only" file="tests/medium-severity-fixes.test.ts" line="151" tests="1" assertions="1" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="ui-server.ts does not trust x-forwarded-for for auth decisions" classname="M-22: Rate limit uses socket address only" time="0.000187" file="tests/medium-severity-fixes.test.ts" line="152" assertions="1" />
+    </testsuite>
+    <testsuite name="M-23: Health detail DB check" file="tests/medium-severity-fixes.test.ts" line="166" tests="1" assertions="2" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="ui-server sessions handler does not open a SQLite DB" classname="M-23: Health detail DB check" time="0.000172" file="tests/medium-severity-fixes.test.ts" line="167" assertions="2" />
+    </testsuite>
+    <testsuite name="M-24: MCP client separate retry budgets" file="tests/medium-severity-fixes.test.ts" line="180" tests="1" assertions="3" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="callTool has separate rate limit and reconnect handling" classname="M-24: MCP client separate retry budgets" time="0.000192" file="tests/medium-severity-fixes.test.ts" line="181" assertions="3" />
+    </testsuite>
+    <testsuite name="M-12: Browser beforeExit handler" file="tests/medium-severity-fixes.test.ts" line="194" tests="1" assertions="3" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="source has beforeExit handler for async browser cleanup" classname="M-12: Browser beforeExit handler" time="0.000138" file="tests/medium-severity-fixes.test.ts" line="195" assertions="3" />
+    </testsuite>
+    <testsuite name="L-01: Rate limit map hard cap" file="tests/medium-severity-fixes.test.ts" line="210" tests="1" assertions="1" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="src/daemon.ts no longer exists — L-01 concern is resolved by ADR-0003 removal" classname="L-01: Rate limit map hard cap" time="0.000082" file="tests/medium-severity-fixes.test.ts" line="211" assertions="1" />
+    </testsuite>
+    <testsuite name="L-02: Session save queue eviction" file="tests/medium-severity-fixes.test.ts" line="221" tests="1" assertions="3" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="only evicts settled entries from save queue" classname="L-02: Session save queue eviction" time="0.000106" file="tests/medium-severity-fixes.test.ts" line="222" assertions="3" />
+    </testsuite>
+    <testsuite name="L-03: Session size cap documented as best-effort" file="tests/medium-severity-fixes.test.ts" line="236" tests="1" assertions="2" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="source documents the best-effort limitation" classname="L-03: Session size cap documented as best-effort" time="0.000118" file="tests/medium-severity-fixes.test.ts" line="237" assertions="2" />
+    </testsuite>
+    <testsuite name="L-04: Audit stream awaits dir init" file="tests/medium-severity-fixes.test.ts" line="249" tests="1" assertions="2" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="write call sites defer until _dirInit completes" classname="L-04: Audit stream awaits dir init" time="0.000105" file="tests/medium-severity-fixes.test.ts" line="250" assertions="2" />
+    </testsuite>
+    <testsuite name="L-05: MCP shuttingDown guard" file="tests/medium-severity-fixes.test.ts" line="262" tests="1" assertions="2" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="source checks shuttingDown before accepting calls" classname="L-05: MCP shuttingDown guard" time="0.00027" file="tests/medium-severity-fixes.test.ts" line="263" assertions="2" />
+    </testsuite>
+    <testsuite name="L-06: Non-obvious catch blocks log errors" file="tests/medium-severity-fixes.test.ts" line="275" tests="3" assertions="4" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="glob.ts logs non-ENOENT readdir failures" classname="L-06: Non-obvious catch blocks log errors" time="0.000082" file="tests/medium-severity-fixes.test.ts" line="276" assertions="2" />
+      <testcase name="list-dir.ts logs non-ENOENT readdir failures" classname="L-06: Non-obvious catch blocks log errors" time="0.000134" file="tests/medium-severity-fixes.test.ts" line="285" assertions="1" />
+      <testcase name="profile-loader.ts logs profile parse failures" classname="L-06: Non-obvious catch blocks log errors" time="0.000315" file="tests/medium-severity-fixes.test.ts" line="293" assertions="1" />
+    </testsuite>
+    <testsuite name="L-07: edit_files uses temp-then-rename" file="tests/medium-severity-fixes.test.ts" line="304" tests="1" assertions="3" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="source uses temp file and rename for crash safety" classname="L-07: edit_files uses temp-then-rename" time="0.000129" file="tests/medium-severity-fixes.test.ts" line="305" assertions="3" />
+    </testsuite>
+    <testsuite name="L-08: UI server fd operations wrapped in try/finally" file="tests/medium-severity-fixes.test.ts" line="318" tests="1" assertions="2" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="source wraps openSync/readSync/closeSync in try/finally" classname="L-08: UI server fd operations wrapped in try/finally" time="0.000197" file="tests/medium-severity-fixes.test.ts" line="319" assertions="2" />
+    </testsuite>
+  </testsuite>
+</testsuites>

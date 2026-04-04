@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="19" assertions="42" failures="0" skipped="0" time="0.029254">
+  <testsuite name="tests/openrouter.test.ts" file="tests/openrouter.test.ts" tests="19" assertions="42" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="callOpenRouter — happy path" file="tests/openrouter.test.ts" line="38" tests="9" assertions="22" failures="0" skipped="0" time="0.002" hostname="JMac-2021.local">
+      <testcase name="parses content, usage, and finishReason from a 3-chunk stream" classname="callOpenRouter — happy path" time="0.002195" file="tests/openrouter.test.ts" line="39" assertions="6" />
+      <testcase name="extracts model name from the stream" classname="callOpenRouter — happy path" time="0.000133" file="tests/openrouter.test.ts" line="59" assertions="1" />
+      <testcase name="accumulates reasoning via delta.reasoning" classname="callOpenRouter — happy path" time="0.000103" file="tests/openrouter.test.ts" line="69" assertions="2" />
+      <testcase name="accumulates tool call arguments split across multiple chunks" classname="callOpenRouter — happy path" time="0.00021" file="tests/openrouter.test.ts" line="81" assertions="4" />
+      <testcase name="handles empty stream (just [DONE]) without crashing" classname="callOpenRouter — happy path" time="0.000068" file="tests/openrouter.test.ts" line="101" assertions="3" />
+      <testcase name="silently ignores malformed JSON lines" classname="callOpenRouter — happy path" time="0.000211" file="tests/openrouter.test.ts" line="110" assertions="2" />
+      <testcase name="reads content split across trailing buffer correctly" classname="callOpenRouter — happy path" time="0.000473" file="tests/openrouter.test.ts" line="122" assertions="1" />
+      <testcase name="filters out tool calls with no id or name" classname="callOpenRouter — happy path" time="0.000173" file="tests/openrouter.test.ts" line="148" assertions="2" />
+      <testcase name="extracts cached tokens from prompt_tokens_details" classname="callOpenRouter — happy path" time="0.000097" file="tests/openrouter.test.ts" line="162" assertions="1" />
+    </testsuite>
+    <testsuite name="callOpenRouter — error handling" file="tests/openrouter.test.ts" line="173" tests="10" assertions="20" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns isError:true with httpStatus for non-ok HTTP response (401)" classname="callOpenRouter — error handling" time="0.000082" file="tests/openrouter.test.ts" line="174" assertions="3" />
+      <testcase name="returns isError:true with httpStatus for non-ok HTTP response (500)" classname="callOpenRouter — error handling" time="0.000054" file="tests/openrouter.test.ts" line="185" assertions="3" />
+      <testcase name="throws when response has no body" classname="callOpenRouter — error handling" time="0.000292" file="tests/openrouter.test.ts" line="196" assertions="1" />
+      <testcase name="returns isError:true for mid-stream chunk.error" classname="callOpenRouter — error handling" time="0.000122" file="tests/openrouter.test.ts" line="204" assertions="2" />
+      <testcase name="returns isError:true when finish_reason is error with no error object" classname="callOpenRouter — error handling" time="0.000114" file="tests/openrouter.test.ts" line="216" assertions="2" />
+      <testcase name="slices error body to 500 chars in the error message" classname="callOpenRouter — error handling" time="0.000107" file="tests/openrouter.test.ts" line="227" assertions="4" />
+      <testcase name="sends HTTP-Referer header when siteUrl is set" classname="callOpenRouter — error handling" time="0.000092" file="tests/openrouter.test.ts" line="242" assertions="1" />
+      <testcase name="sends X-Title header when siteName is set" classname="callOpenRouter — error handling" time="0.000071" file="tests/openrouter.test.ts" line="250" assertions="1" />
+      <testcase name="does not send HTTP-Referer or X-Title when site fields are absent" classname="callOpenRouter — error handling" time="0.00006" file="tests/openrouter.test.ts" line="258" assertions="2" />
+      <testcase name="invokes onChunk callback for each parsed chunk" classname="callOpenRouter — error handling" time="0.000116" file="tests/openrouter.test.ts" line="267" assertions="1" />
+    </testsuite>
+  </testsuite>
+</testsuites>

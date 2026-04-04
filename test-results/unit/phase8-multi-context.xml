@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="11" assertions="29" failures="0" skipped="0" time="0.116057">
+  <testsuite name="tests/phase8-multi-context.test.ts" file="tests/phase8-multi-context.test.ts" tests="11" assertions="29" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="searchMemoryFtsMulti" file="tests/phase8-multi-context.test.ts" line="20" tests="4" assertions="9" failures="0" skipped="0" time="0.042" hostname="JMac-2021.local">
+      <testcase name="returns empty array when keys list is empty" classname="searchMemoryFtsMulti" time="0.004642" file="tests/phase8-multi-context.test.ts" line="48" assertions="1" />
+      <testcase name="single-key call returns entries only from that namespace" classname="searchMemoryFtsMulti" time="0.019448" file="tests/phase8-multi-context.test.ts" line="58" assertions="2" />
+      <testcase name="multi-key call returns entries from all namespaces" classname="searchMemoryFtsMulti" time="0.014485" file="tests/phase8-multi-context.test.ts" line="75" assertions="4" />
+      <testcase name="multi-key call excludes expired entries" classname="searchMemoryFtsMulti" time="0.005572" file="tests/phase8-multi-context.test.ts" line="97" assertions="2" />
+    </testsuite>
+    <testsuite name="makeRememberTool multi-namespace" file="tests/phase8-multi-context.test.ts" line="122" tests="5" assertions="16" failures="0" skipped="0" time="0.053" hostname="JMac-2021.local">
+      <testcase name="list merges entries from all allowed namespaces" classname="makeRememberTool multi-namespace" time="0.023268" file="tests/phase8-multi-context.test.ts" line="150" assertions="3" />
+      <testcase name="add without target_namespace writes to primary key" classname="makeRememberTool multi-namespace" time="0.01006" file="tests/phase8-multi-context.test.ts" line="168" assertions="4" />
+      <testcase name="add with valid target_namespace writes to that namespace" classname="makeRememberTool multi-namespace" time="0.008062" file="tests/phase8-multi-context.test.ts" line="185" assertions="4" />
+      <testcase name="add with unknown target_namespace silently writes to primary" classname="makeRememberTool multi-namespace" time="0.007154" file="tests/phase8-multi-context.test.ts" line="206" assertions="3" />
+      <testcase name="single-namespace tool (no allowedNamespaces) behaves identically to before" classname="makeRememberTool multi-namespace" time="0.005256" file="tests/phase8-multi-context.test.ts" line="226" assertions="2" />
+    </testsuite>
+    <testsuite name="AgentLoopOptions memoryKey type" file="tests/phase8-multi-context.test.ts" line="245" tests="2" assertions="4" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="accepts a plain string (backward compat)" classname="AgentLoopOptions memoryKey type" time="0.000057" file="tests/phase8-multi-context.test.ts" line="246" assertions="1" />
+      <testcase name="accepts an array of strings (multi-context)" classname="AgentLoopOptions memoryKey type" time="0.00002" file="tests/phase8-multi-context.test.ts" line="255" assertions="3" />
+    </testsuite>
+  </testsuite>
+</testsuites>

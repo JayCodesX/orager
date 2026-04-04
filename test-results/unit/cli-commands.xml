@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="10" assertions="19" failures="0" skipped="0" time="0.544606">
+  <testsuite name="tests/cli-commands.test.ts" file="tests/cli-commands.test.ts" tests="10" assertions="19" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="parseArgs --session-id alias" file="tests/cli-commands.test.ts" line="16" tests="4" assertions="4" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="sets sessionId from --session-id" classname="parseArgs --session-id alias" time="0.000313" file="tests/cli-commands.test.ts" line="17" assertions="1" />
+      <testcase name="sets sessionId from --resume (existing behaviour preserved)" classname="parseArgs --session-id alias" time="0" file="tests/cli-commands.test.ts" line="22" assertions="1" />
+      <testcase name="last flag wins when both --session-id and --resume appear" classname="parseArgs --session-id alias" time="0" file="tests/cli-commands.test.ts" line="27" assertions="1" />
+      <testcase name="does not set sessionId when flag is absent" classname="parseArgs --session-id alias" time="0" file="tests/cli-commands.test.ts" line="32" assertions="1" />
+    </testsuite>
+    <testsuite name="parseArgs combined flags" file="tests/cli-commands.test.ts" line="40" tests="2" assertions="4" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="parses --model and --session-id together" classname="parseArgs combined flags" time="0" file="tests/cli-commands.test.ts" line="41" assertions="2" />
+      <testcase name="parses --max-turns and --max-cost-usd" classname="parseArgs combined flags" time="0" file="tests/cli-commands.test.ts" line="47" assertions="2" />
+    </testsuite>
+    <testsuite name="orager run subcommand routing" file="tests/cli-commands.test.ts" line="93" tests="2" assertions="4" failures="0" skipped="0" time="0.293" hostname="JMac-2021.local">
+      <testcase name="exits non-zero and prints API key error when PROTOCOL_API_KEY is unset" classname="orager run subcommand routing" time="0.146337" file="tests/cli-commands.test.ts" line="94" assertions="2" />
+      <testcase name="exits non-zero with empty prompt error when no prompt and no stdin pipe" classname="orager run subcommand routing" time="0.147786" file="tests/cli-commands.test.ts" line="103" assertions="2" />
+    </testsuite>
+    <testsuite name="orager chat subcommand routing" file="tests/cli-commands.test.ts" line="117" tests="1" assertions="2" failures="0" skipped="0" time="0.119" hostname="JMac-2021.local">
+      <testcase name="exits non-zero and prints API key error when PROTOCOL_API_KEY is unset" classname="orager chat subcommand routing" time="0.119207" file="tests/cli-commands.test.ts" line="118" assertions="2" />
+    </testsuite>
+    <testsuite name="orager --help mentions run and chat" file="tests/cli-commands.test.ts" line="130" tests="1" assertions="5" failures="0" skipped="0" time="0.109" hostname="JMac-2021.local">
+      <testcase name="help output contains &apos;run&apos; and &apos;chat&apos; subcommands" classname="orager --help mentions run and chat" time="0.109835" file="tests/cli-commands.test.ts" line="131" assertions="5" />
+    </testsuite>
+  </testsuite>
+</testsuites>

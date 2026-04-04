@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="34" assertions="61" failures="0" skipped="0" time="0.03033">
+  <testsuite name="tests/providers.test.ts" file="tests/providers.test.ts" tests="34" assertions="61" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="provider registry" file="tests/providers.test.ts" line="8" tests="5" assertions="12" failures="0" skipped="0" time="0.01" hostname="JMac-2021.local">
+      <testcase name="has openrouter and anthropic registered by default" classname="provider registry" time="0.010549" file="tests/providers.test.ts" line="17" assertions="2" />
+      <testcase name="getProvider returns undefined for unregistered provider" classname="provider registry" time="0.000034" file="tests/providers.test.ts" line="23" assertions="1" />
+      <testcase name="registerProvider adds a new provider" classname="provider registry" time="0.000072" file="tests/providers.test.ts" line="27" assertions="2" />
+      <testcase name="registerOllama adds ollama provider" classname="provider registry" time="0.00003" file="tests/providers.test.ts" line="39" assertions="3" />
+      <testcase name="_resetRegistryForTesting clears custom providers" classname="provider registry" time="0.000019" file="tests/providers.test.ts" line="47" assertions="4" />
+    </testsuite>
+    <testsuite name="resolveProvider" file="tests/providers.test.ts" line="60" tests="6" assertions="10" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="resolves to openrouter by default" classname="resolveProvider" time="0.000122" file="tests/providers.test.ts" line="68" assertions="2" />
+      <testcase name="resolves to ollama when _ollamaBaseUrl is set and ollama registered" classname="resolveProvider" time="0.000015" file="tests/providers.test.ts" line="78" assertions="2" />
+      <testcase name="creates ad-hoc ollama provider when _ollamaBaseUrl set but not registered" classname="resolveProvider" time="0.000106" file="tests/providers.test.ts" line="90" assertions="2" />
+      <testcase name="resolves to anthropic for anthropic/* models when API key is set" classname="resolveProvider" time="0.000032" file="tests/providers.test.ts" line="101" assertions="2" />
+      <testcase name="falls back to openrouter for anthropic/* when no ANTHROPIC_API_KEY" classname="resolveProvider" time="0.000018" file="tests/providers.test.ts" line="122" assertions="1" />
+      <testcase name="ollama takes priority over anthropic direct" classname="resolveProvider" time="0.000041" file="tests/providers.test.ts" line="139" assertions="1" />
+    </testsuite>
+    <testsuite name="OpenRouterProvider" file="tests/providers.test.ts" line="163" tests="2" assertions="5" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="supportsModel always returns true" classname="OpenRouterProvider" time="0.000053" file="tests/providers.test.ts" line="164" assertions="3" />
+      <testcase name="has correct name and displayName" classname="OpenRouterProvider" time="0.000296" file="tests/providers.test.ts" line="172" assertions="2" />
+    </testsuite>
+    <testsuite name="AnthropicDirectProvider" file="tests/providers.test.ts" line="180" tests="3" assertions="5" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="has correct name and displayName" classname="AnthropicDirectProvider" time="0.000062" file="tests/providers.test.ts" line="181" assertions="2" />
+      <testcase name="supportsModel returns false when ANTHROPIC_API_KEY not set" classname="AnthropicDirectProvider" time="0.000071" file="tests/providers.test.ts" line="188" assertions="1" />
+      <testcase name="supportsModel returns false for non-anthropic models" classname="AnthropicDirectProvider" time="0.000245" file="tests/providers.test.ts" line="200" assertions="2" />
+    </testsuite>
+    <testsuite name="OllamaProvider" file="tests/providers.test.ts" line="218" tests="3" assertions="4" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="has correct name and displayName" classname="OllamaProvider" time="0.000062" file="tests/providers.test.ts" line="219" assertions="2" />
+      <testcase name="supportsModel returns true when enabled" classname="OllamaProvider" time="0.000056" file="tests/providers.test.ts" line="226" assertions="1" />
+      <testcase name="supportsModel returns false when disabled" classname="OllamaProvider" time="0.000016" file="tests/providers.test.ts" line="232" assertions="1" />
+    </testsuite>
+    <testsuite name="settings.validateSettings — providers block" file="tests/providers.test.ts" line="241" tests="9" assertions="13" failures="0" skipped="0" time="0.001" hostname="JMac-2021.local">
+      <testcase name="accepts valid providers config" classname="settings.validateSettings — providers block" time="0.001479" file="tests/providers.test.ts" line="249" assertions="5" />
+      <testcase name="warns on unknown provider names" classname="settings.validateSettings — providers block" time="0" file="tests/providers.test.ts" line="264" assertions="1" />
+      <testcase name="warns on unknown keys within a provider" classname="settings.validateSettings — providers block" time="0" file="tests/providers.test.ts" line="273" assertions="1" />
+      <testcase name="validates openrouter.zdr is boolean" classname="settings.validateSettings — providers block" time="0" file="tests/providers.test.ts" line="282" assertions="1" />
+      <testcase name="validates openrouter.dataCollection values" classname="settings.validateSettings — providers block" time="0" file="tests/providers.test.ts" line="291" assertions="1" />
+      <testcase name="validates openrouter.sort values" classname="settings.validateSettings — providers block" time="0" file="tests/providers.test.ts" line="300" assertions="1" />
+      <testcase name="validates ollama.enabled is boolean" classname="settings.validateSettings — providers block" time="0" file="tests/providers.test.ts" line="309" assertions="1" />
+      <testcase name="rejects non-object providers block" classname="settings.validateSettings — providers block" time="0" file="tests/providers.test.ts" line="318" assertions="1" />
+      <testcase name="rejects non-object provider config" classname="settings.validateSettings — providers block" time="0.000527" file="tests/providers.test.ts" line="325" assertions="1" />
+    </testsuite>
+    <testsuite name="mergeSettings — providers config wiring" file="tests/providers.test.ts" line="337" tests="6" assertions="12" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="maps providers.openrouter fields into flat AgentLoopOptions" classname="mergeSettings — providers config wiring" time="0.000069" file="tests/providers.test.ts" line="345" assertions="4" />
+      <testcase name="runtime opts override providers.openrouter fields" classname="mergeSettings — providers config wiring" time="0" file="tests/providers.test.ts" line="364" assertions="2" />
+      <testcase name="maps providers.ollama into ollama config" classname="mergeSettings — providers config wiring" time="0" file="tests/providers.test.ts" line="384" assertions="1" />
+      <testcase name="runtime ollama config takes precedence over providers.ollama" classname="mergeSettings — providers config wiring" time="0" file="tests/providers.test.ts" line="395" assertions="1" />
+      <testcase name="maps providers.openrouter.apiKey as lowest priority" classname="mergeSettings — providers config wiring" time="0.000217" file="tests/providers.test.ts" line="411" assertions="2" />
+      <testcase name="does nothing when providers block is absent" classname="mergeSettings — providers config wiring" time="0" file="tests/providers.test.ts" line="423" assertions="2" />
+    </testsuite>
+  </testsuite>
+</testsuites>

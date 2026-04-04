@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="28" assertions="47" failures="0" skipped="0" time="0.288224">
+  <testsuite name="tests/feature-gap-fixes.test.ts" file="tests/feature-gap-fixes.test.ts" tests="28" assertions="47" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="SessionData.compactedFrom type field" file="tests/feature-gap-fixes.test.ts" line="37" tests="2" assertions="2" failures="0" skipped="0" time="0.038" hostname="JMac-2021.local">
+      <testcase name="compactedFrom is an optional string field on SessionData" classname="SessionData.compactedFrom type field" time="0.037553" file="tests/feature-gap-fixes.test.ts" line="38" assertions="1" />
+      <testcase name="compactedFrom can be undefined (not all sessions are compacted)" classname="SessionData.compactedFrom type field" time="0.001241" file="tests/feature-gap-fixes.test.ts" line="56" assertions="1" />
+    </testsuite>
+    <testsuite name="compactSession API" file="tests/feature-gap-fixes.test.ts" line="72" tests="3" assertions="3" failures="0" skipped="0" time="0.016" hostname="JMac-2021.local">
+      <testcase name="is exported from session.ts" classname="compactSession API" time="0.000733" file="tests/feature-gap-fixes.test.ts" line="73" assertions="1" />
+      <testcase name="throws with &apos;not found&apos; when session does not exist" classname="compactSession API" time="0.016971" file="tests/feature-gap-fixes.test.ts" line="78" assertions="1" />
+      <testcase name="takes optional summarizeModel and summarizePrompt overrides" classname="compactSession API" time="0.000695" file="tests/feature-gap-fixes.test.ts" line="85" assertions="1" />
+    </testsuite>
+    <testsuite name="MCP HTTP SSRF guard" file="tests/feature-gap-fixes.test.ts" line="99" tests="9" assertions="12" failures="0" skipped="0" time="0.16" hostname="JMac-2021.local">
+      <testcase name="blocks AWS/Azure/GCP metadata IP (169.254.169.254)" classname="MCP HTTP SSRF guard" time="0.002712" file="tests/feature-gap-fixes.test.ts" line="115" assertions="1" />
+      <testcase name="blocks link-local range broadly (169.254.x.x)" classname="MCP HTTP SSRF guard" time="0.000321" file="tests/feature-gap-fixes.test.ts" line="119" assertions="2" />
+      <testcase name="blocks GCP metadata hostname" classname="MCP HTTP SSRF guard" time="0.000266" file="tests/feature-gap-fixes.test.ts" line="124" assertions="1" />
+      <testcase name="allows localhost — needed for local MCP development" classname="MCP HTTP SSRF guard" time="0.000535" file="tests/feature-gap-fixes.test.ts" line="128" assertions="1" />
+      <testcase name="allows 127.0.0.1 — needed for local MCP development" classname="MCP HTTP SSRF guard" time="0.000385" file="tests/feature-gap-fixes.test.ts" line="132" assertions="1" />
+      <testcase name="allows public HTTPS endpoints" classname="MCP HTTP SSRF guard" time="0.000404" file="tests/feature-gap-fixes.test.ts" line="136" assertions="1" />
+      <testcase name="blocks non-http(s) schemes" classname="MCP HTTP SSRF guard" time="0.000329" file="tests/feature-gap-fixes.test.ts" line="140" assertions="2" />
+      <testcase name="blocks invalid URLs" classname="MCP HTTP SSRF guard" time="0.000383" file="tests/feature-gap-fixes.test.ts" line="145" assertions="2" />
+      <testcase name="connectMcpServer rejects 169.254.x.x URLs" classname="MCP HTTP SSRF guard" time="0.158408" file="tests/feature-gap-fixes.test.ts" line="150" assertions="1" />
+    </testsuite>
+    <testsuite name="spawn_agent trackFileChanges inheritance" file="tests/feature-gap-fixes.test.ts" line="160" tests="2" assertions="4" failures="0" skipped="0" time="0.003" hostname="JMac-2021.local">
+      <testcase name="structured filesChanged propagation works when trackFileChanges is true" classname="spawn_agent trackFileChanges inheritance" time="0.000845" file="tests/feature-gap-fixes.test.ts" line="161" assertions="3" />
+      <testcase name="trackFileChanges: true is a valid AgentLoopOptions field" classname="spawn_agent trackFileChanges inheritance" time="0.003333" file="tests/feature-gap-fixes.test.ts" line="178" assertions="1" />
+    </testsuite>
+    <testsuite name="searchSessions limit parameter" file="tests/feature-gap-fixes.test.ts" line="187" tests="3" assertions="8" failures="0" skipped="0" time="0.006" hostname="JMac-2021.local">
+      <testcase name="searchSessions signature accepts query, limit, and offset parameters" classname="searchSessions limit parameter" time="0.004995" file="tests/feature-gap-fixes.test.ts" line="188" assertions="2" />
+      <testcase name="search result limit is capped at 100 in the CLI handler" classname="searchSessions limit parameter" time="0.002397" file="tests/feature-gap-fixes.test.ts" line="201" assertions="5" />
+      <testcase name="default limit is 20" classname="searchSessions limit parameter" time="0.000326" file="tests/feature-gap-fixes.test.ts" line="214" assertions="1" />
+    </testsuite>
+    <testsuite name="OTel metric export interval" file="tests/feature-gap-fixes.test.ts" line="223" tests="3" assertions="4" failures="0" skipped="0" time="0.003" hostname="JMac-2021.local">
+      <testcase name="telemetry.ts exports initTelemetry" classname="OTel metric export interval" time="0.003304" file="tests/feature-gap-fixes.test.ts" line="224" assertions="1" />
+      <testcase name="initTelemetry does not throw when OTEL_EXPORTER_OTLP_ENDPOINT is not set" classname="OTel metric export interval" time="0.000667" file="tests/feature-gap-fixes.test.ts" line="229" assertions="1" />
+      <testcase name="10_000ms is a sane metric export interval (reduced from 30s)" classname="OTel metric export interval" time="0.000349" file="tests/feature-gap-fixes.test.ts" line="237" assertions="2" />
+    </testsuite>
+    <testsuite name="loadAutoMemory with SQLite disabled (default)" file="tests/feature-gap-fixes.test.ts" line="247" tests="4" assertions="8" failures="0" skipped="0" time="0.022" hostname="JMac-2021.local">
+      <testcase name="returns empty strings when no memory files exist and SQLite is off" classname="loadAutoMemory with SQLite disabled (default)" time="0.014161" file="tests/feature-gap-fixes.test.ts" line="248" assertions="2" />
+      <testcase name="returns CLAUDE.md content as project when file exists" classname="loadAutoMemory with SQLite disabled (default)" time="0.00818" file="tests/feature-gap-fixes.test.ts" line="258" assertions="1" />
+      <testcase name="appends SQLite block to project when content exists (format check)" classname="loadAutoMemory with SQLite disabled (default)" time="0.000438" file="tests/feature-gap-fixes.test.ts" line="269" assertions="3" />
+      <testcase name="does not append separator when sqliteBlock is empty" classname="loadAutoMemory with SQLite disabled (default)" time="0.000311" file="tests/feature-gap-fixes.test.ts" line="280" assertions="2" />
+    </testsuite>
+    <testsuite name="TypeScript compilation (all errors resolved)" file="tests/feature-gap-fixes.test.ts" line="292" tests="2" assertions="6" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="telemetry.ts TS errors are fixed (uses Record&lt;string, unknown&gt; + any cast)" classname="TypeScript compilation (all errors resolved)" time="0.000674" file="tests/feature-gap-fixes.test.ts" line="293" assertions="2" />
+      <testcase name="loop.ts emitResult is declared before the try block" classname="TypeScript compilation (all errors resolved)" time="0.000705" file="tests/feature-gap-fixes.test.ts" line="306" assertions="4" />
+    </testsuite>
+  </testsuite>
+</testsuites>

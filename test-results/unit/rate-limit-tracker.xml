@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="14" assertions="33" failures="0" skipped="0" time="0.014721">
+  <testsuite name="tests/rate-limit-tracker.test.ts" file="tests/rate-limit-tracker.test.ts" tests="14" assertions="33" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="getRateLimitState" file="tests/rate-limit-tracker.test.ts" line="12" tests="1" assertions="1" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns null before any update" classname="getRateLimitState" time="0.000924" file="tests/rate-limit-tracker.test.ts" line="13" assertions="1" />
+    </testsuite>
+    <testsuite name="updateRateLimitState" file="tests/rate-limit-tracker.test.ts" line="19" tests="4" assertions="15" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="does not update state when all limit values are zero (guard condition)" classname="updateRateLimitState" time="0.000061" file="tests/rate-limit-tracker.test.ts" line="20" assertions="1" />
+      <testcase name="sets state correctly from a plain Record with valid headers" classname="updateRateLimitState" time="0.000402" file="tests/rate-limit-tracker.test.ts" line="31" assertions="6" />
+      <testcase name="parses reset date strings into Date objects" classname="updateRateLimitState" time="0.00002" file="tests/rate-limit-tracker.test.ts" line="50" assertions="3" />
+      <testcase name="handles Headers object input format" classname="updateRateLimitState" time="0.000361" file="tests/rate-limit-tracker.test.ts" line="67" assertions="5" />
+    </testsuite>
+    <testsuite name="isNearRateLimit" file="tests/rate-limit-tracker.test.ts" line="85" tests="4" assertions="4" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns false when state is null" classname="isNearRateLimit" time="0" file="tests/rate-limit-tracker.test.ts" line="86" assertions="1" />
+      <testcase name="returns false when well above threshold (90% remaining)" classname="isNearRateLimit" time="0" file="tests/rate-limit-tracker.test.ts" line="91" assertions="1" />
+      <testcase name="returns true when requests are near limit (&lt; 10% remaining)" classname="isNearRateLimit" time="0" file="tests/rate-limit-tracker.test.ts" line="102" assertions="1" />
+      <testcase name="returns true when tokens are near limit (&lt; 10% remaining)" classname="isNearRateLimit" time="0.000185" file="tests/rate-limit-tracker.test.ts" line="113" assertions="1" />
+    </testsuite>
+    <testsuite name="rateLimitSummary" file="tests/rate-limit-tracker.test.ts" line="125" tests="2" assertions="7" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns &apos;no rate limit data&apos; when state is null" classname="rateLimitSummary" time="0.000053" file="tests/rate-limit-tracker.test.ts" line="126" assertions="1" />
+      <testcase name="returns formatted string with percentages after update" classname="rateLimitSummary" time="0" file="tests/rate-limit-tracker.test.ts" line="131" assertions="6" />
+    </testsuite>
+    <testsuite name="invalid reset-date header handling" file="tests/rate-limit-tracker.test.ts" line="149" tests="3" assertions="6" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="stores null for resetRequestsAt when header value is not a valid date" classname="invalid reset-date header handling" time="0" file="tests/rate-limit-tracker.test.ts" line="150" assertions="3" />
+      <testcase name="stores null for resetRequestsAt when header value is an empty string" classname="invalid reset-date header handling" time="0.00002" file="tests/rate-limit-tracker.test.ts" line="166" assertions="1" />
+      <testcase name="still stores a valid date alongside an invalid one" classname="invalid reset-date header handling" time="0" file="tests/rate-limit-tracker.test.ts" line="179" assertions="2" />
+    </testsuite>
+  </testsuite>
+</testsuites>

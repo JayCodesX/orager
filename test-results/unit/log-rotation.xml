@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="7" assertions="13" failures="0" skipped="0" time="0.035431">
+  <testsuite name="tests/log-rotation.test.ts" file="tests/log-rotation.test.ts" tests="7" assertions="13" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="_getLogFileSizeBytes" file="tests/log-rotation.test.ts" line="21" tests="2" assertions="2" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns 0 for a missing file (ENOENT)" classname="_getLogFileSizeBytes" time="0.000093" file="tests/log-rotation.test.ts" line="22" assertions="1" />
+      <testcase name="returns the correct byte count for an existing file" classname="_getLogFileSizeBytes" time="0.000428" file="tests/log-rotation.test.ts" line="26" assertions="1" />
+    </testsuite>
+    <testsuite name="_maybeRotate" file="tests/log-rotation.test.ts" line="39" tests="5" assertions="11" failures="0" skipped="0" time="0.002" hostname="JMac-2021.local">
+      <testcase name="does not rotate when file size is under threshold" classname="_maybeRotate" time="0.000668" file="tests/log-rotation.test.ts" line="40" assertions="2" />
+      <testcase name="rotates file to .1 when over threshold" classname="_maybeRotate" time="0.001042" file="tests/log-rotation.test.ts" line="53" assertions="3" />
+      <testcase name="writes go to fresh file after rotation" classname="_maybeRotate" time="0.001445" file="tests/log-rotation.test.ts" line="69" assertions="3" />
+      <testcase name="ORAGER_LOG_MAX_SIZE_MB threshold is respected (large file triggers rotation)" classname="_maybeRotate" time="0.000426" file="tests/log-rotation.test.ts" line="87" assertions="1" />
+      <testcase name="does not crash when log file is missing (ENOENT)" classname="_maybeRotate" time="0.000072" file="tests/log-rotation.test.ts" line="101" assertions="2" />
+    </testsuite>
+  </testsuite>
+</testsuites>

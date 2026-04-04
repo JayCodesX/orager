@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="10" assertions="18" failures="0" skipped="0" time="1.12414">
+  <testsuite name="tests/audit-needed-fixes.test.ts" file="tests/audit-needed-fixes.test.ts" tests="10" assertions="18" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="N-05: Todo sessionId path traversal prevention" file="tests/audit-needed-fixes.test.ts" line="23" tests="3" assertions="3" failures="0" skipped="0" time="0.002" hostname="JMac-2021.local">
+      <testcase name="rejects sessionId containing path traversal (../../etc)" classname="N-05: Todo sessionId path traversal prevention" time="0.002583" file="tests/audit-needed-fixes.test.ts" line="24" assertions="1" />
+      <testcase name="rejects sessionId that is just &apos;..&apos;" classname="N-05: Todo sessionId path traversal prevention" time="0.000668" file="tests/audit-needed-fixes.test.ts" line="63" assertions="1" />
+      <testcase name="sanitizes sessionId with slashes to basename only" classname="N-05: Todo sessionId path traversal prevention" time="0.000793" file="tests/audit-needed-fixes.test.ts" line="81" assertions="1" />
+    </testsuite>
+    <testsuite name="N-07: Notebook edit operations with index drift" file="tests/audit-needed-fixes.test.ts" line="96" tests="2" assertions="4" failures="0" skipped="0" time="0.005" hostname="JMac-2021.local">
+      <testcase name="deleting cell 2 then cell 5 hits correct cells (descending order)" classname="N-07: Notebook edit operations with index drift" time="0.004124" file="tests/audit-needed-fixes.test.ts" line="123" assertions="2" />
+      <testcase name="mixed delete and replace operations use correct indices" classname="N-07: Notebook edit operations with index drift" time="0.001099" file="tests/audit-needed-fixes.test.ts" line="153" assertions="2" />
+    </testsuite>
+    <testsuite name="N-08: Glob consecutive ** collapse" file="tests/audit-needed-fixes.test.ts" line="186" tests="1" assertions="1" failures="0" skipped="0" time="1.085" hostname="JMac-2021.local">
+      <testcase name="does not hang on **/**/**/*.ts pattern" classname="N-08: Glob consecutive ** collapse" time="1.08524" file="tests/audit-needed-fixes.test.ts" line="187" assertions="1" />
+    </testsuite>
+    <testsuite name="N-09: withCacheControl multimodal message handling" file="tests/audit-needed-fixes.test.ts" line="208" tests="1" assertions="3" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="the fix exists in the source code" classname="N-09: withCacheControl multimodal message handling" time="0.000696" file="tests/audit-needed-fixes.test.ts" line="213" assertions="3" />
+    </testsuite>
+    <testsuite name="N-10: native-sqlite lastSaveError field" file="tests/audit-needed-fixes.test.ts" line="230" tests="1" assertions="2" failures="0" skipped="0" time="0.001" hostname="JMac-2021.local">
+      <testcase name="the lastSaveError field exists in native-sqlite.ts (SqliteDb)" classname="N-10: native-sqlite lastSaveError field" time="0.001159" file="tests/audit-needed-fixes.test.ts" line="231" assertions="2" />
+    </testsuite>
+    <testsuite name="N-04: Body-read timeout in web_fetch" file="tests/audit-needed-fixes.test.ts" line="244" tests="1" assertions="3" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="the body timeout fix exists in the source code" classname="N-04: Body-read timeout in web_fetch" time="0.00039" file="tests/audit-needed-fixes.test.ts" line="245" assertions="3" />
+    </testsuite>
+    <testsuite name="N-01: Abort signal forwarded to LLM API call" file="tests/audit-needed-fixes.test.ts" line="258" tests="1" assertions="2" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="the signal is passed in the callWithRetry options" classname="N-01: Abort signal forwarded to LLM API call" time="0.000812" file="tests/audit-needed-fixes.test.ts" line="259" assertions="2" />
+    </testsuite>
+  </testsuite>
+</testsuites>

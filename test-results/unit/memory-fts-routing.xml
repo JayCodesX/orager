@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="8" assertions="9" failures="0" skipped="0" time="0.097217">
+  <testsuite name="tests/memory-fts-routing.test.ts" file="tests/memory-fts-routing.test.ts" tests="8" assertions="9" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="shouldUseFtsRetrieval" file="tests/memory-fts-routing.test.ts" line="10" tests="4" assertions="4" failures="0" skipped="0" time="0.004" hostname="JMac-2021.local">
+      <testcase name="returns true when SQLite enabled and memoryRetrieval is &apos;local&apos;" classname="shouldUseFtsRetrieval" time="0.004037" file="tests/memory-fts-routing.test.ts" line="11" assertions="1" />
+      <testcase name="returns true when SQLite enabled and memoryRetrieval is undefined (defaults to local)" classname="shouldUseFtsRetrieval" time="0" file="tests/memory-fts-routing.test.ts" line="19" assertions="1" />
+      <testcase name="returns false when SQLite is disabled" classname="shouldUseFtsRetrieval" time="0.000128" file="tests/memory-fts-routing.test.ts" line="27" assertions="1" />
+      <testcase name="returns false when SQLite enabled but memoryRetrieval is &apos;embedding&apos;" classname="shouldUseFtsRetrieval" time="0" file="tests/memory-fts-routing.test.ts" line="35" assertions="1" />
+    </testsuite>
+    <testsuite name="searchMemoryFts routing" file="tests/memory-fts-routing.test.ts" line="44" tests="4" assertions="5" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="when SQLite enabled + memoryRetrieval local: searchMemoryFts is called" classname="searchMemoryFts routing" time="0.000118" file="tests/memory-fts-routing.test.ts" line="45" assertions="1" />
+      <testcase name="when SQLite disabled: searchMemoryFts is NOT called" classname="searchMemoryFts routing" time="0.000029" file="tests/memory-fts-routing.test.ts" line="61" assertions="1" />
+      <testcase name="when SQLite enabled + memoryRetrieval embedding: searchMemoryFts is NOT called" classname="searchMemoryFts routing" time="0.000071" file="tests/memory-fts-routing.test.ts" line="74" assertions="1" />
+      <testcase name="FTS results are deduplicated correctly" classname="searchMemoryFts routing" time="0.000118" file="tests/memory-fts-routing.test.ts" line="87" assertions="2" />
+    </testsuite>
+  </testsuite>
+</testsuites>

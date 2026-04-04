@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="5" assertions="9" failures="0" skipped="0" time="0.028028">
+  <testsuite name="tests/embedding-prewarm.test.ts" file="tests/embedding-prewarm.test.ts" tests="5" assertions="9" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="P2-7: embedding cold-start prewarm" file="tests/embedding-prewarm.test.ts" line="105" tests="5" assertions="9" failures="0" skipped="0" time="0.003" hostname="JMac-2021.local">
+      <testcase name="prewarm is skipped when apiKey is not set" classname="P2-7: embedding cold-start prewarm" time="0.001045" file="tests/embedding-prewarm.test.ts" line="106" assertions="2" />
+      <testcase name="prewarm calls callEmbeddings for sessions with memoryEmbeddingModel" classname="P2-7: embedding cold-start prewarm" time="0.002771" file="tests/embedding-prewarm.test.ts" line="116" assertions="3" />
+      <testcase name="prewarm failure does not crash" classname="P2-7: embedding cold-start prewarm" time="0.000781" file="tests/embedding-prewarm.test.ts" line="152" assertions="1" />
+      <testcase name="sessions without memoryEmbeddingModel are skipped" classname="P2-7: embedding cold-start prewarm" time="0.000629" file="tests/embedding-prewarm.test.ts" line="176" assertions="2" />
+      <testcase name="setCachedQueryEmbedding is called with correct model and text" classname="P2-7: embedding cold-start prewarm" time="0.000637" file="tests/embedding-prewarm.test.ts" line="198" assertions="1" />
+    </testsuite>
+  </testsuite>
+</testsuites>

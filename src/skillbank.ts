@@ -40,6 +40,9 @@ export const DEFAULT_SKILLBANK_CONFIG: Required<SkillBankConfig> = {
   topK: 5,
   retentionDays: 30,
   autoExtract: true,
+  mergeAt: 100,
+  mergeThreshold: 0.78,
+  mergeMinClusterSize: 3,
 };
 
 function cfg(userConfig?: SkillBankConfig): Required<SkillBankConfig> {
@@ -60,6 +63,10 @@ export interface Skill {
   useCount: number;
   successRate: number;
   deleted: boolean;
+  /** ID of the meta-skill this skill was merged into (set when deleted via merge). */
+  mergedInto?: string | null;
+  /** IDs of the source skills this meta-skill was synthesized from. */
+  sourceSkills?: string[] | null;
 }
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
@@ -96,6 +103,15 @@ async function _getSkillsDb(): Promise<SqliteDatabase> {
     );
     CREATE INDEX IF NOT EXISTS idx_skills_deleted ON skills(deleted);
   `);
+
+  // ── Additive migrations for merge pipeline ───────────────────────────────
+  // These columns are nullable and default to NULL so existing rows are unaffected.
+  try {
+    _skillsDb.exec(`ALTER TABLE skills ADD COLUMN merged_into TEXT`);
+  } catch { /* column already exists */ }
+  try {
+    _skillsDb.exec(`ALTER TABLE skills ADD COLUMN source_skills TEXT`);
+  } catch { /* column already exists */ }
 
   // ── Meta table for vec dimension tracking ────────────────────────────────
   _skillsDb.exec(`
@@ -136,6 +152,27 @@ function isSkillBankAvailable(): boolean {
 }
 
 // ── Embedding helpers ─────────────────────────────────────────────────────────
+
+/** @internal — used by skillbank-merge.ts */
+export function _embeddingToBlob(vec: number[]): Uint8Array {
+  return embeddingToBlob(vec);
+}
+/** @internal — used by skillbank-merge.ts */
+export function _blobToEmbedding(buf: Uint8Array | null): number[] | null {
+  return blobToEmbedding(buf ?? null);
+}
+/** @internal — used by skillbank-merge.ts */
+export async function _getSkillsDbForMerge(): Promise<SqliteDatabase> {
+  return _getSkillsDb();
+}
+/** @internal — used by skillbank-merge.ts */
+export function _ensureSkillsVecTableForMerge(db: SqliteDatabase, dim: number): boolean {
+  return _ensureSkillsVecTable(db, dim);
+}
+/** @internal — used by skillbank-merge.ts */
+export function _rebuildFtsForMerge(db: SqliteDatabase): void {
+  _rebuildFts(db);
+}
 
 function embeddingToBlob(vec: number[]): Uint8Array {
   return new Uint8Array(new Float32Array(vec).buffer);
@@ -312,6 +349,8 @@ interface SkillRow {
   use_count: number;
   success_rate: number;
   deleted: number;
+  merged_into?: string | null;
+  source_skills?: string | null; // stored as JSON array string
 }
 
 function rowToSkill(row: SkillRow): Skill {
@@ -327,6 +366,8 @@ function rowToSkill(row: SkillRow): Skill {
     useCount: row.use_count,
     successRate: row.success_rate,
     deleted: row.deleted === 1,
+    mergedInto: row.merged_into ?? null,
+    sourceSkills: row.source_skills ? JSON.parse(row.source_skills) as string[] : null,
   };
 }
 
@@ -715,6 +756,25 @@ export async function extractSkillFromTrajectory(
       } catch { /* non-fatal */ }
 
       process.stderr.write(`[skillbank] extracted skill ${id} from session ${sourceSession}\n`);
+
+      // ── Auto-merge trigger ─────────────────────────────────────────────────────
+      const mergeAt = config.mergeAt ?? 100;
+      if (mergeAt > 0 && countRow.c + 1 >= mergeAt && apiKey) {
+        // Non-blocking — never delays the extraction caller
+        setImmediate(() => {
+          import("./skillbank-merge.js").then(({ mergeSkillClusters }) => {
+            mergeSkillClusters(extractionModel || "openai/gpt-4o-mini", apiKey, userConfig)
+              .then((r) => {
+                if (r.mergesCompleted > 0) {
+                  process.stderr.write(
+                    `[skillbank] auto-merge: ${r.mergesCompleted} clusters → ${r.skillsCreated} meta-skills, archived ${r.skillsArchived} originals\n`,
+                  );
+                }
+              })
+              .catch(() => { /* non-fatal */ });
+          }).catch(() => { /* non-fatal if module missing */ });
+        });
+      }
     } catch (err) {
       process.stderr.write(
         `[skillbank] DB write failed: ${err instanceof Error ? err.message : String(err)}\n`,

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="5" assertions="5" failures="0" skipped="0" time="0.304321">
+  <testsuite name="tests/online-search.test.ts" file="tests/online-search.test.ts" tests="5" assertions="5" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name=":online suffix (Sprint 3-A)" file="tests/online-search.test.ts" line="62" tests="5" assertions="5" failures="0" skipped="0" time="0.179" hostname="JMac-2021.local">
+      <testcase name="appends :online when onlineSearch=true and model has no variant suffix" classname=":online suffix (Sprint 3-A)" time="0.17061" file="tests/online-search.test.ts" line="65" assertions="1" />
+      <testcase name="does NOT append :online when model already has a variant suffix" classname=":online suffix (Sprint 3-A)" time="0.002761" file="tests/online-search.test.ts" line="72" assertions="1" />
+      <testcase name="does NOT append :online when onlineSearch is false" classname=":online suffix (Sprint 3-A)" time="0.003758" file="tests/online-search.test.ts" line="79" assertions="1" />
+      <testcase name="does NOT append :online when onlineSearch is unset" classname=":online suffix (Sprint 3-A)" time="0.002368" file="tests/online-search.test.ts" line="86" assertions="1" />
+      <testcase name="appends :online to models with slashes (e.g. anthropic/claude-3-5-sonnet)" classname=":online suffix (Sprint 3-A)" time="0.002239" file="tests/online-search.test.ts" line="93" assertions="1" />
+    </testsuite>
+  </testsuite>
+</testsuites>

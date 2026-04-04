@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="18" assertions="36" failures="0" skipped="0" time="0.01615">
+  <testsuite name="tests/jwt.test.ts" file="tests/jwt.test.ts" tests="18" assertions="36" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="mintJwt" file="tests/jwt.test.ts" line="9" tests="1" assertions="4" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="produces a 3-part JWT string" classname="mintJwt" time="0.000293" file="tests/jwt.test.ts" line="10" assertions="4" />
+    </testsuite>
+    <testsuite name="verifyJwt" file="tests/jwt.test.ts" line="21" tests="9" assertions="20" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="accepts a freshly minted token" classname="verifyJwt" time="0.000099" file="tests/jwt.test.ts" line="22" assertions="1" />
+      <testcase name="returns correct claims on round-trip" classname="verifyJwt" time="0" file="tests/jwt.test.ts" line="27" assertions="5" />
+      <testcase name="round-trips different agentId values correctly" classname="verifyJwt" time="0" file="tests/jwt.test.ts" line="37" assertions="6" />
+      <testcase name="throws on tampered signature" classname="verifyJwt" time="0" file="tests/jwt.test.ts" line="46" assertions="1" />
+      <testcase name="throws on expired token" classname="verifyJwt" time="0.000332" file="tests/jwt.test.ts" line="59" assertions="1" />
+      <testcase name="throws on malformed token (not 3 parts)" classname="verifyJwt" time="0" file="tests/jwt.test.ts" line="72" assertions="3" />
+      <testcase name="throws on wrong scope" classname="verifyJwt" time="0" file="tests/jwt.test.ts" line="78" assertions="1" />
+      <testcase name="throws on non-JSON payload" classname="verifyJwt" time="0.000185" file="tests/jwt.test.ts" line="90" assertions="1" />
+      <testcase name="throws on wrong signing key" classname="verifyJwt" time="0" file="tests/jwt.test.ts" line="99" assertions="1" />
+    </testsuite>
+    <testsuite name="loadOrCreateSigningKey" file="tests/jwt.test.ts" line="108" tests="4" assertions="8" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns the trimmed key from disk when the key file exists" classname="loadOrCreateSigningKey" time="0.000235" file="tests/jwt.test.ts" line="111" assertions="1" />
+      <testcase name="generates a 64-char hex key and writes it to disk when key file is absent" classname="loadOrCreateSigningKey" time="0" file="tests/jwt.test.ts" line="124" assertions="2" />
+      <testcase name="generates a different key on each call when key file is absent (rotation produces unique keys)" classname="loadOrCreateSigningKey" time="0" file="tests/jwt.test.ts" line="151" assertions="3" />
+      <testcase name="tokens signed with the old key are rejected after key rotation" classname="loadOrCreateSigningKey" time="0" file="tests/jwt.test.ts" line="178" assertions="2" />
+    </testsuite>
+    <testsuite name="verifyJwt — iat future-date guard" file="tests/jwt.test.ts" line="194" tests="4" assertions="4" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="rejects a token whose iat is more than 30s in the future" classname="verifyJwt — iat future-date guard" time="0" file="tests/jwt.test.ts" line="195" assertions="1" />
+      <testcase name="accepts a token whose iat is within 30s clock-skew tolerance (25s ahead)" classname="verifyJwt — iat future-date guard" time="0" file="tests/jwt.test.ts" line="209" assertions="1" />
+      <testcase name="accepts a freshly minted token (iat = now) without triggering the future-date check" classname="verifyJwt — iat future-date guard" time="0" file="tests/jwt.test.ts" line="224" assertions="1" />
+      <testcase name="accepts a token whose iat is in the past (normal operation)" classname="verifyJwt — iat future-date guard" time="0" file="tests/jwt.test.ts" line="229" assertions="1" />
+    </testsuite>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="8" assertions="10" failures="0" skipped="0" time="0.015767">
+  <testsuite name="tests/daemon-key-rotation.test.ts" file="tests/daemon-key-rotation.test.ts" tests="8" assertions="10" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="verifyJwtDualKey — current key" file="tests/daemon-key-rotation.test.ts" line="60" tests="2" assertions="3" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="accepts a token signed with the current signing key" classname="verifyJwtDualKey — current key" time="0.000865" file="tests/daemon-key-rotation.test.ts" line="61" assertions="2" />
+      <testcase name="rejects a token signed with an unknown key when no previousKey is set" classname="verifyJwtDualKey — current key" time="0.000071" file="tests/daemon-key-rotation.test.ts" line="69" assertions="1" />
+    </testsuite>
+    <testsuite name="verifyJwtDualKey — previousKey within TTL window" file="tests/daemon-key-rotation.test.ts" line="76" tests="2" assertions="3" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="accepts a token signed with previousKey when TTL has not expired" classname="verifyJwtDualKey — previousKey within TTL window" time="0.00006" file="tests/daemon-key-rotation.test.ts" line="77" assertions="2" />
+      <testcase name="accepts current-key token even when a valid previousKey is also present" classname="verifyJwtDualKey — previousKey within TTL window" time="0" file="tests/daemon-key-rotation.test.ts" line="88" assertions="1" />
+    </testsuite>
+    <testsuite name="verifyJwtDualKey — previousKey outside or missing TTL window" file="tests/daemon-key-rotation.test.ts" line="98" tests="4" assertions="4" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="rejects a token signed with previousKey when TTL window has already expired" classname="verifyJwtDualKey — previousKey outside or missing TTL window" time="0" file="tests/daemon-key-rotation.test.ts" line="99" assertions="1" />
+      <testcase name="rejects a token signed with previousKey when previousKeyExpiresAt is null" classname="verifyJwtDualKey — previousKey outside or missing TTL window" time="0.000115" file="tests/daemon-key-rotation.test.ts" line="108" assertions="1" />
+      <testcase name="rejects a token signed with previousKey when ctx.previousKey is null" classname="verifyJwtDualKey — previousKey outside or missing TTL window" time="0" file="tests/daemon-key-rotation.test.ts" line="118" assertions="1" />
+      <testcase name="rejects a token signed with a completely unknown third key regardless of previousKey" classname="verifyJwtDualKey — previousKey outside or missing TTL window" time="0" file="tests/daemon-key-rotation.test.ts" line="127" assertions="1" />
+    </testsuite>
+  </testsuite>
+</testsuites>

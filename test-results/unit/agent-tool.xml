@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="30" assertions="40" failures="0" skipped="0" time="0.124943">
+  <testsuite name="tests/agent-tool.test.ts" file="tests/agent-tool.test.ts" tests="30" assertions="40" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="makeAgentTool" file="tests/agent-tool.test.ts" line="75" tests="26" assertions="34" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testsuite name="tool definition" file="tests/agent-tool.test.ts" line="76" tests="3" assertions="4" failures="0" skipped="0" time="0.001" hostname="JMac-2021.local">
+        <testcase name="uses the name &apos;Agent&apos;" classname="tool definition &amp;gt; makeAgentTool" time="0.001414" file="tests/agent-tool.test.ts" line="77" assertions="1" />
+        <testcase name="includes each agent name in the subagent_type enum" classname="tool definition &amp;gt; makeAgentTool" time="0.000478" file="tests/agent-tool.test.ts" line="82" assertions="1" />
+        <testcase name="lists agent descriptions in the tool description" classname="tool definition &amp;gt; makeAgentTool" time="0.000039" file="tests/agent-tool.test.ts" line="95" assertions="2" />
+      </testsuite>
+      <testsuite name="execute — error cases" file="tests/agent-tool.test.ts" line="105" tests="4" assertions="8" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+        <testcase name="returns error for unknown subagent_type" classname="execute — error cases &amp;gt; makeAgentTool" time="0.000233" file="tests/agent-tool.test.ts" line="106" assertions="3" />
+        <testcase name="enforces default depth limit of 3" classname="execute — error cases &amp;gt; makeAgentTool" time="0.000063" file="tests/agent-tool.test.ts" line="114" assertions="3" />
+        <testcase name="respects custom maxSpawnDepth" classname="execute — error cases &amp;gt; makeAgentTool" time="0.000301" file="tests/agent-tool.test.ts" line="123" assertions="1" />
+        <testcase name="allows spawn when depth is below limit" classname="execute — error cases &amp;gt; makeAgentTool" time="0.000557" file="tests/agent-tool.test.ts" line="130" assertions="1" />
+      </testsuite>
+      <testsuite name="execute — sub-agent spawning" file="tests/agent-tool.test.ts" line="138" tests="10" assertions="12" failures="0" skipped="0" time="0.003" hostname="JMac-2021.local">
+        <testcase name="passes toolCallId through to successful result" classname="execute — sub-agent spawning &amp;gt; makeAgentTool" time="0.000163" file="tests/agent-tool.test.ts" line="139" assertions="2" />
+        <testcase name="returns sub-agent&apos;s final text output" classname="execute — sub-agent spawning &amp;gt; makeAgentTool" time="0.000108" file="tests/agent-tool.test.ts" line="147" assertions="1" />
+        <testcase name="returns fallback message when sub-agent emits no text" classname="execute — sub-agent spawning &amp;gt; makeAgentTool" time="0.000061" file="tests/agent-tool.test.ts" line="154" assertions="1" />
+        <testcase name="concatenates agent system prompt with user prompt" classname="execute — sub-agent spawning &amp;gt; makeAgentTool" time="0.000198" file="tests/agent-tool.test.ts" line="160" assertions="2" />
+        <testcase name="uses agent-defined model override" classname="execute — sub-agent spawning &amp;gt; makeAgentTool" time="0.000075" file="tests/agent-tool.test.ts" line="171" assertions="1" />
+        <testcase name="falls back to parent model when agent has no model override" classname="execute — sub-agent spawning &amp;gt; makeAgentTool" time="0.000063" file="tests/agent-tool.test.ts" line="181" assertions="1" />
+        <testcase name="increments _spawnDepth by 1" classname="execute — sub-agent spawning &amp;gt; makeAgentTool" time="0.000051" file="tests/agent-tool.test.ts" line="191" assertions="1" />
+        <testcase name="sub-agent has no agents map (no recursive spawning)" classname="execute — sub-agent spawning &amp;gt; makeAgentTool" time="0.000399" file="tests/agent-tool.test.ts" line="199" assertions="1" />
+        <testcase name="sub-agent has sessionId: null" classname="execute — sub-agent spawning &amp;gt; makeAgentTool" time="0.000454" file="tests/agent-tool.test.ts" line="209" assertions="1" />
+        <testcase name="sub-agent has readProjectInstructions: false" classname="execute — sub-agent spawning &amp;gt; makeAgentTool" time="0.0032" file="tests/agent-tool.test.ts" line="216" assertions="1" />
+      </testsuite>
+      <testsuite name="memory behaviour" file="tests/agent-tool.test.ts" line="224" tests="4" assertions="4" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+        <testcase name="suppresses memory writes by default (_suppressMemoryWrite: true)" classname="memory behaviour &amp;gt; makeAgentTool" time="0.00018" file="tests/agent-tool.test.ts" line="225" assertions="1" />
+        <testcase name="opts in to memory writes when memoryWrite: true" classname="memory behaviour &amp;gt; makeAgentTool" time="0.000058" file="tests/agent-tool.test.ts" line="232" assertions="1" />
+        <testcase name="inherits parent memoryKey by default" classname="memory behaviour &amp;gt; makeAgentTool" time="0.000038" file="tests/agent-tool.test.ts" line="242" assertions="1" />
+        <testcase name="uses agent-defined memoryKey when provided" classname="memory behaviour &amp;gt; makeAgentTool" time="0.000063" file="tests/agent-tool.test.ts" line="252" assertions="1" />
+      </testsuite>
+      <testsuite name="skills behaviour" file="tests/agent-tool.test.ts" line="263" tests="2" assertions="2" failures="0" skipped="0" time="0.001" hostname="JMac-2021.local">
+        <testcase name="inherits skillbank by default" classname="skills behaviour &amp;gt; makeAgentTool" time="0.000109" file="tests/agent-tool.test.ts" line="264" assertions="1" />
+        <testcase name="disables skills when skills: false" classname="skills behaviour &amp;gt; makeAgentTool" time="0.001094" file="tests/agent-tool.test.ts" line="275" assertions="1" />
+      </testsuite>
+      <testsuite name="tool filtering" file="tests/agent-tool.test.ts" line="287" tests="2" assertions="2" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+        <testcase name="forwards _allowedTools when tools list is set on AgentDefinition" classname="tool filtering &amp;gt; makeAgentTool" time="0.000093" file="tests/agent-tool.test.ts" line="288" assertions="1" />
+        <testcase name="does not set _allowedTools when tools list is undefined" classname="tool filtering &amp;gt; makeAgentTool" time="0.000045" file="tests/agent-tool.test.ts" line="298" assertions="1" />
+      </testsuite>
+      <testsuite name="event tagging" file="tests/agent-tool.test.ts" line="306" tests="1" assertions="2" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+        <testcase name="tags forwarded events with _subagentType" classname="event tagging &amp;gt; makeAgentTool" time="0.000124" file="tests/agent-tool.test.ts" line="307" assertions="2" />
+      </testsuite>
+    </testsuite>
+    <testsuite name="buildAgentsSystemPrompt" file="tests/agent-tool.test.ts" line="328" tests="4" assertions="6" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns empty string when agents map is empty" classname="buildAgentsSystemPrompt" time="0.000057" file="tests/agent-tool.test.ts" line="329" assertions="1" />
+      <testcase name="includes section header and agent names" classname="buildAgentsSystemPrompt" time="0.000056" file="tests/agent-tool.test.ts" line="333" assertions="3" />
+      <testcase name="includes model hint when agent has a model override" classname="buildAgentsSystemPrompt" time="0.000309" file="tests/agent-tool.test.ts" line="342" assertions="1" />
+      <testcase name="includes delegation guidelines" classname="buildAgentsSystemPrompt" time="0.000041" file="tests/agent-tool.test.ts" line="349" assertions="1" />
+    </testsuite>
+  </testsuite>
+</testsuites>

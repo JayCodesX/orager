@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="4" assertions="8" failures="0" skipped="0" time="0.030638">
+  <testsuite name="tests/session-size-cap.test.ts" file="tests/session-size-cap.test.ts" tests="4" assertions="8" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="P2-1: session size cap" file="tests/session-size-cap.test.ts" line="69" tests="4" assertions="8" failures="0" skipped="0" time="0.015" hostname="JMac-2021.local">
+      <testcase name="session under limit: saved as-is" classname="P2-1: session size cap" time="0.013799" file="tests/session-size-cap.test.ts" line="70" assertions="3" />
+      <testcase name="session over limit: oldest messages trimmed, saved successfully" classname="P2-1: session size cap" time="0.002626" file="tests/session-size-cap.test.ts" line="88" assertions="3" />
+      <testcase name="size limit is respected after trimming" classname="P2-1: session size cap" time="0.000812" file="tests/session-size-cap.test.ts" line="115" assertions="1" />
+      <testcase name="ORAGER_SESSION_MAX_SIZE_BYTES env var overrides default" classname="P2-1: session size cap" time="0.000203" file="tests/session-size-cap.test.ts" line="134" assertions="1" />
+    </testsuite>
+  </testsuite>
+</testsuites>

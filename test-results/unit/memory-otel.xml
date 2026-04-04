@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="4" assertions="4" failures="0" skipped="0" time="0.030763">
+  <testsuite name="tests/memory-otel.test.ts" file="tests/memory-otel.test.ts" tests="4" assertions="4" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="memory.load span" file="tests/memory-otel.test.ts" line="10" tests="1" assertions="1" failures="0" skipped="0" time="0.012" hostname="JMac-2021.local">
+      <testcase name="withSpan is called with &apos;memory.load&apos; when loading memory" classname="memory.load span" time="0.012555" file="tests/memory-otel.test.ts" line="11" assertions="1" />
+    </testsuite>
+    <testsuite name="memory.embed_query span" file="tests/memory-otel.test.ts" line="38" tests="1" assertions="1" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="withSpan is called with &apos;memory.embed_query&apos; when fetching embeddings" classname="memory.embed_query span" time="0.000283" file="tests/memory-otel.test.ts" line="39" assertions="1" />
+    </testsuite>
+    <testsuite name="memory.save span" file="tests/memory-otel.test.ts" line="59" tests="2" assertions="2" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="withSpan is called with &apos;memory.save&apos; when saving memory (SQLite path)" classname="memory.save span" time="0.000283" file="tests/memory-otel.test.ts" line="60" assertions="1" />
+      <testcase name="withSpan is called with &apos;memory.save&apos; when saving memory (file path)" classname="memory.save span" time="0.000053" file="tests/memory-otel.test.ts" line="88" assertions="1" />
+    </testsuite>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="7" assertions="18" failures="0" skipped="0" time="0.131187">
+  <testsuite name="tests/memory-write-lock.test.ts" file="tests/memory-write-lock.test.ts" tests="7" assertions="18" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="withMemoryLock" file="tests/memory-write-lock.test.ts" line="12" tests="7" assertions="18" failures="0" skipped="0" time="0.11" hostname="JMac-2021.local">
+      <testcase name="serialises concurrent adds with the same key — both entries persist" classname="withMemoryLock" time="0.022235" file="tests/memory-write-lock.test.ts" line="13" assertions="4" />
+      <testcase name="different keys do not block each other" classname="withMemoryLock" time="0.051361" file="tests/memory-write-lock.test.ts" line="46" assertions="2" />
+      <testcase name="returns the value produced by the fn" classname="withMemoryLock" time="0.000205" file="tests/memory-write-lock.test.ts" line="69" assertions="1" />
+      <testcase name="queues three concurrent operations on the same key in arrival order" classname="withMemoryLock" time="0.017148" file="tests/memory-write-lock.test.ts" line="74" assertions="4" />
+      <testcase name="Map entry is cleaned up after the lock is released (no leak)" classname="withMemoryLock" time="0.000264" file="tests/memory-write-lock.test.ts" line="93" assertions="3" />
+      <testcase name="Map entry stays while a second waiter is queued, then cleans up after both finish" classname="withMemoryLock" time="0.000132" file="tests/memory-write-lock.test.ts" line="106" assertions="2" />
+      <testcase name="_clearMemoryLocksForTesting resets state so subsequent operations are independent" classname="withMemoryLock" time="0.02061" file="tests/memory-write-lock.test.ts" line="128" assertions="2" />
+    </testsuite>
+  </testsuite>
+</testsuites>

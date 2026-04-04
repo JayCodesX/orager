@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="7" assertions="20" failures="0" skipped="0" time="0.308989">
+  <testsuite name="tests/plan-mode.test.ts" file="tests/plan-mode.test.ts" tests="7" assertions="20" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="plan mode" file="tests/plan-mode.test.ts" line="101" tests="7" assertions="20" failures="0" skipped="0" time="0.207" hostname="JMac-2021.local">
+      <testcase name="planMode=true restricts LLM to readonly tools + exit_plan_mode" classname="plan mode" time="0.179746" file="tests/plan-mode.test.ts" line="104" assertions="7" />
+      <testcase name="planMode=false (default) offers full tool set including bash" classname="plan mode" time="0.003783" file="tests/plan-mode.test.ts" line="125" assertions="3" />
+      <testcase name="calling exit_plan_mode switches to full tool set for subsequent turns" classname="plan mode" time="0.005021" file="tests/plan-mode.test.ts" line="140" assertions="2" />
+      <testcase name="plan mode enforces non-readonly tool calls — returns error result without executing" classname="plan mode" time="0.004504" file="tests/plan-mode.test.ts" line="157" assertions="3" />
+      <testcase name="exit_plan_mode tool result includes plan summary" classname="plan mode" time="0.00366" file="tests/plan-mode.test.ts" line="179" assertions="2" />
+      <testcase name="system prompt includes PLAN MODE ACTIVE notice when planMode=true" classname="plan mode" time="0.011437" file="tests/plan-mode.test.ts" line="193" assertions="2" />
+      <testcase name="system prompt does NOT include plan mode notice when planMode=false" classname="plan mode" time="0.002625" file="tests/plan-mode.test.ts" line="205" assertions="1" />
+    </testsuite>
+  </testsuite>
+</testsuites>

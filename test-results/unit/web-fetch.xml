@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="34" assertions="65" failures="0" skipped="0" time="0.034101">
+  <testsuite name="tests/web-fetch.test.ts" file="tests/web-fetch.test.ts" tests="34" assertions="65" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="web_fetch — input validation" file="tests/web-fetch.test.ts" line="22" tests="5" assertions="9" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns error for missing url" classname="web_fetch — input validation" time="0.00061" file="tests/web-fetch.test.ts" line="23" assertions="2" />
+      <testcase name="returns error for empty url string" classname="web_fetch — input validation" time="0.00003" file="tests/web-fetch.test.ts" line="29" assertions="1" />
+      <testcase name="returns error for invalid URL" classname="web_fetch — input validation" time="0.000209" file="tests/web-fetch.test.ts" line="34" assertions="2" />
+      <testcase name="returns error for file:// scheme" classname="web_fetch — input validation" time="0" file="tests/web-fetch.test.ts" line="40" assertions="2" />
+      <testcase name="returns error for ftp:// scheme" classname="web_fetch — input validation" time="0.000105" file="tests/web-fetch.test.ts" line="46" assertions="2" />
+    </testsuite>
+    <testsuite name="web_fetch — HTTP errors" file="tests/web-fetch.test.ts" line="55" tests="2" assertions="4" failures="0" skipped="0" time="0.01" hostname="JMac-2021.local">
+      <testcase name="returns error for 404 response" classname="web_fetch — HTTP errors" time="0.010813" file="tests/web-fetch.test.ts" line="56" assertions="2" />
+      <testcase name="returns error for 500 response" classname="web_fetch — HTTP errors" time="0.00063" file="tests/web-fetch.test.ts" line="63" assertions="2" />
+    </testsuite>
+    <testsuite name="web_fetch — successful responses" file="tests/web-fetch.test.ts" line="73" tests="4" assertions="11" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns plain text body on success" classname="web_fetch — successful responses" time="0.000156" file="tests/web-fetch.test.ts" line="74" assertions="2" />
+      <testcase name="strips HTML tags from text/html responses" classname="web_fetch — successful responses" time="0.000305" file="tests/web-fetch.test.ts" line="81" assertions="5" />
+      <testcase name="collapses whitespace in HTML responses" classname="web_fetch — successful responses" time="0" file="tests/web-fetch.test.ts" line="91" assertions="2" />
+      <testcase name="does not strip tags from non-HTML responses" classname="web_fetch — successful responses" time="0.000077" file="tests/web-fetch.test.ts" line="99" assertions="2" />
+    </testsuite>
+    <testsuite name="web_fetch — truncation" file="tests/web-fetch.test.ts" line="109" tests="4" assertions="10" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="truncates body when it exceeds max_chars" classname="web_fetch — truncation" time="0.000026" file="tests/web-fetch.test.ts" line="110" assertions="3" />
+      <testcase name="applies default truncation limit when max_chars is 0" classname="web_fetch — truncation" time="0" file="tests/web-fetch.test.ts" line="123" assertions="2" />
+      <testcase name="applies default truncation limit when max_chars is negative" classname="web_fetch — truncation" time="0.000255" file="tests/web-fetch.test.ts" line="135" assertions="2" />
+      <testcase name="does not truncate body when it is within max_chars" classname="web_fetch — truncation" time="0.000037" file="tests/web-fetch.test.ts" line="146" assertions="3" />
+    </testsuite>
+    <testsuite name="web_fetch — SSRF protection" file="tests/web-fetch.test.ts" line="161" tests="10" assertions="20" failures="0" skipped="0" time="0.001" hostname="JMac-2021.local">
+      <testcase name="H-01: tool schema does not expose allow_private_urls parameter" classname="web_fetch — SSRF protection" time="0.000348" file="tests/web-fetch.test.ts" line="162" assertions="2" />
+      <testcase name="H-01: LLM-supplied allow_private_urls in input is ignored" classname="web_fetch — SSRF protection" time="0.000169" file="tests/web-fetch.test.ts" line="170" assertions="2" />
+      <testcase name="H-01: server-side context allowPrivateUrls=true bypasses SSRF" classname="web_fetch — SSRF protection" time="0.001462" file="tests/web-fetch.test.ts" line="180" assertions="2" />
+      <testcase name="H-02: blocks IPv4-mapped IPv6 address (::ffff:127.0.0.1)" classname="web_fetch — SSRF protection" time="0.000121" file="tests/web-fetch.test.ts" line="193" assertions="2" />
+      <testcase name="H-02: blocks IPv4-compatible IPv6 address (::10.0.0.1)" classname="web_fetch — SSRF protection" time="0.00006" file="tests/web-fetch.test.ts" line="202" assertions="2" />
+      <testcase name="H-02: blocks ::ffff:169.254.169.254 (AWS IMDS via IPv6)" classname="web_fetch — SSRF protection" time="0.000038" file="tests/web-fetch.test.ts" line="211" assertions="2" />
+      <testcase name="blocks plain IPv4 private addresses (127.0.0.1)" classname="web_fetch — SSRF protection" time="0.000032" file="tests/web-fetch.test.ts" line="220" assertions="2" />
+      <testcase name="blocks plain IPv4 private addresses (10.0.0.1)" classname="web_fetch — SSRF protection" time="0.000023" file="tests/web-fetch.test.ts" line="229" assertions="2" />
+      <testcase name="blocks plain IPv4 private addresses (192.168.1.1)" classname="web_fetch — SSRF protection" time="0.000038" file="tests/web-fetch.test.ts" line="238" assertions="2" />
+      <testcase name="blocks IPv6 loopback (::1)" classname="web_fetch — SSRF protection" time="0.000033" file="tests/web-fetch.test.ts" line="247" assertions="2" />
+    </testsuite>
+    <testsuite name="isBlockedHost — IPv4-mapped IPv6 handling" file="tests/web-fetch.test.ts" line="259" tests="7" assertions="7" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="blocks ::ffff:127.0.0.1" classname="isBlockedHost — IPv4-mapped IPv6 handling" time="0.000039" file="tests/web-fetch.test.ts" line="260" assertions="1" />
+      <testcase name="blocks ::ffff:10.0.0.1" classname="isBlockedHost — IPv4-mapped IPv6 handling" time="0.00001" file="tests/web-fetch.test.ts" line="264" assertions="1" />
+      <testcase name="blocks ::ffff:192.168.1.1" classname="isBlockedHost — IPv4-mapped IPv6 handling" time="0" file="tests/web-fetch.test.ts" line="268" assertions="1" />
+      <testcase name="blocks ::ffff:169.254.169.254 (AWS IMDS)" classname="isBlockedHost — IPv4-mapped IPv6 handling" time="0" file="tests/web-fetch.test.ts" line="272" assertions="1" />
+      <testcase name="blocks ::10.0.0.1 (IPv4-compatible)" classname="isBlockedHost — IPv4-mapped IPv6 handling" time="0" file="tests/web-fetch.test.ts" line="276" assertions="1" />
+      <testcase name="does not block public IPv4" classname="isBlockedHost — IPv4-mapped IPv6 handling" time="0.000113" file="tests/web-fetch.test.ts" line="280" assertions="1" />
+      <testcase name="blocks IPv6 loopback ::1" classname="isBlockedHost — IPv4-mapped IPv6 handling" time="0" file="tests/web-fetch.test.ts" line="284" assertions="1" />
+    </testsuite>
+    <testsuite name="web_fetch — network errors" file="tests/web-fetch.test.ts" line="291" tests="2" assertions="4" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns error when fetch throws (network failure)" classname="web_fetch — network errors" time="0.000154" file="tests/web-fetch.test.ts" line="292" assertions="2" />
+      <testcase name="returns &apos;timed out&apos; when fetch aborts" classname="web_fetch — network errors" time="0.000137" file="tests/web-fetch.test.ts" line="299" assertions="2" />
+    </testsuite>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="4" assertions="8" failures="0" skipped="0" time="0.016616">
+  <testsuite name="tests/deprecated-models.test.ts" file="tests/deprecated-models.test.ts" tests="4" assertions="8" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="checkDeprecatedModel" file="tests/deprecated-models.test.ts" line="4" tests="4" assertions="8" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="detects gpt-3.5-turbo as deprecated" classname="checkDeprecatedModel" time="0.000135" file="tests/deprecated-models.test.ts" line="5" assertions="2" />
+      <testcase name="detects claude-2 as deprecated" classname="checkDeprecatedModel" time="0.000028" file="tests/deprecated-models.test.ts" line="11" assertions="2" />
+      <testcase name="does not flag current models" classname="checkDeprecatedModel" time="0.000051" file="tests/deprecated-models.test.ts" line="17" assertions="3" />
+      <testcase name="does not flag gpt-3.5-turbo-instruct (exempt)" classname="checkDeprecatedModel" time="0.000009" file="tests/deprecated-models.test.ts" line="23" assertions="1" />
+    </testsuite>
+  </testsuite>
+</testsuites>

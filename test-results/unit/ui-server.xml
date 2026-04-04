@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="30" assertions="59" failures="0" skipped="0" time="0.098508">
+  <testsuite name="tests/ui-server.test.ts" file="tests/ui-server.test.ts" tests="30" assertions="59" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="auth" file="tests/ui-server.test.ts" line="102" tests="5" assertions="6" failures="0" skipped="0" time="0.008" hostname="JMac-2021.local">
+      <testcase name="returns 401 for API route without token" classname="auth" time="0.007517" file="tests/ui-server.test.ts" line="103" assertions="2" />
+      <testcase name="accepts valid Bearer token" classname="auth" time="0.000656" file="tests/ui-server.test.ts" line="110" assertions="1" />
+      <testcase name="accepts token as query param (for SSE endpoints)" classname="auth" time="0.001407" file="tests/ui-server.test.ts" line="115" assertions="1" />
+      <testcase name="rejects wrong token" classname="auth" time="0.000405" file="tests/ui-server.test.ts" line="120" assertions="1" />
+      <testcase name="OPTIONS preflight bypasses auth (CORS)" classname="auth" time="0.000445" file="tests/ui-server.test.ts" line="127" assertions="1" />
+    </testsuite>
+    <testsuite name="security headers" file="tests/ui-server.test.ts" line="135" tests="4" assertions="5" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="sets X-Content-Type-Options: nosniff" classname="security headers" time="0.000379" file="tests/ui-server.test.ts" line="136" assertions="1" />
+      <testcase name="sets X-Frame-Options: DENY" classname="security headers" time="0.000341" file="tests/ui-server.test.ts" line="141" assertions="1" />
+      <testcase name="sets Referrer-Policy" classname="security headers" time="0.000277" file="tests/ui-server.test.ts" line="146" assertions="1" />
+      <testcase name="sets Content-Security-Policy" classname="security headers" time="0.000318" file="tests/ui-server.test.ts" line="151" assertions="2" />
+    </testsuite>
+    <testsuite name="GET /api/config/defaults" file="tests/ui-server.test.ts" line="161" tests="1" assertions="3" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns DEFAULT_CONFIG object" classname="GET /api/config/defaults" time="0.000323" file="tests/ui-server.test.ts" line="162" assertions="3" />
+    </testsuite>
+    <testsuite name="GET /api/config" file="tests/ui-server.test.ts" line="173" tests="4" assertions="10" failures="0" skipped="0" time="0.003" hostname="JMac-2021.local">
+      <testcase name="returns config file contents" classname="GET /api/config" time="0.001619" file="tests/ui-server.test.ts" line="174" assertions="3" />
+      <testcase name="strips agentApiKey from response" classname="GET /api/config" time="0.001073" file="tests/ui-server.test.ts" line="183" assertions="3" />
+      <testcase name="also strips fields containing &apos;token&apos; or &apos;secret&apos;" classname="GET /api/config" time="0.001379" file="tests/ui-server.test.ts" line="192" assertions="2" />
+      <testcase name="returns defaults when config file does not exist" classname="GET /api/config" time="0.000573" file="tests/ui-server.test.ts" line="200" assertions="2" />
+    </testsuite>
+    <testsuite name="POST /api/config" file="tests/ui-server.test.ts" line="211" tests="5" assertions="11" failures="0" skipped="0" time="0.016" hostname="JMac-2021.local">
+      <testcase name="writes merged config and returns it" classname="POST /api/config" time="0.002284" file="tests/ui-server.test.ts" line="212" assertions="4" />
+      <testcase name="cannot set agentApiKey through the API" classname="POST /api/config" time="0.013748" file="tests/ui-server.test.ts" line="224" assertions="4" />
+      <testcase name="returns 400 for non-object body (array)" classname="POST /api/config" time="0.001116" file="tests/ui-server.test.ts" line="236" assertions="1" />
+      <testcase name="returns 400 for non-object body (string)" classname="POST /api/config" time="0.000517" file="tests/ui-server.test.ts" line="241" assertions="1" />
+      <testcase name="returns 400 for invalid JSON" classname="POST /api/config" time="0.000494" file="tests/ui-server.test.ts" line="246" assertions="1" />
+    </testsuite>
+    <testsuite name="GET /api/settings" file="tests/ui-server.test.ts" line="258" tests="2" assertions="4" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns settings file contents" classname="GET /api/settings" time="0.000919" file="tests/ui-server.test.ts" line="259" assertions="2" />
+      <testcase name="returns empty object when settings file does not exist" classname="GET /api/settings" time="0.00047" file="tests/ui-server.test.ts" line="267" assertions="2" />
+    </testsuite>
+    <testsuite name="POST /api/settings" file="tests/ui-server.test.ts" line="277" tests="2" assertions="5" failures="0" skipped="0" time="0.002" hostname="JMac-2021.local">
+      <testcase name="merges and persists settings" classname="POST /api/settings" time="0.002257" file="tests/ui-server.test.ts" line="278" assertions="4" />
+      <testcase name="returns 400 for non-object body" classname="POST /api/settings" time="0.000559" file="tests/ui-server.test.ts" line="290" assertions="1" />
+    </testsuite>
+    <testsuite name="GET /api/sessions" file="tests/ui-server.test.ts" line="298" tests="5" assertions="12" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns sessions array from listSessions" classname="GET /api/sessions" time="0.000517" file="tests/ui-server.test.ts" line="299" assertions="3" />
+      <testcase name="returns empty sessions when none exist" classname="GET /api/sessions" time="0.0003" file="tests/ui-server.test.ts" line="310" assertions="3" />
+      <testcase name="paginates with limit and offset" classname="GET /api/sessions" time="0.000538" file="tests/ui-server.test.ts" line="319" assertions="4" />
+      <testcase name="caps limit at 200" classname="GET /api/sessions" time="0.00048" file="tests/ui-server.test.ts" line="330" assertions="1" />
+      <testcase name="clamps negative offset to 0" classname="GET /api/sessions" time="0.000571" file="tests/ui-server.test.ts" line="338" assertions="1" />
+    </testsuite>
+    <testsuite name="route dispatch" file="tests/ui-server.test.ts" line="348" tests="2" assertions="3" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns 404 for unknown /api/ routes" classname="route dispatch" time="0.000365" file="tests/ui-server.test.ts" line="349" assertions="2" />
+      <testcase name="returns correct Content-Type for JSON responses" classname="route dispatch" time="0.000379" file="tests/ui-server.test.ts" line="356" assertions="1" />
+    </testsuite>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="14" assertions="35" failures="0" skipped="0" time="0.042938">
+  <testsuite name="tests/memory-embeddings.test.ts" file="tests/memory-embeddings.test.ts" tests="14" assertions="35" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="cosineSimilarity" file="tests/memory-embeddings.test.ts" line="33" tests="6" assertions="7" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns 0 for orthogonal vectors" classname="cosineSimilarity" time="0" file="tests/memory-embeddings.test.ts" line="34" assertions="1" />
+      <testcase name="returns 1 for identical vectors" classname="cosineSimilarity" time="0" file="tests/memory-embeddings.test.ts" line="38" assertions="1" />
+      <testcase name="returns 1 for same-direction vectors (scaled)" classname="cosineSimilarity" time="0" file="tests/memory-embeddings.test.ts" line="42" assertions="1" />
+      <testcase name="returns 0 for empty vectors" classname="cosineSimilarity" time="0" file="tests/memory-embeddings.test.ts" line="46" assertions="1" />
+      <testcase name="returns 0 if either vector is zero-length (empty)" classname="cosineSimilarity" time="0" file="tests/memory-embeddings.test.ts" line="50" assertions="2" />
+      <testcase name="computes known value correctly" classname="cosineSimilarity" time="0" file="tests/memory-embeddings.test.ts" line="55" assertions="1" />
+    </testsuite>
+    <testsuite name="embedEntryIfNeeded" file="tests/memory-embeddings.test.ts" line="64" tests="2" assertions="9" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns a new entry without mutating the original" classname="embedEntryIfNeeded" time="0.000635" file="tests/memory-embeddings.test.ts" line="65" assertions="4" />
+      <testcase name="preserves all other fields" classname="embedEntryIfNeeded" time="0.000034" file="tests/memory-embeddings.test.ts" line="81" assertions="5" />
+    </testsuite>
+    <testsuite name="retrieveEntriesWithEmbeddings" file="tests/memory-embeddings.test.ts" line="95" tests="4" assertions="6" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="ranks entries with higher cosine similarity first" classname="retrieveEntriesWithEmbeddings" time="0.000194" file="tests/memory-embeddings.test.ts" line="96" assertions="2" />
+      <testcase name="entries without _embedding still participate via fallback scoring" classname="retrieveEntriesWithEmbeddings" time="0.000101" file="tests/memory-embeddings.test.ts" line="109" assertions="2" />
+      <testcase name="respects topK" classname="retrieveEntriesWithEmbeddings" time="0.000143" file="tests/memory-embeddings.test.ts" line="128" assertions="1" />
+      <testcase name="filters entries below minScore" classname="retrieveEntriesWithEmbeddings" time="0.000037" file="tests/memory-embeddings.test.ts" line="138" assertions="1" />
+    </testsuite>
+    <testsuite name="makeRememberTool with embeddingOpts" file="tests/memory-embeddings.test.ts" line="162" tests="2" assertions="13" failures="0" skipped="0" time="0.016" hostname="JMac-2021.local">
+      <testcase name="saves entry with _embedding set on successful callEmbeddings" classname="makeRememberTool with embeddingOpts" time="0.010659" file="tests/memory-embeddings.test.ts" line="171" assertions="9" />
+      <testcase name="saves entry without _embedding when callEmbeddings fails" classname="makeRememberTool with embeddingOpts" time="0.00636" file="tests/memory-embeddings.test.ts" line="206" assertions="4" />
+    </testsuite>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="2" assertions="7" failures="0" skipped="0" time="0.256948">
+  <testsuite name="tests/audit.test.ts" file="tests/audit.test.ts" tests="2" assertions="7" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="auditApproval" file="tests/audit.test.ts" line="13" tests="2" assertions="7" failures="0" skipped="0" time="0.236" hostname="JMac-2021.local">
+      <testcase name="writes a valid JSON line to the audit log" classname="auditApproval" time="0.236372" file="tests/audit.test.ts" line="26" assertions="5" />
+      <testcase name="truncates long input values in the log" classname="auditApproval" time="0.000312" file="tests/audit.test.ts" line="67" assertions="2" />
+    </testsuite>
+  </testsuite>
+</testsuites>

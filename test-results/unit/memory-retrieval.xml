@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="32" assertions="50" failures="0" skipped="0" time="0.022545">
+  <testsuite name="tests/memory-retrieval.test.ts" file="tests/memory-retrieval.test.ts" tests="32" assertions="50" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="buildQuery" file="tests/memory-retrieval.test.ts" line="35" tests="5" assertions="12" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="filters stop words" classname="buildQuery" time="0.000704" file="tests/memory-retrieval.test.ts" line="36" assertions="4" />
+      <testcase name="lowercases tokens" classname="buildQuery" time="0.000047" file="tests/memory-retrieval.test.ts" line="44" assertions="4" />
+      <testcase name="deduplicates tokens" classname="buildQuery" time="0.000047" file="tests/memory-retrieval.test.ts" line="52" assertions="1" />
+      <testcase name="filters tokens with length &lt; 3" classname="buildQuery" time="0.000016" file="tests/memory-retrieval.test.ts" line="57" assertions="0" />
+      <testcase name="splits on punctuation" classname="buildQuery" time="0.000017" file="tests/memory-retrieval.test.ts" line="65" assertions="3" />
+    </testsuite>
+    <testsuite name="scoreEntry" file="tests/memory-retrieval.test.ts" line="75" tests="4" assertions="4" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="higher importance yields higher score for same query" classname="scoreEntry" time="0.000127" file="tests/memory-retrieval.test.ts" line="76" assertions="1" />
+      <testcase name="more term overlap yields higher score" classname="scoreEntry" time="0.000011" file="tests/memory-retrieval.test.ts" line="83" assertions="1" />
+      <testcase name="older entry yields lower score than identical newer entry" classname="scoreEntry" time="0.00004" file="tests/memory-retrieval.test.ts" line="95" assertions="1" />
+      <testcase name="returns 0 for no term overlap" classname="scoreEntry" time="0.000024" file="tests/memory-retrieval.test.ts" line="112" assertions="1" />
+    </testsuite>
+    <testsuite name="retrieveEntries" file="tests/memory-retrieval.test.ts" line="121" tests="4" assertions="6" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns top matches in score-descending order" classname="retrieveEntries" time="0.000072" file="tests/memory-retrieval.test.ts" line="122" assertions="1" />
+      <testcase name="respects topK limit" classname="retrieveEntries" time="0.000222" file="tests/memory-retrieval.test.ts" line="135" assertions="1" />
+      <testcase name="empty queryTokens falls back to importance+recency sort" classname="retrieveEntries" time="0.000083" file="tests/memory-retrieval.test.ts" line="144" assertions="3" />
+      <testcase name="defaults topK to 12 when not specified" classname="retrieveEntries" time="0.000098" file="tests/memory-retrieval.test.ts" line="169" assertions="1" />
+    </testsuite>
+    <testsuite name="renderRetrievedBlock" file="tests/memory-retrieval.test.ts" line="181" tests="4" assertions="7" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="renumbers entries starting from [1]" classname="renderRetrievedBlock" time="0.000093" file="tests/memory-retrieval.test.ts" line="182" assertions="3" />
+      <testcase name="respects maxChars truncation" classname="renderRetrievedBlock" time="0" file="tests/memory-retrieval.test.ts" line="193" assertions="1" />
+      <testcase name="returns empty string for empty entries" classname="renderRetrievedBlock" time="0.000067" file="tests/memory-retrieval.test.ts" line="201" assertions="1" />
+      <testcase name="includes entry content in output" classname="renderRetrievedBlock" time="0.000011" file="tests/memory-retrieval.test.ts" line="205" assertions="2" />
+    </testsuite>
+    <testsuite name="cosineSimilarity" file="tests/memory-retrieval.test.ts" line="215" tests="7" assertions="9" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns 1.0 for identical unit vectors" classname="cosineSimilarity" time="0.000036" file="tests/memory-retrieval.test.ts" line="216" assertions="1" />
+      <testcase name="returns 0 for orthogonal vectors" classname="cosineSimilarity" time="0.000008" file="tests/memory-retrieval.test.ts" line="220" assertions="1" />
+      <testcase name="returns -1 for exactly opposite vectors" classname="cosineSimilarity" time="0.000015" file="tests/memory-retrieval.test.ts" line="224" assertions="1" />
+      <testcase name="returns 0 for empty vectors" classname="cosineSimilarity" time="0.000004" file="tests/memory-retrieval.test.ts" line="228" assertions="1" />
+      <testcase name="returns 0 when one vector is all-zeros (zero magnitude)" classname="cosineSimilarity" time="0" file="tests/memory-retrieval.test.ts" line="232" assertions="2" />
+      <testcase name="handles vectors of different lengths — trailing elements of the longer vector are ignored" classname="cosineSimilarity" time="0" file="tests/memory-retrieval.test.ts" line="237" assertions="2" />
+      <testcase name="returns 1.0 for non-unit but parallel vectors" classname="cosineSimilarity" time="0" file="tests/memory-retrieval.test.ts" line="246" assertions="1" />
+    </testsuite>
+    <testsuite name="retrieveEntriesWithEmbeddings" file="tests/memory-retrieval.test.ts" line="253" tests="8" assertions="12" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns entries ranked by cosine similarity (highest first)" classname="retrieveEntriesWithEmbeddings" time="0.000117" file="tests/memory-retrieval.test.ts" line="264" assertions="3" />
+      <testcase name="returns empty array when all entries score below minScore" classname="retrieveEntriesWithEmbeddings" time="0.000025" file="tests/memory-retrieval.test.ts" line="276" assertions="1" />
+      <testcase name="returns empty array when store has no entries" classname="retrieveEntriesWithEmbeddings" time="0.000024" file="tests/memory-retrieval.test.ts" line="286" assertions="1" />
+      <testcase name="respects topK limit" classname="retrieveEntriesWithEmbeddings" time="0.000034" file="tests/memory-retrieval.test.ts" line="292" assertions="2" />
+      <testcase name="entries without _embedding fall back to importance+recency scoring (scoreEntry)" classname="retrieveEntriesWithEmbeddings" time="0" file="tests/memory-retrieval.test.ts" line="304" assertions="2" />
+      <testcase name="importance weight amplifies score: importance=3 &gt; importance=1 at equal similarity" classname="retrieveEntriesWithEmbeddings" time="0.000059" file="tests/memory-retrieval.test.ts" line="317" assertions="1" />
+      <testcase name="defaults topK to 12" classname="retrieveEntriesWithEmbeddings" time="0.000065" file="tests/memory-retrieval.test.ts" line="326" assertions="1" />
+      <testcase name="minScore=0 (default) includes entries with zero-similarity (orthogonal vectors)" classname="retrieveEntriesWithEmbeddings" time="0.000025" file="tests/memory-retrieval.test.ts" line="334" assertions="1" />
+    </testsuite>
+  </testsuite>
+</testsuites>

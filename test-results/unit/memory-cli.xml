@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="8" assertions="19" failures="0" skipped="0" time="0.01871">
+  <testsuite name="tests/memory-cli.test.ts" file="tests/memory-cli.test.ts" tests="8" assertions="19" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="memory export" file="tests/memory-cli.test.ts" line="30" tests="2" assertions="8" failures="0" skipped="0" time="0.004" hostname="JMac-2021.local">
+      <testcase name="outputs valid JSON with expected entries" classname="memory export" time="0.00426" file="tests/memory-cli.test.ts" line="31" assertions="5" />
+      <testcase name="JSON output includes all MemoryStore fields" classname="memory export" time="0.000026" file="tests/memory-cli.test.ts" line="46" assertions="3" />
+    </testsuite>
+    <testsuite name="memory list" file="tests/memory-cli.test.ts" line="55" tests="2" assertions="6" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="correctly strips .json suffix from file names" classname="memory list" time="0.000064" file="tests/memory-cli.test.ts" line="56" assertions="4" />
+      <testcase name="returns known keys from SQLite" classname="memory list" time="0.000079" file="tests/memory-cli.test.ts" line="68" assertions="2" />
+    </testsuite>
+    <testsuite name="memory clear" file="tests/memory-cli.test.ts" line="79" tests="4" assertions="5" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="removes all entries for a key (SQLite path)" classname="memory clear" time="0.000044" file="tests/memory-cli.test.ts" line="80" assertions="2" />
+      <testcase name="without --yes flag, confirmation is required" classname="memory clear" time="0.000012" file="tests/memory-cli.test.ts" line="90" assertions="1" />
+      <testcase name="with --yes flag, no prompt is shown" classname="memory clear" time="0" file="tests/memory-cli.test.ts" line="97" assertions="1" />
+      <testcase name="clear logic for file path: deletes the correct json file" classname="memory clear" time="0.000074" file="tests/memory-cli.test.ts" line="103" assertions="1" />
+    </testsuite>
+  </testsuite>
+</testsuites>

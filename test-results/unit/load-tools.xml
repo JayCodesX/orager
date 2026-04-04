@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="16" assertions="27" failures="0" skipped="0" time="0.056192">
+  <testsuite name="tests/load-tools.test.ts" file="tests/load-tools.test.ts" tests="16" assertions="27" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="loadToolsFromFile — errors" file="tests/load-tools.test.ts" line="26" tests="5" assertions="5" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="throws for a missing file" classname="loadToolsFromFile — errors" time="0.000847" file="tests/load-tools.test.ts" line="27" assertions="1" />
+      <testcase name="throws for invalid JSON" classname="loadToolsFromFile — errors" time="0.000722" file="tests/load-tools.test.ts" line="33" assertions="1" />
+      <testcase name="throws when root is an object, not an array" classname="loadToolsFromFile — errors" time="0.000888" file="tests/load-tools.test.ts" line="39" assertions="1" />
+      <testcase name="throws when a spec is missing name" classname="loadToolsFromFile — errors" time="0.000665" file="tests/load-tools.test.ts" line="44" assertions="1" />
+      <testcase name="throws when a spec is missing exec" classname="loadToolsFromFile — errors" time="0.000556" file="tests/load-tools.test.ts" line="51" assertions="1" />
+    </testsuite>
+    <testsuite name="loadToolsFromFile — success" file="tests/load-tools.test.ts" line="61" tests="4" assertions="8" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="returns an array of ToolExecutor objects" classname="loadToolsFromFile — success" time="0.00062" file="tests/load-tools.test.ts" line="62" assertions="3" />
+      <testcase name="uses provided parameter schema" classname="loadToolsFromFile — success" time="0.000544" file="tests/load-tools.test.ts" line="72" assertions="1" />
+      <testcase name="defaults to empty parameters schema when not provided" classname="loadToolsFromFile — success" time="0.000745" file="tests/load-tools.test.ts" line="85" assertions="1" />
+      <testcase name="loads multiple tool specs" classname="loadToolsFromFile — success" time="0.000604" file="tests/load-tools.test.ts" line="93" assertions="3" />
+    </testsuite>
+    <testsuite name="loadToolsFromFile — executor" file="tests/load-tools.test.ts" line="108" tests="3" assertions="5" failures="0" skipped="0" time="0.011" hostname="JMac-2021.local">
+      <testcase name="runs the exec command and returns stdout" classname="loadToolsFromFile — executor" time="0.00537" file="tests/load-tools.test.ts" line="109" assertions="2" />
+      <testcase name="interpolates {{param}} placeholders in the exec template" classname="loadToolsFromFile — executor" time="0.003559" file="tests/load-tools.test.ts" line="119" assertions="2" />
+      <testcase name="returns isError=true when command exits non-zero" classname="loadToolsFromFile — executor" time="0.003769" file="tests/load-tools.test.ts" line="138" assertions="1" />
+    </testsuite>
+    <testsuite name="loadToolsFromFile — shell injection prevention" file="tests/load-tools.test.ts" line="150" tests="4" assertions="9" failures="0" skipped="0" time="0.015" hostname="JMac-2021.local">
+      <testcase name="shell-quotes values so semicolons cannot inject additional commands" classname="loadToolsFromFile — shell injection prevention" time="0.00535" file="tests/load-tools.test.ts" line="151" assertions="3" />
+      <testcase name="shell-quotes values containing single quotes" classname="loadToolsFromFile — shell injection prevention" time="0.004151" file="tests/load-tools.test.ts" line="166" assertions="2" />
+      <testcase name="shell-quotes values containing backtick command substitution" classname="loadToolsFromFile — shell injection prevention" time="0.003913" file="tests/load-tools.test.ts" line="176" assertions="2" />
+      <testcase name="shell-quotes values containing $() substitution" classname="loadToolsFromFile — shell injection prevention" time="0.003403" file="tests/load-tools.test.ts" line="187" assertions="2" />
+    </testsuite>
+  </testsuite>
+</testsuites>

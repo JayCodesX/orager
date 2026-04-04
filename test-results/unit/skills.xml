@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="17" assertions="26" failures="0" skipped="0" time="5.438128">
+  <testsuite name="tests/skills.test.ts" file="tests/skills.test.ts" tests="17" assertions="26" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="skills loading" file="tests/skills.test.ts" line="72" tests="7" assertions="11" failures="0" skipped="0" time="2.201" hostname="JMac-2021.local">
+      <testcase name="loadSkillsFromDirs returns 3 skills (2 prompt-only + 1 exec)" classname="skills loading" time="0.009917" file="tests/skills.test.ts" line="73" assertions="1" />
+      <testcase name="skill names match directory names" classname="skills loading" time="0.012099" file="tests/skills.test.ts" line="78" assertions="1" />
+      <testcase name="descriptions are extracted from frontmatter" classname="skills loading" time="0.623377" file="tests/skills.test.ts" line="84" assertions="2" />
+      <testcase name="buildSkillsSystemPrompt returns empty string for no skills" classname="skills loading" time="0.001515" file="tests/skills.test.ts" line="92" assertions="1" />
+      <testcase name="buildSkillsSystemPrompt returns non-empty markdown containing prompt-only skill names" classname="skills loading" time="0.476891" file="tests/skills.test.ts" line="97" assertions="3" />
+      <testcase name="buildSkillsSystemPrompt excludes exec-capable skills from the prompt" classname="skills loading" time="0.131539" file="tests/skills.test.ts" line="105" assertions="1" />
+      <testcase name="exec skill has exec and parameters fields populated" classname="skills loading" time="0.949787" file="tests/skills.test.ts" line="111" assertions="2" />
+    </testsuite>
+    <testsuite name="buildSkillTools" file="tests/skills.test.ts" line="119" tests="10" assertions="15" failures="0" skipped="0" time="3.206" hostname="JMac-2021.local">
+      <testcase name="returns empty array when no skills have exec" classname="buildSkillTools" time="2.223229" file="tests/skills.test.ts" line="120" assertions="1" />
+      <testcase name="returns one executor for the exec-capable skill" classname="buildSkillTools" time="0.324464" file="tests/skills.test.ts" line="126" assertions="1" />
+      <testcase name="normalises dashes to underscores in the tool name" classname="buildSkillTools" time="0.048512" file="tests/skills.test.ts" line="132" assertions="1" />
+      <testcase name="uses skill description as the tool description" classname="buildSkillTools" time="0.595278" file="tests/skills.test.ts" line="138" assertions="1" />
+      <testcase name="executor runs command and returns stdout" classname="buildSkillTools" time="0.006518" file="tests/skills.test.ts" line="144" assertions="2" />
+      <testcase name="H-04: buildSkillTools filters out skills with blocked commands in exec template" classname="buildSkillTools" time="0.00306" file="tests/skills.test.ts" line="161" assertions="2" />
+      <testcase name="H-04: buildSkillTools blocks skill with bash -c wrapping a blocked command" classname="buildSkillTools" time="0.001765" file="tests/skills.test.ts" line="183" assertions="1" />
+      <testcase name="H-04: runtime check blocks interpolated command containing blocked command" classname="buildSkillTools" time="0.00167" file="tests/skills.test.ts" line="197" assertions="4" />
+      <testcase name="H-04: buildSkillTools with no blockedCommands does not filter anything" classname="buildSkillTools" time="0.001388" file="tests/skills.test.ts" line="221" assertions="1" />
+      <testcase name="executor interpolates {{param}} placeholders" classname="buildSkillTools" time="0.004303" file="tests/skills.test.ts" line="235" assertions="1" />
+    </testsuite>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="11" assertions="19" failures="0" skipped="0" time="0.015239">
+  <testsuite name="tests/provider-health.test.ts" file="tests/provider-health.test.ts" tests="11" assertions="19" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+    <testsuite name="provider health tracking" file="tests/provider-health.test.ts" line="14" tests="4" assertions="6" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="new provider is not degraded" classname="provider health tracking" time="0.000162" file="tests/provider-health.test.ts" line="15" assertions="1" />
+      <testcase name="marks degraded after 3 consecutive errors" classname="provider health tracking" time="0.000153" file="tests/provider-health.test.ts" line="19" assertions="2" />
+      <testcase name="resets consecutive errors on success" classname="provider health tracking" time="0" file="tests/provider-health.test.ts" line="29" assertions="2" />
+      <testcase name="getDegradedProviders returns only degraded ones" classname="provider health tracking" time="0.000173" file="tests/provider-health.test.ts" line="40" assertions="1" />
+    </testsuite>
+    <testsuite name="provider health — computed fields in getAllProviderStats" file="tests/provider-health.test.ts" line="53" tests="4" assertions="8" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="getAllProviderStats includes avgLatencyMs and errorRate" classname="provider health — computed fields in getAllProviderStats" time="0.000167" file="tests/provider-health.test.ts" line="54" assertions="3" />
+      <testcase name="avgLatencyMs is 0 when no requests recorded" classname="provider health — computed fields in getAllProviderStats" time="0.000031" file="tests/provider-health.test.ts" line="70" assertions="1" />
+      <testcase name="errorRate is 0 for a provider with only successes" classname="provider health — computed fields in getAllProviderStats" time="0.000034" file="tests/provider-health.test.ts" line="77" assertions="2" />
+      <testcase name="getDegradedProviders key matches getAllProviderStats key format" classname="provider health — computed fields in getAllProviderStats" time="0.000143" file="tests/provider-health.test.ts" line="89" assertions="2" />
+    </testsuite>
+    <testsuite name="provider health — TTL eviction and LRU" file="tests/provider-health.test.ts" line="105" tests="3" assertions="5" failures="0" skipped="0" time="0" hostname="JMac-2021.local">
+      <testcase name="evicts stale entries after 6 hours on the next new-entry insertion" classname="provider health — TTL eviction and LRU" time="0.000074" file="tests/provider-health.test.ts" line="114" assertions="3" />
+      <testcase name="does NOT evict entries that are still within the 6-hour TTL" classname="provider health — TTL eviction and LRU" time="0.000033" file="tests/provider-health.test.ts" line="135" assertions="1" />
+      <testcase name="updates lastUsedAt on access (LRU touch)" classname="provider health — TTL eviction and LRU" time="0.000059" file="tests/provider-health.test.ts" line="152" assertions="1" />
+    </testsuite>
+  </testsuite>
+</testsuites>
