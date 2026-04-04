@@ -19,8 +19,10 @@
 import { spawn } from "node:child_process";
 import * as readline from "node:readline";
 import { runAgentLoop } from "./loop.js";
+import { runCompare } from "./compare.js";
 import { log } from "./logger.js";
 import type { AgentLoopOptions, EmitEvent } from "./types.js";
+import type { CompareParams, CompareChunk, CompareResult } from "./compare.js";
 
 // ── Safety limit ─────────────────────────────────────────────────────────────
 // Reject any single JSON-RPC line exceeding this size to prevent OOM on a
@@ -69,6 +71,38 @@ function writeLine(stream: NodeJS.WritableStream, msg: JsonRpcMessage): void {
   }
 }
 
+// ── Subprocess spawn helper ───────────────────────────────────────────────────
+
+/**
+ * Returns [cmd, args] needed to spawn an orager subprocess correctly in both
+ * compiled-binary mode and dev/script mode.
+ *
+ * Compiled binary  (process.execPath === orager binary):
+ *   spawn("orager", ["--subprocess"])
+ *
+ * Dev / script mode (process.execPath === bun, process.argv[1] === src/index.ts):
+ *   spawn("bun", ["src/index.ts", "--subprocess"])
+ *
+ * Without this distinction, dev-mode runs spawn "bun --subprocess" which
+ * triggers Bun's own CLI help instead of starting the orager server.
+ */
+function resolveSubprocessSpawn(explicitBinaryPath?: string): [string, string[]] {
+  if (explicitBinaryPath) {
+    return [explicitBinaryPath, ["--subprocess"]];
+  }
+  const scriptPath = process.argv[1];
+  const isScript =
+    typeof scriptPath === "string" &&
+    (scriptPath.endsWith(".ts") || scriptPath.endsWith(".js") || scriptPath.endsWith(".mts"));
+
+  if (isScript) {
+    // Dev mode: bun <script> --subprocess
+    return [process.execPath, [scriptPath, "--subprocess"]];
+  }
+  // Compiled binary: orager --subprocess
+  return [process.execPath, ["--subprocess"]];
+}
+
 // ── Kill helpers ──────────────────────────────────────────────────────────────
 
 const SIGKILL_GRACE_MS = 2000;
@@ -88,13 +122,13 @@ function killChild(child: ReturnType<typeof spawn>): void {
  */
 export async function runAgentLoopSubprocess(opts: AgentLoopOptions): Promise<void> {
   const { subprocess, onEmit, ...rest } = opts;
-  const binaryPath = subprocess?.binaryPath ?? process.execPath;
   const timeoutMs = subprocess?.timeoutMs;
 
   // Strip the subprocess option itself — the child runs in-process mode.
   const params: Omit<AgentLoopOptions, "onEmit" | "subprocess"> = rest;
 
-  const child = spawn(binaryPath, ["--subprocess"], {
+  const [spawnCmd, spawnArgs] = resolveSubprocessSpawn(subprocess?.binaryPath);
+  const child = spawn(spawnCmd, spawnArgs, {
     stdio: ["pipe", "pipe", "pipe"],
   });
 
@@ -214,6 +248,129 @@ export async function runAgentLoopSubprocess(opts: AgentLoopOptions): Promise<vo
   });
 }
 
+// ── Orchestrator side — compare/run ──────────────────────────────────────────
+
+/**
+ * Fan out a prompt to N models via a child orager subprocess over JSON-RPC 2.0.
+ *
+ * The child streams `compare/chunk` notifications for each model's deltas.
+ * Resolves with the full CompareResult once all models finish.
+ */
+export async function runCompareSubprocess(
+  params: CompareParams,
+  onChunk: (chunk: CompareChunk) => void,
+  opts?: { binaryPath?: string; timeoutMs?: number },
+): Promise<CompareResult> {
+  const timeoutMs = opts?.timeoutMs;
+
+  const [spawnCmd, spawnArgs] = resolveSubprocessSpawn(opts?.binaryPath);
+  const child = spawn(spawnCmd, spawnArgs, {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  let settled = false;
+
+  return new Promise<CompareResult>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (timeoutMs && timeoutMs > 0) {
+      timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          killChild(child);
+          reject(new Error(`orager compare subprocess timed out after ${timeoutMs}ms`));
+        }
+      }, timeoutMs);
+      timer.unref();
+    }
+
+    function cleanup() {
+      if (timer) clearTimeout(timer);
+    }
+
+    const rl = readline.createInterface({ input: child.stdout! });
+    rl.on("line", (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      if (Buffer.byteLength(trimmed) > MAX_LINE_BYTES) {
+        process.stderr.write(`[orager/compare] dropping oversized message (${Buffer.byteLength(trimmed)} bytes)\n`);
+        return;
+      }
+      let msg: JsonRpcMessage;
+      try {
+        msg = JSON.parse(trimmed) as JsonRpcMessage;
+      } catch {
+        process.stderr.write(`[orager/compare] malformed JSON from child: ${trimmed}\n`);
+        return;
+      }
+
+      // Forward compare/chunk streaming notifications to the caller
+      if (isNotification(msg) && msg.method === "compare/chunk") {
+        try {
+          onChunk(msg.params as CompareChunk);
+        } catch (err) {
+          process.stderr.write(
+            `[orager/compare] onChunk handler threw: ${err instanceof Error ? err.message : String(err)}\n`,
+          );
+        }
+        return;
+      }
+
+      // Final response
+      if (isResponse(msg) && msg.id === 1) {
+        cleanup();
+        if (!settled) {
+          settled = true;
+          if (msg.error) {
+            reject(new Error(msg.error.message));
+          } else {
+            resolve(msg.result as CompareResult);
+          }
+        }
+      }
+    });
+
+    child.stderr!.on("data", (chunk: Buffer) => {
+      process.stderr.write(chunk);
+    });
+
+    child.on("close", (code) => {
+      cleanup();
+      if (!settled) {
+        settled = true;
+        reject(new Error(
+          code === 0
+            ? "orager compare subprocess exited without sending a JSON-RPC response"
+            : `orager compare subprocess exited with code ${code}`,
+        ));
+      }
+    });
+
+    child.on("error", (err) => {
+      cleanup();
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
+
+    const request: JsonRpcRequest = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "compare/run",
+      params,
+    };
+    child.stdin!.on("error", (err) => {
+      cleanup();
+      if (!settled) {
+        settled = true;
+        reject(new Error(`orager compare subprocess stdin error: ${err.message}`));
+      }
+    });
+    writeLine(child.stdin!, request);
+    child.stdin!.end();
+  });
+}
+
 // ── Server side ───────────────────────────────────────────────────────────────
 
 /**
@@ -250,7 +407,12 @@ export async function startSubprocessServer(): Promise<void> {
     });
   });
 
-  if (request.method !== "agent/run") {
+  // ── Route to the correct method handler ──────────────────────────────────
+  if (request.method === "agent/run") {
+    await handleAgentRun(request);
+  } else if (request.method === "compare/run") {
+    await handleCompareRun(request);
+  } else {
     writeLine(process.stdout, {
       jsonrpc: "2.0",
       id: request.id,
@@ -258,8 +420,11 @@ export async function startSubprocessServer(): Promise<void> {
     });
     process.exit(1);
   }
+}
 
-  // Reconstruct AgentLoopOptions from params, adding onEmit that writes notifications.
+// ── Method handlers (server side) ─────────────────────────────────────────────
+
+async function handleAgentRun(request: JsonRpcRequest): Promise<void> {
   const params = request.params as Omit<AgentLoopOptions, "onEmit" | "subprocess">;
 
   const onEmit = (event: EmitEvent): void => {
@@ -281,6 +446,37 @@ export async function startSubprocessServer(): Promise<void> {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error("subprocess_run_error", { error: message });
+    writeLine(process.stdout, {
+      jsonrpc: "2.0",
+      id: request.id,
+      error: { code: -32000, message },
+    });
+    process.exit(1);
+  }
+}
+
+async function handleCompareRun(request: JsonRpcRequest): Promise<void> {
+  const params = request.params as CompareParams;
+
+  const onChunk = (chunk: CompareChunk): void => {
+    const notification: JsonRpcNotification = {
+      jsonrpc: "2.0",
+      method: "compare/chunk",
+      params: chunk,
+    };
+    writeLine(process.stdout, notification);
+  };
+
+  try {
+    const result = await runCompare(params, onChunk);
+    writeLine(process.stdout, {
+      jsonrpc: "2.0",
+      id: request.id,
+      result,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error("subprocess_compare_error", { error: message });
     writeLine(process.stdout, {
       jsonrpc: "2.0",
       id: request.id,
