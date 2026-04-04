@@ -4,8 +4,13 @@
  * Resolution priority (first match wins):
  *   1. Ollama — when opts._ollamaBaseUrl is set (explicit local routing from loop.ts)
  *   2. Anthropic Direct — when model starts with "anthropic/" and ANTHROPIC_API_KEY is set
- *   3. OpenRouter — universal fallback (handles any model via cloud routing)
+ *   3. OpenAI Direct — when model starts with "gpt-"/"o1"/"o3"/"o4" and OPENAI_API_KEY is set
+ *   4. DeepSeek Direct — when model starts with "deepseek/" and DEEPSEEK_API_KEY is set
+ *   5. Gemini Direct — when model starts with "gemini/" and GEMINI_API_KEY/GOOGLE_API_KEY is set
+ *   6. OpenRouter — universal fallback (handles any model via cloud routing)
  *
+ * Direct providers save 5-15% in OpenRouter markup and remove OpenRouter as a SPOF.
+ * OpenRouter remains the default for users who haven't set provider-specific keys.
  * The registry is a singleton populated at import time. Future providers
  * (Azure, Bedrock, Groq) register themselves here.
  */
@@ -14,6 +19,9 @@ import type { ModelProvider, ChatCallOptions } from "./types.js";
 import { OpenRouterProvider } from "./openrouter-provider.js";
 import { AnthropicDirectProvider } from "./anthropic-provider.js";
 import { OllamaProvider } from "./ollama-provider.js";
+import { OpenAIDirectProvider } from "./openai-provider.js";
+import { DeepSeekDirectProvider } from "./deepseek-provider.js";
+import { GeminiDirectProvider } from "./gemini-provider.js";
 
 // ── Registry singleton ──────────────────────────────────────────────────────
 
@@ -45,9 +53,15 @@ export function listProviders(): string[] {
 // Always available
 const openRouterProvider = new OpenRouterProvider();
 const anthropicDirectProvider = new AnthropicDirectProvider();
+const openAIDirectProvider = new OpenAIDirectProvider();
+const deepSeekDirectProvider = new DeepSeekDirectProvider();
+const geminiDirectProvider = new GeminiDirectProvider();
 
 registerProvider(openRouterProvider);
 registerProvider(anthropicDirectProvider);
+registerProvider(openAIDirectProvider);
+registerProvider(deepSeekDirectProvider);
+registerProvider(geminiDirectProvider);
 
 // Ollama is registered dynamically when config is available (via registerOllama)
 
@@ -89,7 +103,22 @@ export function resolveProvider(opts: ChatCallOptions): { provider: ModelProvide
     return { provider: anthropicDirectProvider, reason: "anthropic direct (ANTHROPIC_API_KEY set)" };
   }
 
-  // Priority 3: OpenRouter (universal fallback)
+  // Priority 3: OpenAI Direct (model is gpt-*/o-series + OPENAI_API_KEY set)
+  if (openAIDirectProvider.supportsModel(opts.model)) {
+    return { provider: openAIDirectProvider, reason: "openai direct (OPENAI_API_KEY set)" };
+  }
+
+  // Priority 4: DeepSeek Direct (model is deepseek/* + DEEPSEEK_API_KEY set)
+  if (deepSeekDirectProvider.supportsModel(opts.model)) {
+    return { provider: deepSeekDirectProvider, reason: "deepseek direct (DEEPSEEK_API_KEY set)" };
+  }
+
+  // Priority 5: Gemini Direct (model is gemini/* + GEMINI_API_KEY set)
+  if (geminiDirectProvider.supportsModel(opts.model)) {
+    return { provider: geminiDirectProvider, reason: "gemini direct (GEMINI_API_KEY set)" };
+  }
+
+  // Priority 6: OpenRouter (universal fallback — handles any model including the above when no direct key)
   return { provider: openRouterProvider, reason: "openrouter (default)" };
 }
 
@@ -108,4 +137,7 @@ export function _resetRegistryForTesting(): void {
   _providers.clear();
   registerProvider(openRouterProvider);
   registerProvider(anthropicDirectProvider);
+  registerProvider(openAIDirectProvider);
+  registerProvider(deepSeekDirectProvider);
+  registerProvider(geminiDirectProvider);
 }

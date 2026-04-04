@@ -352,9 +352,12 @@ export function validateSettings(
       delete settings.providers;
     } else {
       const p = settings.providers as Record<string, unknown>;
-      const KNOWN_PROVIDER_NAMES = new Set(["openrouter", "anthropic", "ollama"]);
+      const KNOWN_PROVIDER_NAMES = new Set(["openrouter", "anthropic", "openai", "deepseek", "gemini", "ollama"]);
       const KNOWN_OPENROUTER_KEYS = new Set(["apiKey", "apiKeys", "siteUrl", "siteName", "provider", "preset", "transforms", "dataCollection", "zdr", "sort", "quantizations", "require_parameters"]);
       const KNOWN_ANTHROPIC_KEYS = new Set(["apiKey"]);
+      const KNOWN_OPENAI_KEYS = new Set(["apiKey", "orgId"]);
+      const KNOWN_DEEPSEEK_KEYS = new Set(["apiKey"]);
+      const KNOWN_GEMINI_KEYS = new Set(["apiKey"]);
       const KNOWN_OLLAMA_PROVIDER_KEYS = new Set(["enabled", "baseUrl", "model", "checkModel"]);
 
       for (const providerName of Object.keys(p)) {
@@ -374,12 +377,32 @@ export function validateSettings(
         const cfgObj = cfg as Record<string, unknown>;
         const knownKeys = providerName === "openrouter" ? KNOWN_OPENROUTER_KEYS
           : providerName === "anthropic" ? KNOWN_ANTHROPIC_KEYS
+          : providerName === "openai" ? KNOWN_OPENAI_KEYS
+          : providerName === "deepseek" ? KNOWN_DEEPSEEK_KEYS
+          : providerName === "gemini" ? KNOWN_GEMINI_KEYS
           : KNOWN_OLLAMA_PROVIDER_KEYS;
 
         for (const key of Object.keys(cfgObj)) {
           if (!knownKeys.has(key)) {
             warnings.push(`unknown key 'providers.${providerName}.${key}'`);
           }
+        }
+
+        // Inject provider API keys from settings into env vars so providers pick them up.
+        // Env vars take precedence — only inject if the env var is not already set.
+        if (providerName === "openai" && typeof cfgObj.apiKey === "string" && cfgObj.apiKey) {
+          if (!process.env.OPENAI_API_KEY) process.env.OPENAI_API_KEY = cfgObj.apiKey;
+          if (typeof cfgObj.orgId === "string" && cfgObj.orgId && !process.env.OPENAI_ORG_ID) {
+            process.env.OPENAI_ORG_ID = cfgObj.orgId;
+          }
+        }
+
+        if (providerName === "deepseek" && typeof cfgObj.apiKey === "string" && cfgObj.apiKey) {
+          if (!process.env.DEEPSEEK_API_KEY) process.env.DEEPSEEK_API_KEY = cfgObj.apiKey;
+        }
+
+        if (providerName === "gemini" && typeof cfgObj.apiKey === "string" && cfgObj.apiKey) {
+          if (!process.env.GEMINI_API_KEY) process.env.GEMINI_API_KEY = cfgObj.apiKey;
         }
 
         // Validate Ollama-specific fields
