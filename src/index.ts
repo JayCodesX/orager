@@ -374,6 +374,13 @@ async function main(): Promise<void> {
     return;
   }
 
+  // ── Keys subcommand — manage API keys in OS keychain ─────────────────────────
+  if (argv[0] === "keys") {
+    const { handleKeysSubcommand } = await import("./commands/keys-command.js");
+    await handleKeysSubcommand(argv.slice(1));
+    return;
+  }
+
   // ── Memory subcommand ─────────────────────────────────────────────────────────
   if (argv[0] === "memory") {
     await handleMemorySubcommand(argv);
@@ -492,6 +499,12 @@ async function main(): Promise<void> {
     if (userCfg.maxCostUsdSoft !== undefined && !G.__oragerMaxCostUsdSoft) G.__oragerMaxCostUsdSoft = userCfg.maxCostUsdSoft;
   }
 
+  // ── Bootstrap keychain keys into env vars ────────────────────────────────────
+  // Must run before provider resolution and API key checks so that keys stored
+  // in the OS keychain (macOS Keychain, Linux Secret Service, Windows Credential
+  // Manager) are available as env vars for all downstream code.
+  { const { bootstrapKeychainKeys } = await import("./keychain.js"); await bootstrapKeychainKeys(); }
+
   // ── Config file expansion ─────────────────────────────────────────────────────
   argv = await applyConfigFileExpansion(argv);
 
@@ -504,9 +517,17 @@ async function main(): Promise<void> {
   }
 
   // ── Resolve API key ───────────────────────────────────────────────────────────
-  const apiKey = process.env["PROTOCOL_API_KEY"] ?? "";
+  // PROTOCOL_API_KEY is the primary OpenRouter key. Keychain bootstrap above may
+  // have already injected OPENROUTER_API_KEY from the OS keychain.
+  const apiKey =
+    process.env["PROTOCOL_API_KEY"] ??
+    process.env["OPENROUTER_API_KEY"] ??
+    "";
   if (!apiKey) {
-    process.stderr.write("orager: API key not set. Export PROTOCOL_API_KEY.\n");
+    process.stderr.write(
+      "orager: no API key configured.\n" +
+      "  Set PROTOCOL_API_KEY or OPENROUTER_API_KEY, or run `orager setup` to store a key.\n"
+    );
     process.exit(1);
   }
 

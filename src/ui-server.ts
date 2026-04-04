@@ -918,6 +918,12 @@ async function handleRequest(
       await handleWebhookTest(req, res);
     } else if (pathname === "/api/omls/status" && req.method === "GET") {
       await handleOmlsStatus(req, res);
+    } else if (pathname === "/api/keychain/status" && req.method === "GET") {
+      await handleKeychainStatus(req, res);
+    } else if (pathname === "/api/keychain/key" && req.method === "POST") {
+      await handleKeychainSetKey(req, res);
+    } else if (pathname === "/api/keychain/key" && req.method === "DELETE") {
+      await handleKeychainDeleteKey(req, res);
     } else if (pathname.startsWith("/api/")) {
       jsonResponse(res, 404, { error: "Not found" });
     } else {
@@ -929,6 +935,59 @@ async function handleRequest(
       jsonResponse(res, 500, { error: "Internal server error" });
     }
   }
+}
+
+// ── Keychain handlers ─────────────────────────────────────────────────────────
+
+async function handleKeychainStatus(_req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const { getAuthStatus, isKeychainSupported } = await import("./keychain.js");
+  const status = await getAuthStatus();
+  jsonResponse(res, 200, { supported: isKeychainSupported(), providers: status });
+}
+
+async function handleKeychainSetKey(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  let parsed: { provider?: string; key?: string };
+  try {
+    parsed = await readJsonBody(req) as { provider?: string; key?: string };
+  } catch {
+    jsonResponse(res, 400, { error: "Invalid JSON" });
+    return;
+  }
+
+  const { provider, key } = parsed;
+  const VALID_PROVIDERS = new Set(["openrouter", "anthropic", "openai", "deepseek", "gemini"]);
+
+  if (!provider || !VALID_PROVIDERS.has(provider)) {
+    jsonResponse(res, 400, { error: `Invalid provider. Must be one of: ${[...VALID_PROVIDERS].join(", ")}` });
+    return;
+  }
+  if (!key || typeof key !== "string" || !key.trim()) {
+    jsonResponse(res, 400, { error: "key must be a non-empty string" });
+    return;
+  }
+
+  try {
+    const { setKeychainKey } = await import("./keychain.js");
+    await setKeychainKey(provider as import("./keychain.js").KeychainProvider, key.trim());
+    jsonResponse(res, 200, { ok: true, provider });
+  } catch (err) {
+    jsonResponse(res, 500, { error: err instanceof Error ? err.message : "Failed to save key" });
+  }
+}
+
+async function handleKeychainDeleteKey(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const provider = url.searchParams.get("provider");
+  const VALID_PROVIDERS = new Set(["openrouter", "anthropic", "openai", "deepseek", "gemini"]);
+
+  if (!provider || !VALID_PROVIDERS.has(provider)) {
+    jsonResponse(res, 400, { error: `Invalid provider. Must be one of: ${[...VALID_PROVIDERS].join(", ")}` });
+    return;
+  }
+
+  const { deleteKeychainKey } = await import("./keychain.js");
+  await deleteKeychainKey(provider as import("./keychain.js").KeychainProvider);
+  jsonResponse(res, 200, { ok: true, provider });
 }
 
 // ── Server lifecycle ──────────────────────────────────────────────────────────
