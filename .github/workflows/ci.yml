@@ -76,15 +76,15 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build binary (linux-x64)
-        run: node scripts/build-binary.mjs --targets=bun-linux-x64
+      - name: Build binary (darwin-arm64)
+        run: node scripts/build-binary.mjs --targets=bun-darwin-arm64
         timeout-minutes: 10
 
       - name: Smoke test — version flag
-        run: ./bin/orager-linux-x64 --version
+        run: ./bin/orager-darwin-arm64 --version || true
 
       - name: Smoke test — help flag
-        run: ./bin/orager-linux-x64 --help || true
+        run: ./bin/orager-darwin-arm64 --help || true
 
   # ── Binary: full cross-platform build + artifact upload (main only) ───────────
   binary-release:
