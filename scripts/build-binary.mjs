@@ -30,6 +30,17 @@ const root = path.resolve(__dir, "..");
 
 const DEFAULT_TARGETS = ["bun-darwin-arm64", "bun-darwin-x64", "bun-linux-x64"];
 
+// Packages that must never be bundled into the binary:
+//   - playwright / playwright-core — devDep with native electron/chromium-bidi
+//     deps that can't be resolved at bundle time
+//   - @huggingface/transformers — optional dep, loaded via dynamic import at
+//     runtime with graceful fallback when absent
+const EXTERNAL_PACKAGES = [
+  "playwright",
+  "playwright-core",
+  "@huggingface/transformers",
+];
+
 const arg = process.argv.find((a) => a.startsWith("--targets="));
 const targets = arg
   ? arg.slice("--targets=".length).split(",").map((t) => t.trim())
@@ -101,7 +112,8 @@ for (const { src: entry, bin: binName } of ENTRY_POINTS) {
   // We use a per-binary subdirectory then rename the entry JS to the expected path.
   const bundleSubdir = path.join(BUNDLE_DIR, binName);
   fs.mkdirSync(bundleSubdir, { recursive: true });
-  run(`bun build --target=bun --outdir=${bundleSubdir} ${entry}`);
+  const externals = EXTERNAL_PACKAGES.map((p) => `--external=${p}`).join(" ");
+  run(`bun build --target=bun --outdir=${bundleSubdir} ${externals} ${entry}`);
   // Bun names the output after the entry file (e.g. index.js or mcp.js).
   const entryBasename = path.basename(entry, path.extname(entry)) + ".js";
   const bundleRaw = path.join(bundleSubdir, entryBasename);
