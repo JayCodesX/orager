@@ -650,6 +650,26 @@ async function resetConfig(rl: readline.Interface): Promise<void> {
 async function checkConfig(): Promise<void> {
   process.stdout.write("\n" + bold("── Config check ──") + "\n");
 
+  // ── 0. Environment check ───────────────────────────────────────────────────
+  {
+    const nodeVer = process.versions.node;
+    const [major, minor] = nodeVer.split(".").map(Number);
+    const nodeOk = major > 20 || (major === 20 && (minor ?? 0) >= 3);
+    if (nodeOk) {
+      process.stdout.write(green(`✓ Node.js ${nodeVer} (>= 20.3.0)\n`));
+    } else {
+      process.stdout.write(`✗ Node.js ${nodeVer} is too old — orager requires >= 20.3.0\n`);
+    }
+
+    const hasKey = !!(process.env["PROTOCOL_API_KEY"] || process.env["OPENROUTER_API_KEY"]);
+    if (hasKey) {
+      const which = process.env["PROTOCOL_API_KEY"] ? "PROTOCOL_API_KEY" : "OPENROUTER_API_KEY";
+      process.stdout.write(green(`✓ ${which} is set\n`));
+    } else {
+      process.stdout.write(yellow("⚠ Neither PROTOCOL_API_KEY nor OPENROUTER_API_KEY is set in the environment.\n"));
+    }
+  }
+
   // ── 1. File existence & parse ──────────────────────────────────────────────
   let cfg: OragerUserConfig;
   try {
@@ -753,7 +773,46 @@ async function checkConfig(): Promise<void> {
     }
   }
 
-  // ── 4. Summary ─────────────────────────────────────────────────────────────
+  // ── 4. Test agent run ──────────────────────────────────────────────────────
+  const testApiKey = process.env["PROTOCOL_API_KEY"] ?? process.env["OPENROUTER_API_KEY"] ?? cfg.agentApiKey ?? "";
+  if (testApiKey) {
+    process.stdout.write(dim("\nStep 3: Test agent run\n"));
+    process.stdout.write(dim("Running a quick hello-world to verify the full pipeline...\n"));
+    try {
+      const { runAgentLoop } = await import("./loop.js");
+      let outputText = "";
+      await runAgentLoop({
+        prompt: "Reply with exactly: ORAGER_OK",
+        model: "qwen/qwen3-14b:free",
+        apiKey: testApiKey,
+        maxTurns: 1,
+        maxCostUsd: 0,
+        dangerouslySkipPermissions: true,
+        sessionId: null,
+        addDirs: [],
+        cwd: process.cwd(),
+        verbose: false,
+        onEmit: (event) => {
+          if (event.type === "assistant" && Array.isArray(event.message?.content)) {
+            for (const block of event.message.content) {
+              if (block.type === "text") outputText += block.text;
+            }
+          }
+        },
+      });
+      if (outputText.includes("ORAGER_OK")) {
+        process.stdout.write(green("✓ Agent hello-world passed — full pipeline is working\n"));
+      } else {
+        process.stdout.write(yellow(`⚠ Agent responded but output did not contain "ORAGER_OK" — got: ${outputText.slice(0, 120)}\n`));
+      }
+    } catch (err) {
+      process.stdout.write(`✗ Agent hello-world failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+  } else {
+    process.stdout.write(dim("\nStep 3: Test agent run — skipped (no API key)\n"));
+  }
+
+  // ── 5. Summary ─────────────────────────────────────────────────────────────
   process.stdout.write("\n" + dim("Run `orager setup --show` to see full config.\n\n"));
 }
 

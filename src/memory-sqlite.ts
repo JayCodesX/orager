@@ -11,6 +11,7 @@
  */
 import { openDb, isSqliteVecAvailable } from "./native-sqlite.js";
 import type { SqliteDatabase } from "./native-sqlite.js";
+import { runMigrations } from "./db-migrations.js";
 import crypto from "node:crypto";
 import type { MemoryStore, MemoryEntry } from "./memory.js";
 import { resolveDbPath, resolveMemoryDir, sanitizeKeyForFilename, checkDbSize } from "./db.js";
@@ -81,75 +82,69 @@ export function _resetDbForTesting(): void {
   closeDb();
 }
 
-function _migrate(db: SqliteDatabase): void {
-  // ── Base table ────────────────────────────────────────────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS memory_entries (
-      id              TEXT PRIMARY KEY,
-      memory_key      TEXT NOT NULL,
-      content         TEXT NOT NULL,
-      tags            TEXT,
-      created_at      TEXT NOT NULL,
-      expires_at      TEXT,
-      run_id          TEXT,
-      importance      INTEGER NOT NULL DEFAULT 2,
-      embedding       BLOB,
-      embedding_model TEXT
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_memory_key ON memory_entries(memory_key);
-
-    CREATE VIRTUAL TABLE IF NOT EXISTS memory_entries_fts USING fts5(
-      content,
-      content='memory_entries',
-      content_rowid='rowid'
-    );
-
-    CREATE TRIGGER IF NOT EXISTS memory_entries_ai AFTER INSERT ON memory_entries BEGIN
-      INSERT INTO memory_entries_fts(rowid, content) VALUES (new.rowid, new.content);
-    END;
-    CREATE TRIGGER IF NOT EXISTS memory_entries_ad AFTER DELETE ON memory_entries BEGIN
-      INSERT INTO memory_entries_fts(memory_entries_fts, rowid, content)
-        VALUES ('delete', old.rowid, old.content);
-    END;
-    CREATE TRIGGER IF NOT EXISTS memory_entries_au AFTER UPDATE ON memory_entries BEGIN
-      INSERT INTO memory_entries_fts(memory_entries_fts, rowid, content)
-        VALUES ('delete', old.rowid, old.content);
-      INSERT INTO memory_entries_fts(rowid, content) VALUES (new.rowid, new.content);
-    END;
-  `);
-
-  // ── Additive migrations ───────────────────────────────────────────────────
-  const existingCols = new Set(
-    (db.prepare("SELECT name FROM pragma_table_info('memory_entries')").all() as { name: string }[])
-      .map((r) => r.name)
-  );
-
-  if (!existingCols.has("context_id")) {
-    db.exec(`ALTER TABLE memory_entries ADD COLUMN context_id TEXT NOT NULL DEFAULT 'default'`);
-  }
-  if (!existingCols.has("type")) {
-    db.exec(`ALTER TABLE memory_entries ADD COLUMN type TEXT NOT NULL DEFAULT 'insight'`);
-  }
-  if (!existingCols.has("metadata")) {
-    db.exec(`ALTER TABLE memory_entries ADD COLUMN metadata JSON`);
-    db.exec(`
+const MEMORY_MIGRATIONS = [
+  {
+    version: 1,
+    name: "create_memory_entries_base",
+    sql: `
+      CREATE TABLE IF NOT EXISTS memory_entries (
+        id              TEXT PRIMARY KEY,
+        memory_key      TEXT NOT NULL,
+        content         TEXT NOT NULL,
+        tags            TEXT,
+        created_at      TEXT NOT NULL,
+        expires_at      TEXT,
+        run_id          TEXT,
+        importance      INTEGER NOT NULL DEFAULT 2,
+        embedding       BLOB,
+        embedding_model TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_memory_key ON memory_entries(memory_key);
+      CREATE VIRTUAL TABLE IF NOT EXISTS memory_entries_fts USING fts5(
+        content,
+        content='memory_entries',
+        content_rowid='rowid'
+      );
+      CREATE TRIGGER IF NOT EXISTS memory_entries_ai AFTER INSERT ON memory_entries BEGIN
+        INSERT INTO memory_entries_fts(rowid, content) VALUES (new.rowid, new.content);
+      END;
+      CREATE TRIGGER IF NOT EXISTS memory_entries_ad AFTER DELETE ON memory_entries BEGIN
+        INSERT INTO memory_entries_fts(memory_entries_fts, rowid, content)
+          VALUES ('delete', old.rowid, old.content);
+      END;
+      CREATE TRIGGER IF NOT EXISTS memory_entries_au AFTER UPDATE ON memory_entries BEGIN
+        INSERT INTO memory_entries_fts(memory_entries_fts, rowid, content)
+          VALUES ('delete', old.rowid, old.content);
+        INSERT INTO memory_entries_fts(rowid, content) VALUES (new.rowid, new.content);
+      END;
+      CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    `,
+  },
+  {
+    version: 2,
+    name: "add_context_id",
+    sql: `ALTER TABLE memory_entries ADD COLUMN context_id TEXT NOT NULL DEFAULT 'default'`,
+  },
+  {
+    version: 3,
+    name: "add_type",
+    sql: `ALTER TABLE memory_entries ADD COLUMN type TEXT NOT NULL DEFAULT 'insight'`,
+  },
+  {
+    version: 4,
+    name: "add_metadata_and_index",
+    sql: `
+      ALTER TABLE memory_entries ADD COLUMN metadata JSON;
       UPDATE memory_entries
-      SET metadata = json_object(
-        'tags',       COALESCE(tags, '[]'),
-        'importance', importance
-      )
-      WHERE metadata IS NULL
-    `);
-  }
+        SET metadata = json_object('tags', COALESCE(tags, '[]'), 'importance', importance)
+        WHERE metadata IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_context_type ON memory_entries(context_id, type);
+    `,
+  },
+];
 
-  db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_context_type ON memory_entries(context_id, type);
-  `);
-
-  // ── _meta table + ANN index ───────────────────────────────────────────────
-  // _meta stores kv pairs (e.g. vec_dim) so we can recreate the vec0 table on open.
-  db.exec(`CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+function _migrate(db: SqliteDatabase): void {
+  runMigrations(db, MEMORY_MIGRATIONS);
 
   // One-time migration: convert legacy JSON-string embeddings to binary Float32 BLOB.
   const legacyRows = db.prepare(

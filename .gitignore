@@ -8,3 +8,5 @@ bin/
 AUDIT_REPORT*.md
 CLAUDE.md
 .claude/
+docs/.vitepress/dist
+docs/.vitepress/cache
