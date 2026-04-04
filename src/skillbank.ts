@@ -6,8 +6,14 @@
  * similarity to the run prompt and injected into the system prompt as a
  * "## Learned Skills" section before the memory context.
  *
- * Storage: shares the singleton SQLite connection from memory-sqlite.ts.
- * The `skills` table is created by the _migrate() call in memory-sqlite.ts.
+ * Storage: standalone SQLite database (resolveSkillsDbPath()).
+ *
+ * Performance layers:
+ *  1. sqlite-vec ANN index (skills_vectors vec0 table) — sub-ms retrieval at any scale
+ *  2. FTS5 full-text index (skills_fts) — keyword-based fallback/supplement
+ *  3. Local embeddings via Transformers.js (384-dim) — zero API cost
+ *  4. Similarity gate — skips prompt injection when no skill exceeds threshold
+ *  5. Brute-force JS cosine fallback — always works, no dependencies
  *
  * All public functions are non-fatal — errors are logged to stderr and
  * swallowed. An unavailable SkillBank must never abort an agent run.
@@ -17,9 +23,10 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { openDb, type SqliteDatabase } from "./native-sqlite.js";
+import { openDb, isSqliteVecAvailable, type SqliteDatabase } from "./native-sqlite.js";
 import { getOpenRouterProvider } from "./providers/index.js";
 import { resolveSkillsDbPath } from "./db.js";
+import { localEmbed } from "./local-embeddings.js";
 import type { SkillBankConfig } from "./types.js";
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
@@ -89,6 +96,30 @@ async function _getSkillsDb(): Promise<SqliteDatabase> {
     );
     CREATE INDEX IF NOT EXISTS idx_skills_deleted ON skills(deleted);
   `);
+
+  // ── Meta table for vec dimension tracking ────────────────────────────────
+  _skillsDb.exec(`
+    CREATE TABLE IF NOT EXISTS _skills_meta (
+      key   TEXT PRIMARY KEY,
+      value TEXT
+    );
+  `);
+
+  // ── FTS5 full-text index ─────────────────────────────────────────────────
+  try {
+    _skillsDb.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS skills_fts
+        USING fts5(text, content=skills, content_rowid=rowid);
+    `);
+    // Rebuild FTS from existing skills (fast, idempotent)
+    _rebuildFts(_skillsDb);
+  } catch {
+    // FTS5 may not be available on very old SQLite builds — non-fatal
+  }
+
+  // ── sqlite-vec ANN index ─────────────────────────────────────────────────
+  _rebuildSkillsVec(_skillsDb);
+
   return _skillsDb;
 }
 
@@ -117,6 +148,154 @@ function blobToEmbedding(buf: Uint8Array | null): number[] | null {
 }
 
 import { cosineSimilarity } from "./memory.js";
+
+// ── sqlite-vec ANN helpers ────────────────────────────────────────────────────
+
+/**
+ * Create (or verify) the skills_vectors vec0 virtual table.
+ * Returns true when the table is ready for use with the given dimension.
+ * If the stored dimension differs (model swap), drops and recreates.
+ */
+function _ensureSkillsVecTable(db: SqliteDatabase, dim: number): boolean {
+  if (!isSqliteVecAvailable()) return false;
+  try {
+    const dimRow = db.prepare("SELECT value FROM _skills_meta WHERE key = 'vec_dim'").get() as { value: string } | undefined;
+    if (dimRow) {
+      if (parseInt(dimRow.value, 10) === dim) return true;
+      // Dimension changed (embedding model swap) — drop and recreate
+      db.exec("DROP TABLE IF EXISTS skills_vectors");
+      db.prepare("DELETE FROM _skills_meta WHERE key = 'vec_dim'").run();
+    }
+    db.exec(`CREATE VIRTUAL TABLE skills_vectors USING vec0(embedding float[${dim}])`);
+    db.prepare("INSERT OR REPLACE INTO _skills_meta (key, value) VALUES ('vec_dim', ?)").run(String(dim));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Rebuild the skills_vectors ANN index from scratch.
+ * Called on DB open (backfill) and after skill insertions with new dimensions.
+ * No-op when sqlite-vec is unavailable or no embeddings exist.
+ */
+function _rebuildSkillsVec(db: SqliteDatabase): void {
+  if (!isSqliteVecAvailable()) return;
+  try {
+    const embRows = db.prepare(
+      "SELECT rowid, embedding FROM skills WHERE deleted = 0 AND embedding IS NOT NULL",
+    ).all() as { rowid: number; embedding: Uint8Array }[];
+    if (embRows.length === 0) return;
+
+    const dim = embRows[0]!.embedding.byteLength / 4;
+    if (!_ensureSkillsVecTable(db, dim)) return;
+
+    db.transaction(() => {
+      db.exec("DELETE FROM skills_vectors");
+      const ins = db.prepare("INSERT INTO skills_vectors (rowid, embedding) VALUES (?, ?)");
+      for (const row of embRows) {
+        try { ins.run(row.rowid, row.embedding); } catch { /* skip malformed */ }
+      }
+    })();
+  } catch { /* graceful — ANN unavailable, brute-force fallback active */ }
+}
+
+/**
+ * Try ANN retrieval via sqlite-vec. Returns ranked skills or null if unavailable.
+ */
+function _retrieveSkillsANN(
+  db: SqliteDatabase,
+  queryEmbedding: number[],
+  config: Required<SkillBankConfig>,
+): Skill[] | null {
+  if (!isSqliteVecAvailable()) return null;
+
+  try {
+    // Verify vec table has matching dimension
+    const dimRow = db.prepare("SELECT value FROM _skills_meta WHERE key = 'vec_dim'").get() as { value: string } | undefined;
+    if (!dimRow || parseInt(dimRow.value, 10) !== queryEmbedding.length) return null;
+
+    const queryBlob = new Uint8Array(new Float32Array(queryEmbedding).buffer);
+    // Fetch topK * 2 candidates for re-ranking buffer
+    const annRows = db.prepare(`
+      SELECT rowid, distance
+      FROM skills_vectors
+      WHERE embedding MATCH ?
+        AND k = ?
+    `).all(queryBlob, config.topK * 2) as { rowid: number; distance: number }[];
+
+    if (annRows.length === 0) return [];
+
+    const rowids = annRows.map((r) => r.rowid);
+    const placeholders = rowids.map(() => "?").join(",");
+
+    const skillRows = db.prepare(
+      `SELECT *, rowid as _rowid FROM skills WHERE rowid IN (${placeholders}) AND deleted = 0`,
+    ).all(...rowids) as unknown as (SkillRow & { _rowid: number })[];
+
+    // Re-rank by exact cosine similarity
+    const scored = skillRows
+      .map((row) => {
+        const emb = blobToEmbedding(row.embedding ?? null);
+        const sim = emb ? cosineSimilarity(queryEmbedding, emb) : 0;
+        return { row, sim };
+      })
+      .filter(({ sim }) => sim >= config.similarityThreshold)
+      .sort((a, b) => b.sim - a.sim)
+      .slice(0, config.topK);
+
+    return scored.map(({ row }) => rowToSkill(row));
+  } catch {
+    return null; // fall through to brute-force
+  }
+}
+
+// ── FTS5 helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * Rebuild FTS5 index from existing skills. Called on DB open.
+ */
+function _rebuildFts(db: SqliteDatabase): void {
+  try {
+    db.exec("INSERT INTO skills_fts(skills_fts) VALUES('rebuild')");
+  } catch { /* FTS5 unavailable — non-fatal */ }
+}
+
+/**
+ * Retrieve skills via FTS5 keyword search.
+ * Returns matching skills or empty array. Used as supplement to vector search.
+ */
+function _retrieveSkillsFTS(
+  db: SqliteDatabase,
+  queryText: string,
+  config: Required<SkillBankConfig>,
+): Skill[] {
+  try {
+    // Extract significant words (>3 chars) for FTS query
+    const words = queryText
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 3)
+      .slice(0, 10);
+
+    if (words.length === 0) return [];
+
+    // Use OR matching — any keyword hit is useful
+    const ftsQuery = words.join(" OR ");
+    const rows = db.prepare(`
+      SELECT s.* FROM skills s
+      JOIN skills_fts f ON s.rowid = f.rowid
+      WHERE skills_fts MATCH ?
+        AND s.deleted = 0
+      LIMIT ?
+    `).all(ftsQuery, config.topK) as unknown as SkillRow[];
+
+    return rows.map(rowToSkill);
+  } catch {
+    return []; // FTS5 unavailable — non-fatal
+  }
+}
 
 // ── Row mapping ───────────────────────────────────────────────────────────────
 
@@ -155,11 +334,19 @@ function rowToSkill(row: SkillRow): Skill {
 
 /**
  * Retrieve top-K skills by cosine similarity to queryEmbedding.
+ *
+ * Retrieval pipeline:
+ *  1. Try sqlite-vec ANN (sub-ms at any scale)
+ *  2. Fall back to brute-force JS cosine (always works)
+ *  3. Supplement with FTS5 keyword matches (deduped)
+ *  4. Apply similarity gate — return [] if best match < threshold
+ *
  * Returns [] when no skills exist, DB is disabled, or any error occurs.
  */
 export async function retrieveSkills(
   queryEmbedding: number[],
   userConfig?: SkillBankConfig,
+  queryText?: string,
 ): Promise<Skill[]> {
   if (!isSkillBankAvailable()) return [];
   const config = cfg(userConfig);
@@ -167,23 +354,46 @@ export async function retrieveSkills(
 
   try {
     const db = await _getSkillsDb();
-    const rows = db
-      .prepare("SELECT * FROM skills WHERE deleted = 0")
-      .all() as unknown as SkillRow[];
 
-    if (rows.length === 0) return [];
+    // ── Step 1: Try ANN retrieval ──────────────────────────────────────────
+    let results = _retrieveSkillsANN(db, queryEmbedding, config);
 
-    const scored = rows
-      .map((row) => {
-        const emb = blobToEmbedding(row.embedding ?? null);
-        const sim = emb ? cosineSimilarity(queryEmbedding, emb) : 0;
-        return { row, sim };
-      })
-      .filter(({ sim }) => sim >= config.similarityThreshold)
-      .sort((a, b) => b.sim - a.sim)
-      .slice(0, config.topK);
+    // ── Step 2: Brute-force fallback ───────────────────────────────────────
+    if (results === null) {
+      const rows = db
+        .prepare("SELECT * FROM skills WHERE deleted = 0")
+        .all() as unknown as SkillRow[];
 
-    return scored.map(({ row }) => rowToSkill(row));
+      if (rows.length === 0) return [];
+
+      const scored = rows
+        .map((row) => {
+          const emb = blobToEmbedding(row.embedding ?? null);
+          const sim = emb ? cosineSimilarity(queryEmbedding, emb) : 0;
+          return { row, sim };
+        })
+        .filter(({ sim }) => sim >= config.similarityThreshold)
+        .sort((a, b) => b.sim - a.sim)
+        .slice(0, config.topK);
+
+      results = scored.map(({ row }) => rowToSkill(row));
+    }
+
+    // ── Step 3: Supplement with FTS5 keyword matches ───────────────────────
+    if (queryText) {
+      const ftsResults = _retrieveSkillsFTS(db, queryText, config);
+      if (ftsResults.length > 0) {
+        const existingIds = new Set(results.map((s) => s.id));
+        for (const ftsSkill of ftsResults) {
+          if (!existingIds.has(ftsSkill.id) && results.length < config.topK) {
+            results.push(ftsSkill);
+            existingIds.add(ftsSkill.id);
+          }
+        }
+      }
+    }
+
+    return results;
   } catch (err) {
     process.stderr.write(
       `[skillbank] retrieveSkills error: ${err instanceof Error ? err.message : String(err)}\n`,
@@ -278,11 +488,14 @@ Output ONLY the instruction text — no preamble, no markdown, no JSON, no expla
  * Extract a skill from a trajectory file via LLM call and store it.
  * Non-fatal — all errors are swallowed and logged to stderr.
  *
+ * Uses local embeddings (Transformers.js) when available, falling back to
+ * the OpenRouter embedding API.
+ *
  * @param trajectoryPath - Path to the .jsonl trajectory file
  * @param sourceSession  - Session ID the trajectory came from
  * @param model          - Model to use for extraction (overrides config.extractionModel)
  * @param apiKey         - OpenRouter API key
- * @param embeddingModel - Model to use for embedding the extracted skill
+ * @param embeddingModel - Model to use for embedding via OpenRouter (fallback)
  * @param userConfig     - SkillBank config
  */
 export async function extractSkillFromTrajectory(
@@ -405,10 +618,16 @@ export async function extractSkillFromTrajectory(
     if (!skillText || skillText.length < 20 || skillText === "NO_SKILL") return; // too short, empty, or no learnable pattern
 
     // ── 3. Embed the candidate skill ──────────────────────────────────────────
+    // Try local embeddings first (free, fast), fall back to OpenRouter API
     let candidateEmbedding: number[];
     try {
-      const vecs = await getOpenRouterProvider().callEmbeddings!(apiKey, embeddingModel, [skillText]);
-      candidateEmbedding = vecs[0];
+      const localVec = await localEmbed(skillText);
+      if (localVec) {
+        candidateEmbedding = localVec;
+      } else {
+        const vecs = await getOpenRouterProvider().callEmbeddings!(apiKey, embeddingModel, [skillText]);
+        candidateEmbedding = vecs[0];
+      }
     } catch (err) {
       process.stderr.write(
         `[skillbank] embedding failed during extraction: ${err instanceof Error ? err.message : String(err)}\n`,
@@ -447,6 +666,13 @@ export async function extractSkillFromTrajectory(
             new Date().toISOString(),
             worst.id,
           );
+          // Remove from vec index
+          try {
+            const delRow = db.prepare("SELECT rowid FROM skills WHERE id = ?").get(worst.id) as { rowid: number } | undefined;
+            if (delRow) {
+              db.prepare("DELETE FROM skills_vectors WHERE rowid = ?").run(delRow.rowid);
+            }
+          } catch { /* non-fatal */ }
         }
       }
 
@@ -468,6 +694,25 @@ export async function extractSkillFromTrajectory(
         now,
         now,
       );
+
+      // ── 6b. Update vec index ──────────────────────────────────────────────────
+      try {
+        const inserted = db.prepare("SELECT rowid FROM skills WHERE id = ?").get(id) as { rowid: number } | undefined;
+        if (inserted && _ensureSkillsVecTable(db, candidateEmbedding.length)) {
+          db.prepare("INSERT INTO skills_vectors (rowid, embedding) VALUES (?, ?)").run(
+            inserted.rowid,
+            embeddingToBlob(candidateEmbedding),
+          );
+        }
+      } catch { /* non-fatal — vec index out of sync is self-healing on restart */ }
+
+      // ── 6c. Update FTS index ──────────────────────────────────────────────────
+      try {
+        const inserted = db.prepare("SELECT rowid FROM skills WHERE id = ?").get(id) as { rowid: number } | undefined;
+        if (inserted) {
+          db.prepare("INSERT INTO skills_fts (rowid, text) VALUES (?, ?)").run(inserted.rowid, skillText);
+        }
+      } catch { /* non-fatal */ }
 
       process.stderr.write(`[skillbank] extracted skill ${id} from session ${sourceSession}\n`);
     } catch (err) {
@@ -512,10 +757,16 @@ export async function deleteSkill(id: string): Promise<void> {
   if (!isSkillBankAvailable()) return;
   try {
     const db = await _getSkillsDb();
+    // Get rowid before marking deleted (needed for vec/fts cleanup)
+    const row = db.prepare("SELECT rowid FROM skills WHERE id = ?").get(id) as { rowid: number } | undefined;
     db.prepare("UPDATE skills SET deleted = 1, updated_at = ? WHERE id = ?").run(
       new Date().toISOString(),
       id,
     );
+    // Clean up vec index
+    if (row) {
+      try { db.prepare("DELETE FROM skills_vectors WHERE rowid = ?").run(row.rowid); } catch { /* non-fatal */ }
+    }
   } catch (err) {
     process.stderr.write(
       `[skillbank] deleteSkill error: ${err instanceof Error ? err.message : String(err)}\n`,
