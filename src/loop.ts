@@ -43,7 +43,7 @@ import { resolveLocalAdapterServer } from "./omls/local-adapter-server.js";
 import { processInput, detectModalitiesFromBlocks } from "./input-processor.js";
 import type { RouterSignal } from "./types.js";
 import { ALL_TOOLS, finishTool, BROWSER_TOOLS, makeAgentTool, buildAgentsSystemPrompt } from "./tools/index.js";
-import { getAgentsDb, loadAllAgents } from "./agents/registry.js";
+import { getAgentsDb, loadAllAgents, loadAgentsForTask } from "./agents/registry.js";
 import { recordAgentScore } from "./agents/score.js";
 import { makeGenerateAgentTool } from "./agents/generate.js";
 import { FINISH_TOOL_NAME } from "./tools/finish.js";
@@ -472,10 +472,24 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   // Load seeds + user/project files + DB into opts.agents at depth 0.
   // Sub-agents (depth > 0) never auto-load — they receive agents: undefined
   // from their parent to prevent recursive spawning.
+  //
+  // When the catalog is large, loadAgentsForTask uses semantic search to
+  // retrieve only the most relevant DB agents for this specific prompt.
+  // For small catalogs (< 10 DB agents), all agents are loaded as-is.
   const isTopLevel = (opts._spawnDepth ?? 0) === 0;
   if (isTopLevel && !opts.agents) {
     try {
-      opts = { ...opts, agents: await loadAllAgents(cwd) };
+      const taskText = typeof opts.prompt === "string"
+        ? opts.prompt
+        : Array.isArray(opts.prompt)
+          ? (opts.prompt as Array<{ text?: string }>).map((b) => b.text ?? "").join(" ")
+          : "";
+      opts = {
+        ...opts,
+        agents: taskText
+          ? await loadAgentsForTask(taskText, cwd)
+          : await loadAllAgents(cwd),
+      };
     } catch {
       // Non-fatal — registry unavailable, continue without catalog agents
     }

@@ -31,6 +31,7 @@ import { openDb } from "../native-sqlite.js";
 import { runMigrations } from "../db-migrations.js";
 import { resolveAgentsDbPath, resolveUserAgentsDir, resolveProjectAgentsDir } from "../db.js";
 import { SEED_AGENTS } from "./seeds.js";
+import { computeAndStoreAgentEmbedding, ftsDeleteAgent, rebuildAgentsVec } from "./search.js";
 import type { AgentDefinition } from "../types.js";
 import type { SqliteDatabase } from "../native-sqlite.js";
 
@@ -65,6 +66,27 @@ const AGENTS_MIGRATIONS = [
         ON agent_scores(recorded_at);
     `,
   },
+  {
+    version: 2,
+    name: "add_agent_embeddings_and_search",
+    sql: `
+      -- Embedding columns for semantic search
+      ALTER TABLE agents ADD COLUMN embedding       BLOB;
+      ALTER TABLE agents ADD COLUMN embedding_model TEXT;
+
+      -- Metadata table for vec0 dimension tracking (mirrors _skills_meta)
+      CREATE TABLE IF NOT EXISTS _agents_meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+
+      -- FTS5 table for keyword search on agent name + description + prompt
+      CREATE VIRTUAL TABLE IF NOT EXISTS agents_fts USING fts5(
+        agent_id UNINDEXED,
+        content
+      );
+    `,
+  },
 ];
 
 // ── DB singleton ──────────────────────────────────────────────────────────────
@@ -80,6 +102,8 @@ export async function getAgentsDb(): Promise<SqliteDatabase> {
   const dbPath = resolveAgentsDbPath();
   _db = await openDb(dbPath);
   runMigrations(_db, AGENTS_MIGRATIONS);
+  // Backfill ANN index on open (no-op when already current)
+  rebuildAgentsVec(_db);
   return _db;
 }
 
@@ -160,6 +184,12 @@ export async function upsertAgent(
        source     = 'db',
        updated_at = datetime('now')`,
   ).run(id, name, json);
+
+  // Fire embedding generation + FTS update in the background.
+  // Non-blocking: the agent is immediately usable; embeddings arrive shortly after.
+  computeAndStoreAgentEmbedding(db, id, { ...defn, source: "db" }).catch(() => {
+    /* non-fatal — search degrades to FTS-only without embeddings */
+  });
 }
 
 /**
@@ -169,6 +199,9 @@ export async function upsertAgent(
 export async function deleteAgent(id: string): Promise<boolean> {
   const db = await getAgentsDb();
   const { changes } = db.prepare("DELETE FROM agents WHERE id = ?").run(id);
+  if (changes > 0) {
+    ftsDeleteAgent(db, id);
+  }
   return changes > 0;
 }
 
@@ -191,7 +224,7 @@ export async function listDbAgentIds(): Promise<string[]> {
  *
  * Higher priority overrides lower priority on name collision.
  *
- * @param cwd Project root (for project-level agents). Defaults to process.cwd().
+ * @param cwd    Project root (for project-level agents). Defaults to process.cwd().
  * @param skipDb Skip the DB lookup — useful in tests or when the DB is unavailable.
  */
 export async function loadAllAgents(
@@ -223,6 +256,60 @@ export async function loadAllAgents(
   }
 
   return merged;
+}
+
+/**
+ * Load agents relevant to a specific task using semantic + keyword search.
+ *
+ * When the catalog is small (< config.minCatalogSize), returns the full catalog
+ * so the LLM has all context. For larger catalogs, retrieves the top-K most
+ * relevant agents, supplemented by seeds (always included) and file-based agents
+ * (always included — only DB agents are filtered by search).
+ *
+ * @param task    Natural language task description to match against
+ * @param cwd     Project root for project-level agent files
+ * @param config  Search config (topK, threshold, minCatalogSize)
+ */
+export async function loadAgentsForTask(
+  task: string,
+  cwd?: string,
+  config?: import("./search.js").AgentSearchConfig,
+): Promise<Record<string, AgentDefinition>> {
+  const { findClosestAgents } = await import("./search.js");
+  const { minCatalogSize = 10 } = config ?? {};
+
+  // Always load seeds + files (small, fast, always relevant)
+  const base: Record<string, AgentDefinition> = { ...SEED_AGENTS };
+  const effectiveCwd = cwd ?? process.cwd();
+  Object.assign(base, loadAgentsFromDir(resolveUserAgentsDir(), "user"));
+  Object.assign(base, loadAgentsFromDir(resolveProjectAgentsDir(effectiveCwd), "project"));
+
+  // Count DB agents to decide whether to use semantic search
+  let dbAgentCount = 0;
+  let db: SqliteDatabase | null = null;
+  try {
+    db = await getAgentsDb();
+    const countRow = db.prepare("SELECT COUNT(*) AS n FROM agents").get() as { n: number };
+    dbAgentCount = countRow.n;
+  } catch {
+    // DB unavailable — return base (seeds + files)
+    return base;
+  }
+
+  if (dbAgentCount < minCatalogSize) {
+    // Catalog too small for semantic search to add value — load everything
+    const dbAgents = await loadDbAgents();
+    Object.assign(base, dbAgents);
+    return base;
+  }
+
+  // Large catalog — use semantic search to find the most relevant DB agents
+  const searchResults = await findClosestAgents(task, db, config);
+  for (const result of searchResults) {
+    base[result.id] = result.definition;
+  }
+
+  return base;
 }
 
 // ── File export helpers ───────────────────────────────────────────────────────
