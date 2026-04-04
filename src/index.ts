@@ -381,6 +381,13 @@ async function main(): Promise<void> {
     return;
   }
 
+  // ── Compare subcommand — fan out a prompt to multiple models ──────────────────
+  if (argv[0] === "compare") {
+    const { handleCompareCommand } = await import("./commands/compare-command.js");
+    await handleCompareCommand(argv.slice(1));
+    return;
+  }
+
   // ── Memory subcommand ─────────────────────────────────────────────────────────
   if (argv[0] === "memory") {
     await handleMemorySubcommand(argv);
