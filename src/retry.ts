@@ -1,6 +1,5 @@
-import { callOpenRouter, callDirect, shouldUseDirect } from "./openrouter.js";
-import { callOllama } from "./ollama.js";
 import type { OpenRouterCallOptions, OpenRouterCallResult } from "./types.js";
+import { resolveProvider } from "./providers/index.js";
 import { recordProviderSuccess, recordProviderError, isProviderDegraded } from "./provider-health.js";
 import { waitIfRateLimited } from "./rate-limit-gate.js";
 import { trace } from "@opentelemetry/api";
@@ -223,11 +222,8 @@ export async function callWithRetry(
 
     const attemptStart = Date.now();
     try {
-      const result = callOpts._ollamaBaseUrl
-        ? await callOllama(callOpts, { enabled: true, baseUrl: callOpts._ollamaBaseUrl })
-        : shouldUseDirect(callOpts.model)
-        ? await callDirect(callOpts)
-        : await callOpenRouter(callOpts);
+      const { provider } = resolveProvider(callOpts);
+      const result = await provider.chat(callOpts);
 
       // Clean response — return immediately
       if (!result.isError) {
