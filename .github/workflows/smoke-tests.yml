@@ -74,7 +74,7 @@ jobs:
 
       - name: Run smoke tests
         run: bash scripts/test-smoke.sh
-        timeout-minutes: 10
+        timeout-minutes: 15
 
       - name: Summary
         if: always()

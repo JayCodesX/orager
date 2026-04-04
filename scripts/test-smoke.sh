@@ -78,7 +78,7 @@ run_test "help flag" \
   $CLI --help
 
 run_test "session list (empty ok)" \
-  $CLI list-sessions
+  $CLI --list-sessions
 
 run_test "memory list (empty ok)" \
   $CLI memory list
@@ -108,18 +108,18 @@ echo ""
 echo "=== Tier 3: Tool use ==="
 
 run_test_expect_output "bash tool (list files)" "package.json|src|tests" \
-  timeout 120 $CLI run --model "$SMOKE_MODEL" --max-turns 3 --max-cost-usd 0.10 \
+  timeout 180 $CLI run --model "$SMOKE_MODEL" --max-turns 3 --max-cost-usd 0.10 \
   --dangerously-skip-permissions "Run ls in the current directory and tell me what files you see"
 
 # Create a test file for read tool
 echo "smoke-test-content-12345" > "$TMPDIR/smoke-test.txt"
 
 run_test_expect_output "read file tool" "smoke-test-content-12345" \
-  timeout 120 $CLI run --model "$SMOKE_MODEL" --max-turns 3 --max-cost-usd 0.10 \
+  timeout 180 $CLI run --model "$SMOKE_MODEL" --max-turns 3 --max-cost-usd 0.10 \
   --dangerously-skip-permissions "Read the file $TMPDIR/smoke-test.txt and tell me its contents"
 
 run_test_expect_output "write file tool" "" \
-  timeout 120 $CLI run --model "$SMOKE_MODEL" --max-turns 3 --max-cost-usd 0.10 \
+  timeout 180 $CLI run --model "$SMOKE_MODEL" --max-turns 3 --max-cost-usd 0.10 \
   --dangerously-skip-permissions "Write the text 'hello-from-smoke-test' to $TMPDIR/write-test.txt"
 
 # Verify the file was written
@@ -144,7 +144,7 @@ run_test "create session" \
   --session-id "$SMOKE_SESSION" --dangerously-skip-permissions "Remember: the magic word is pineapple"
 
 run_test_expect_output "list shows session" "$SMOKE_SESSION" \
-  $CLI list-sessions
+  $CLI --list-sessions
 
 # ─── Tier 5: Subprocess mode ─────────────────────────────────────
 

@@ -71,6 +71,38 @@ function writeLine(stream: NodeJS.WritableStream, msg: JsonRpcMessage): void {
   }
 }
 
+// ── Subprocess spawn helper ───────────────────────────────────────────────────
+
+/**
+ * Returns [cmd, args] needed to spawn an orager subprocess correctly in both
+ * compiled-binary mode and dev/script mode.
+ *
+ * Compiled binary  (process.execPath === orager binary):
+ *   spawn("orager", ["--subprocess"])
+ *
+ * Dev / script mode (process.execPath === bun, process.argv[1] === src/index.ts):
+ *   spawn("bun", ["src/index.ts", "--subprocess"])
+ *
+ * Without this distinction, dev-mode runs spawn "bun --subprocess" which
+ * triggers Bun's own CLI help instead of starting the orager server.
+ */
+function resolveSubprocessSpawn(explicitBinaryPath?: string): [string, string[]] {
+  if (explicitBinaryPath) {
+    return [explicitBinaryPath, ["--subprocess"]];
+  }
+  const scriptPath = process.argv[1];
+  const isScript =
+    typeof scriptPath === "string" &&
+    (scriptPath.endsWith(".ts") || scriptPath.endsWith(".js") || scriptPath.endsWith(".mts"));
+
+  if (isScript) {
+    // Dev mode: bun <script> --subprocess
+    return [process.execPath, [scriptPath, "--subprocess"]];
+  }
+  // Compiled binary: orager --subprocess
+  return [process.execPath, ["--subprocess"]];
+}
+
 // ── Kill helpers ──────────────────────────────────────────────────────────────
 
 const SIGKILL_GRACE_MS = 2000;
@@ -90,13 +122,13 @@ function killChild(child: ReturnType<typeof spawn>): void {
  */
 export async function runAgentLoopSubprocess(opts: AgentLoopOptions): Promise<void> {
   const { subprocess, onEmit, ...rest } = opts;
-  const binaryPath = subprocess?.binaryPath ?? process.execPath;
   const timeoutMs = subprocess?.timeoutMs;
 
   // Strip the subprocess option itself — the child runs in-process mode.
   const params: Omit<AgentLoopOptions, "onEmit" | "subprocess"> = rest;
 
-  const child = spawn(binaryPath, ["--subprocess"], {
+  const [spawnCmd, spawnArgs] = resolveSubprocessSpawn(subprocess?.binaryPath);
+  const child = spawn(spawnCmd, spawnArgs, {
     stdio: ["pipe", "pipe", "pipe"],
   });
 
@@ -229,10 +261,10 @@ export async function runCompareSubprocess(
   onChunk: (chunk: CompareChunk) => void,
   opts?: { binaryPath?: string; timeoutMs?: number },
 ): Promise<CompareResult> {
-  const binaryPath = opts?.binaryPath ?? process.execPath;
   const timeoutMs = opts?.timeoutMs;
 
-  const child = spawn(binaryPath, ["--subprocess"], {
+  const [spawnCmd, spawnArgs] = resolveSubprocessSpawn(opts?.binaryPath);
+  const child = spawn(spawnCmd, spawnArgs, {
     stdio: ["pipe", "pipe", "pipe"],
   });
 
