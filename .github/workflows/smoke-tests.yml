@@ -1,0 +1,65 @@
+name: Smoke Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    # Nightly at 06:00 UTC
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: E2E smoke tests (free model)
+    runs-on: ubuntu-latest
+
+    # Environment protection: requires manual approval for PRs from
+    # non-collaborators. Secrets (OPENROUTER_API_KEY) are only available
+    # within this environment — fork PRs cannot access them.
+    #
+    # Setup: repo → Settings → Environments → Create "integration"
+    #   - Enable "Required reviewers" (add yourself)
+    #   - Check "Prevent self-review" = OFF (you're solo)
+    environment: integration
+
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      SMOKE_MODEL: "qwen/qwen3.6-plus:free"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Verify API key is available
+        run: |
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "::error::OPENROUTER_API_KEY secret not available — is the 'integration' environment configured?"
+            exit 1
+          fi
+          echo "API key is set (${#OPENROUTER_API_KEY} chars)"
+
+      - name: Run smoke tests
+        run: bash scripts/test-smoke.sh
+        timeout-minutes: 10
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Smoke Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Model:** $SMOKE_MODEL" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
