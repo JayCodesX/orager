@@ -40,7 +40,7 @@ export interface SchedulerCheckResult {
 export async function checkSchedulerConditions(
   cfg: OmlsConfig,
 ): Promise<SchedulerCheckResult> {
-  const minBatchSize = cfg.minBatchSize ?? 32;
+  const minBatchSize = cfg.minBatchSize ?? 8;
 
   // ── 1. Idle check ─────────────────────────────────────────────────────────
   const idleResult = await checkIdle(cfg);

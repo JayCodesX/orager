@@ -517,21 +517,21 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   // All failures are non-fatal — leaves _rlEndpoint null (use base model).
   let _rlEndpoint: string | null = null;
   let _localAdapterBaseUrl: string | undefined;
-  const _omlsEnabled = opts.omls?.enabled === true;
+  const _omlsEnabled = effectiveOpts.omls?.enabled === true;
   if (_omlsEnabled) {
     // 1. Try local adapter (MLX server, Apple Silicon)
-    const localEnabled = opts.omls?.localTraining?.enabled !== false;
+    const localEnabled = effectiveOpts.omls?.localTraining?.enabled !== false;
     if (localEnabled) {
       try {
         const { detectHardware } = await import("./omls/hardware-detector.js");
         const hw = await detectHardware();
         if (hw.recommendedBackend) {
-          const cfgBackend = opts.omls?.localTraining?.backend;
+          const cfgBackend = effectiveOpts.omls?.localTraining?.backend;
           const backend = (cfgBackend && cfgBackend !== "auto")
             ? cfgBackend as import("./omls/hardware-detector.js").LocalBackend
             : hw.recommendedBackend;
           const memKey = opts.memoryKey ?? "default";
-          const baseModelId = opts.omls?.rl?.training?.baseModel ?? "unsloth/Meta-Llama-3.1-8B-Instruct";
+          const baseModelId = effectiveOpts.omls?.rl?.training?.baseModel ?? "unsloth/Meta-Llama-3.1-8B-Instruct";
           const serverInfo = await resolveLocalAdapterServer(
             typeof memKey === "string" ? memKey : memKey[0] ?? "default",
             baseModelId,
@@ -1451,7 +1451,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       let _omlsRouted = false;
       if (_omlsEnabled && _rlEndpoint && turn === 1) {
         try {
-          const teachers = selectTeachers(opts.omls!);
+          const teachers = selectTeachers(effectiveOpts.omls!);
           const teacherModel = teachers[0] ?? model;
           const promptVec = opts.memoryEmbeddingModel
             ? getCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt) ?? null
@@ -1463,7 +1463,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             teacherModel,
             apiKey,
             opts.memoryEmbeddingModel ?? null,
-            opts.omls,
+            effectiveOpts.omls,
             _inputModalities,
           );
           if (decision.escalated) {
@@ -1576,9 +1576,9 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       // If low, log the escalation signal (the next turn's routing will use teacher).
       if (_omlsEnabled && _rlEndpoint && !_omlsRouted && response.content) {
         try {
-          const teachers = selectTeachers(opts.omls!);
+          const teachers = selectTeachers(effectiveOpts.omls!);
           const teacherModel = teachers[0] ?? model;
-          const escalation = checkConfidenceToken(response.content, teacherModel, opts.omls);
+          const escalation = checkConfidenceToken(response.content, teacherModel, effectiveOpts.omls);
           if (escalation) {
             opts.onOmlsEscalation?.(escalation.model, escalation.signal as RouterSignal);
             log.info("omls_self_ref_escalation", {
