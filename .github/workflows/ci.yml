@@ -56,13 +56,11 @@ jobs:
           reporter: jest-junit
           fail-on-error: false
 
-  binary:
+  # ── Binary: PR smoke test (linux-x64 only, fast) ─────────────────────────────
+  binary-pr:
     name: Binary smoke test
     runs-on: ubuntu-latest
-    # Only run on pushes to main and manual triggers — macOS/Linux compile is
-    # expensive in CI minutes. PRs run the full test suite; binary is validated
-    # on merge.
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'pull_request'
     permissions:
       contents: read
 
@@ -78,7 +76,7 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build binary (linux-x64 only)
+      - name: Build binary (linux-x64)
         run: node scripts/build-binary.mjs --targets=bun-linux-x64
         timeout-minutes: 10
 
@@ -88,7 +86,49 @@ jobs:
       - name: Smoke test — help flag
         run: ./bin/orager-linux-x64 --help || true
 
-  # Quality gates — enforced by branch protection
+  # ── Binary: full cross-platform build + artifact upload (main only) ───────────
+  binary-release:
+    name: Build binaries
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build binaries (all platforms)
+        run: node scripts/build-binary.mjs --targets=bun-linux-x64,bun-darwin-arm64,bun-darwin-x64
+        timeout-minutes: 15
+
+      - name: Smoke test — linux binary
+        run: ./bin/orager-linux-x64 --version
+
+      - name: Upload binaries as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: orager-binaries-${{ github.sha }}
+          path: bin/
+          retention-days: 90
+
+      - name: Upload latest binaries artifact (always latest on main)
+        uses: actions/upload-artifact@v4
+        with:
+          name: orager-binaries-latest
+          path: bin/
+          retention-days: 90
+          overwrite: true
+
+  # ── Quality gates — enforced by branch protection ────────────────────────────
   pr-checks:
     name: PR quality gates
     runs-on: ubuntu-latest
