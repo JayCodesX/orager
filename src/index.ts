@@ -264,7 +264,7 @@ OTHER
   ui [--port <n>]           Start the browser-based UI server (default port: 3457)
   memory <list|inspect|export|clear>  Manage memory namespaces
   skills <list|show|delete|stats|extract>  Manage learned skills (SkillBank)
-  agents <list|show|add|remove|export|stats>  Manage agent catalog (seed + user + project)
+  agents <list|show|generate|add|remove|export|stats>  Manage agent catalog (seed + user + project + AI-generated)
   skill-train [--rl] [--status] [--rollback] [--setup-cron]  OMLS RL training
 
 SERVER

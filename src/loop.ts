@@ -43,8 +43,9 @@ import { resolveLocalAdapterServer } from "./omls/local-adapter-server.js";
 import { processInput, detectModalitiesFromBlocks } from "./input-processor.js";
 import type { RouterSignal } from "./types.js";
 import { ALL_TOOLS, finishTool, BROWSER_TOOLS, makeAgentTool, buildAgentsSystemPrompt } from "./tools/index.js";
-import { getAgentsDb } from "./agents/registry.js";
+import { getAgentsDb, loadAllAgents } from "./agents/registry.js";
 import { recordAgentScore } from "./agents/score.js";
+import { makeGenerateAgentTool } from "./agents/generate.js";
 import { FINISH_TOOL_NAME } from "./tools/finish.js";
 // promptApproval is used in loop-executor.ts (extracted in Sprint 6)
 import { getAgentCircuitBreaker } from "./circuit-breaker.js";
@@ -467,6 +468,19 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     if (commandsSection) systemPrompt += "\n\n" + commandsSection;
   }
 
+  // ── Auto-load agent catalog (top-level runs only) ────────────────────────
+  // Load seeds + user/project files + DB into opts.agents at depth 0.
+  // Sub-agents (depth > 0) never auto-load — they receive agents: undefined
+  // from their parent to prevent recursive spawning.
+  const isTopLevel = (opts._spawnDepth ?? 0) === 0;
+  if (isTopLevel && !opts.agents) {
+    try {
+      opts = { ...opts, agents: await loadAllAgents(cwd) };
+    } catch {
+      // Non-fatal — registry unavailable, continue without catalog agents
+    }
+  }
+
   // ── Available sub-agents ──────────────────────────────────────────────────
   // Injected before the frozen boundary so it's part of the stable cached prefix.
   if (opts.agents && Object.keys(opts.agents).length > 0) {
@@ -610,11 +624,16 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
     );
   }
 
-  // ── Agent tool (dynamic spawning) ────────────────────────────────────────
-  // Only added when agents are configured AND we're not already inside a
-  // sub-agent (depth > 0 with no agents map means we stripped it intentionally).
+  // ── Agent tool + generate_agent tool ─────────────────────────────────────
+  // Only at top-level (depth 0) or when the agents map was explicitly provided.
+  // Sub-agents never get these tools — they operate with a fixed tool set.
   if (opts.agents && Object.keys(opts.agents).length > 0) {
+    // Agent: spawn from catalog (with dynamic generation fallback for unknowns)
     allTools.push(makeAgentTool(opts.agents, opts));
+    // generate_agent: proactive synthesis + registration of new agent types
+    // Share the same mutable agents map so newly generated agents are immediately
+    // available to the Agent tool in the same session.
+    allTools.push(makeGenerateAgentTool(opts.agents, opts));
   }
 
   // ── Todo tools (session-scoped) ───────────────────────────────────────────

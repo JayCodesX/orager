@@ -24,6 +24,7 @@ import type { ToolExecutor, ToolExecuteOptions, AgentDefinition, AgentLoopOption
 import { withSpan } from "../telemetry.js";
 import { getAgentsDb } from "../agents/registry.js";
 import { recordAgentScore } from "../agents/score.js";
+import { generateAgentDefinition, sanitizeId } from "../agents/generate.js";
 
 // ── Tool factory ──────────────────────────────────────────────────────────────
 
@@ -37,27 +38,41 @@ export function makeAgentTool(
   agents: Record<string, AgentDefinition>,
   parentOpts: AgentLoopOptions,
 ): ToolExecutor {
-  // Build the enum of valid agent names for the JSON schema.
-  const agentNames = Object.keys(agents);
+  // NOTE: agents is a mutable reference — generate_agent tool adds to this map
+  // at runtime, and the execute() closure reads agents[subagentType] fresh on
+  // each call. No enum is used so dynamically added agents are immediately valid.
+
+  // Build a snapshot of names for the description (refreshed on each schema read
+  // via a getter so new agents appear in future tool_choice descriptions).
+  const buildDescription = () => {
+    const names = Object.keys(agents);
+    const list = names.map((n) => `  • ${n}: ${agents[n]!.description}`).join("\n");
+    return (
+      "Spawn a named sub-agent to handle a specialised task. " +
+      "The sub-agent runs to completion and returns its final output. " +
+      "You can call Agent multiple times in one turn — they run concurrently. " +
+      "If none of the named agents fit, use generate_agent first to synthesize one.\n" +
+      "Available agents:\n" + list
+    );
+  };
 
   return {
     definition: {
       type: "function",
       function: {
         name: "Agent",
-        description:
-          "Spawn a sub-agent to handle a specialised task. " +
-          "The sub-agent runs to completion and returns its final output. " +
-          "You can call Agent multiple times in one turn — they run concurrently. " +
-          "Available agents:\n" +
-          agentNames.map((n) => `  • ${n}: ${agents[n]!.description}`).join("\n"),
+        get description() { return buildDescription(); },
         parameters: {
           type: "object",
           properties: {
             subagent_type: {
               type: "string",
-              enum: agentNames,
-              description: "The agent to spawn.",
+              // No enum — agents can be added dynamically by generate_agent.
+              // The description lists all available agents. Unknown types trigger
+              // dynamic generation as a fallback.
+              description:
+                "The agent to spawn. Must match a name from the list above, " +
+                "or a name you just registered with generate_agent.",
             },
             prompt: {
               type: "string",
@@ -76,13 +91,42 @@ export function makeAgentTool(
       const subagentType = input["subagent_type"] as string;
       const prompt = input["prompt"] as string;
 
-      const defn = agents[subagentType];
+      let defn = agents[subagentType];
+
+      // ── Dynamic generation fallback ───────────────────────────────────────
+      // Unknown subagent_type: synthesize a definition on the fly using the
+      // task description as the generation prompt. The generated definition is
+      // added to the mutable agents map and optionally persisted to the registry.
       if (!defn) {
-        return {
-          toolCallId,
-          content: `[Agent] Unknown sub-agent type: "${subagentType}". Valid types: ${agentNames.join(", ")}`,
-          isError: true,
-        };
+        try {
+          process.stderr.write(
+            `[orager/agent] "${subagentType}" not in catalog — generating definition...\n`,
+          );
+          const generated = await generateAgentDefinition({
+            task: prompt,
+            suggestedId: sanitizeId(subagentType),
+            model: parentOpts.model,
+            apiKey: parentOpts.apiKey,
+            persist: true,
+          });
+          // Add to live map (visible to future Agent tool calls this session)
+          agents[generated.id] = generated.definition;
+          // Resolve: if our sanitized ID differs from the original call, use it
+          defn = generated.definition;
+          process.stderr.write(
+            `[orager/agent] generated "${generated.id}" (${generated.persisted ? "persisted" : "ephemeral"})\n`,
+          );
+        } catch (genErr) {
+          const knownNames = Object.keys(agents).join(", ") || "(none)";
+          return {
+            toolCallId,
+            content:
+              `[Agent] Unknown sub-agent type: "${subagentType}". ` +
+              `Auto-generation failed: ${genErr instanceof Error ? genErr.message : String(genErr)}. ` +
+              `Known types: ${knownNames}`,
+            isError: true,
+          };
+        }
       }
 
       // ── Depth guard ──────────────────────────────────────────────────────
@@ -290,6 +334,8 @@ export function buildAgentsSystemPrompt(agents: Record<string, AgentDefinition>)
     "- Pass all necessary context in the prompt — sub-agents have no conversation history.",
     "- For independent parallel tasks, call Agent multiple times in one response.",
     "- Do the work yourself when a task is straightforward or needs your full context.",
+    "- If no existing agent fits, call generate_agent to synthesize one, then use Agent.",
+    "  The generated agent is saved to the catalog and available in future sessions.",
   ];
 
   return lines.join("\n");

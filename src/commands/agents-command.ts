@@ -12,6 +12,7 @@
 
 import { loadAllAgents, upsertAgent, deleteAgent, exportAgentToUserDir, getAgentsDb } from "../agents/registry.js";
 import { getAgentStats, getAllAgentStats } from "../agents/score.js";
+import { generateAgentDefinition } from "../agents/generate.js";
 import { SEED_AGENTS } from "../agents/seeds.js";
 import type { AgentDefinition } from "../types.js";
 
@@ -58,6 +59,9 @@ export async function runAgentsCommand(args: string[]): Promise<void> {
       return cmdShow(args.slice(1));
     case "add":
       return cmdAdd(args.slice(1));
+    case "generate":
+    case "gen":
+      return cmdGenerate(args.slice(1));
     case "remove":
     case "rm":
     case "delete":
@@ -78,19 +82,94 @@ function printUsage(): void {
 ${bold("orager agents")} — agent catalog management
 
 ${bold("Usage:")}
-  orager agents list              List all available agents
-  orager agents show <id>         Show full definition and stats for an agent
-  orager agents add <id>          Add or update an agent in the DB catalog
-  orager agents remove <id>       Remove a DB-stored agent
-  orager agents export <id>       Export an agent definition to ~/.orager/agents/<id>.json
-  orager agents stats [id]        Performance stats (all or one agent)
+  orager agents list                     List all available agents
+  orager agents show <id>                Show full definition and stats for an agent
+  orager agents generate <task> [flags]  Synthesize a new agent definition with AI
+  orager agents add <id>                 Add or update an agent in the DB catalog
+  orager agents remove <id>              Remove a DB-stored agent
+  orager agents export <id>              Export an agent definition to ~/.orager/agents/<id>.json
+  orager agents stats [id]               Performance stats (all or one agent)
+
+${bold("generate flags:")}
+  --id <key>       Registry key for the new agent (auto-derived if omitted)
+  --model <model>  Model for generation (default: openai/gpt-4o-mini)
+  --no-save        Preview only — do not save to catalog
+  --json           Output raw JSON definition
 
 ${bold("Examples:")}
   orager agents list
   orager agents show reviewer
+  orager agents generate "analyze Rust compiler errors and suggest fixes"
+  orager agents generate "benchmark API endpoints" --id api-benchmarker --no-save
   orager agents stats
   orager agents remove my-old-agent
 `);
+}
+
+// ── generate ─────────────────────────────────────────────────────────────────
+
+async function cmdGenerate(args: string[]): Promise<void> {
+  // Parse positional task and flags
+  const positional: string[] = [];
+  let suggestedId: string | undefined;
+  let model: string | undefined;
+  let persist = true;
+  let jsonOutput = false;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--id" && args[i + 1]) { suggestedId = args[++i]; }
+    else if (arg === "--model" && args[i + 1]) { model = args[++i]; }
+    else if (arg === "--no-save") { persist = false; }
+    else if (arg === "--json") { jsonOutput = true; }
+    else if (!arg.startsWith("--")) { positional.push(arg); }
+  }
+
+  const task = positional.join(" ").trim();
+  if (!task) {
+    console.error('Usage: orager agents generate "<task description>" [--id <key>] [--model <model>] [--no-save] [--json]');
+    process.exit(1);
+  }
+
+  if (!jsonOutput) {
+    console.log(dim(`Generating agent definition for: "${task}"...`));
+    if (!persist) console.log(dim("(preview mode — will not save to catalog)"));
+  }
+
+  let result: Awaited<ReturnType<typeof generateAgentDefinition>>;
+  try {
+    result = await generateAgentDefinition({ task, suggestedId, model, persist });
+  } catch (err) {
+    console.error(red(`Generation failed: ${err instanceof Error ? err.message : String(err)}`));
+    process.exit(1);
+  }
+
+  if (jsonOutput) {
+    // Machine-readable output: just the definition JSON
+    console.log(JSON.stringify({ id: result.id, ...result.definition }, null, 2));
+    return;
+  }
+
+  // Human-readable output
+  console.log();
+  console.log(bold(`Generated: ${result.id}`) + (result.persisted ? green("  ✓ saved to catalog") : yellow("  (not saved)")));
+  if (result.definition.name) console.log(`  Name:   ${result.definition.name}`);
+  console.log(`  Desc:   ${result.definition.description}`);
+  if (result.definition.model) console.log(`  Model:  ${result.definition.model}`);
+  if (result.definition.effort) console.log(`  Effort: ${result.definition.effort}`);
+  if (result.definition.tools) console.log(`  Tools:  ${result.definition.tools.join(", ")}`);
+  if (result.definition.tags?.length) console.log(`  Tags:   ${result.definition.tags.join(", ")}`);
+  console.log();
+  console.log(bold("System prompt:"));
+  console.log(result.definition.prompt.split("\n").map((l) => `  ${l}`).join("\n"));
+  console.log();
+
+  if (result.persisted) {
+    console.log(dim(`Run \`orager agents show ${result.id}\` to inspect.`));
+    console.log(dim(`Use Agent tool with subagent_type: "${result.id}" to spawn it.`));
+  } else {
+    console.log(dim(`To save: orager agents generate "${task}" --id ${result.id}`));
+  }
 }
 
 // ── list ──────────────────────────────────────────────────────────────────────
