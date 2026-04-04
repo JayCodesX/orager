@@ -36,6 +36,7 @@ import { getLiveModelPricing } from "./openrouter-model-meta.js";
 import { recordProviderSuccess } from "./provider-health.js";
 import { loadSkillsFromDirs, buildSkillsSystemPrompt, buildSkillTools } from "./skills.js";
 import { retrieveSkills, buildSkillsPromptSection, updateSkillOutcomes } from "./skillbank.js";
+import { localEmbed } from "./local-embeddings.js";
 import { routeRequest, checkConfidenceToken, selectTeachers, checkModalityMismatch } from "./omls/confidence-router.js";
 import { getCurrentEndpoint } from "./omls/together-hosting.js";
 import { resolveLocalAdapterServer } from "./omls/local-adapter-server.js";
@@ -488,19 +489,26 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
   // ── SkillBank injection (ADR-0006) ────────────────────────────────────────
   // Retrieve top-K learned skills by cosine similarity to the run prompt and
   // inject them as a "## Learned Skills" block. Non-fatal — errors are swallowed.
+  // Embedding priority: local (Transformers.js, free) → OpenRouter API (fallback).
   const _injectedSkillIds: string[] = [];
-  if (opts.skillbank?.enabled !== false && opts.memoryEmbeddingModel && apiKey) {
+  if (opts.skillbank?.enabled !== false) {
     try {
-      let skillQueryVec = getCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt);
+      const embModel = opts.memoryEmbeddingModel ?? "local";
+      let skillQueryVec = getCachedQueryEmbedding(embModel, prompt);
       if (!skillQueryVec) {
-        const vecs = await getOpenRouterProvider().callEmbeddings!(apiKey, opts.memoryEmbeddingModel, [prompt]);
-        skillQueryVec = vecs[0] ?? [];
-        if (skillQueryVec.length > 0) {
-          setCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt, skillQueryVec);
+        // Try local embeddings first (free, fast, no API key needed)
+        skillQueryVec = await localEmbed(prompt);
+        // Fall back to OpenRouter API
+        if (!skillQueryVec && opts.memoryEmbeddingModel && apiKey) {
+          const vecs = await getOpenRouterProvider().callEmbeddings!(apiKey, opts.memoryEmbeddingModel, [prompt]);
+          skillQueryVec = vecs[0] ?? [];
+        }
+        if (skillQueryVec && skillQueryVec.length > 0) {
+          setCachedQueryEmbedding(embModel, prompt, skillQueryVec);
         }
       }
       if (skillQueryVec && skillQueryVec.length > 0) {
-        const learnedSkills = await retrieveSkills(skillQueryVec, opts.skillbank);
+        const learnedSkills = await retrieveSkills(skillQueryVec, opts.skillbank, prompt);
         if (learnedSkills.length > 0) {
           const skillsSection = buildSkillsPromptSection(learnedSkills);
           if (skillsSection) {
@@ -654,18 +662,26 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
       let _retrievalPath = "full_store";
       let _retrievalCount = 0;
       const _retrievalStartMs = Date.now();
-      if (retrieval === "embedding" && opts.memoryEmbeddingModel && apiKey) {
+      if (retrieval === "embedding") {
         try {
           // Check in-memory cache before calling the embeddings API
-          let queryVec = getCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt);
+          const embModel = opts.memoryEmbeddingModel ?? "local";
+          let queryVec = getCachedQueryEmbedding(embModel, prompt);
           if (!queryVec) {
-            queryVec = await withSpan("memory.embed_query", {
-              model: opts.memoryEmbeddingModel,
-            }, async () => {
-              const vecs = await getOpenRouterProvider().callEmbeddings!(apiKey, opts.memoryEmbeddingModel!, [prompt]);
-              return vecs[0] ?? [];
-            });
-            setCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt, queryVec);
+            // Try local embeddings first (free, fast)
+            queryVec = await localEmbed(prompt);
+            // Fall back to OpenRouter API
+            if (!queryVec && opts.memoryEmbeddingModel && apiKey) {
+              queryVec = await withSpan("memory.embed_query", {
+                model: opts.memoryEmbeddingModel,
+              }, async () => {
+                const vecs = await getOpenRouterProvider().callEmbeddings!(apiKey, opts.memoryEmbeddingModel!, [prompt]);
+                return vecs[0] ?? [];
+              });
+            }
+            if (queryVec && queryVec.length > 0) {
+              setCachedQueryEmbedding(embModel, prompt, queryVec);
+            }
           }
           const embEntries = await withSpan("memory.retrieve_embeddings", {
             totalEntries: memStore.entries.length,
@@ -699,21 +715,27 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
         if (deduped.length > 0) {
           memBlock = renderRetrievedBlock(deduped, memoryMaxChars);
           _retrievalPath = "fts"; _retrievalCount = deduped.length;
-        } else if (opts.memoryEmbeddingModel && apiKey) {
+        } else {
           // Phase 6A: FTS returned nothing — fall back to embedding-based retrieval.
           // The memStore is already loaded above; retrieveEntriesWithEmbeddings scores
           // entries that have a stored _embedding vector by cosine similarity.
           try {
-            let queryVec = getCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt);
+            const embModel = opts.memoryEmbeddingModel ?? "local";
+            let queryVec = getCachedQueryEmbedding(embModel, prompt);
             if (!queryVec) {
-              queryVec = await withSpan("memory.embed_query_fts_fallback", {
-                model: opts.memoryEmbeddingModel,
-              }, async () => {
-                const vecs = await getOpenRouterProvider().callEmbeddings!(apiKey, opts.memoryEmbeddingModel!, [prompt]);
-                return vecs[0] ?? [];
-              });
+              // Try local embeddings first (free, fast)
+              queryVec = await localEmbed(prompt);
+              // Fall back to OpenRouter API
+              if (!queryVec && opts.memoryEmbeddingModel && apiKey) {
+                queryVec = await withSpan("memory.embed_query_fts_fallback", {
+                  model: opts.memoryEmbeddingModel,
+                }, async () => {
+                  const vecs = await getOpenRouterProvider().callEmbeddings!(apiKey, opts.memoryEmbeddingModel!, [prompt]);
+                  return vecs[0] ?? [];
+                });
+              }
               if (queryVec && queryVec.length > 0) {
-                setCachedQueryEmbedding(opts.memoryEmbeddingModel, prompt, queryVec);
+                setCachedQueryEmbedding(embModel, prompt, queryVec);
               }
             }
             const embResults = queryVec && queryVec.length > 0
@@ -739,9 +761,6 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<void> {
             memBlock = renderMemoryBlock(memStore, memoryMaxChars);
             _retrievalPath = "full_store"; _retrievalCount = memStore.entries.length;
           }
-        } else {
-          memBlock = renderMemoryBlock(memStore, memoryMaxChars);
-          _retrievalPath = "full_store"; _retrievalCount = memStore.entries.length;
         }
       } else {
         // Phase 1 path (existing logic from Phase 1)
