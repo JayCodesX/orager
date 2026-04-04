@@ -128,7 +128,7 @@ for (const { src: entry, bin: binName } of ENTRY_POINTS) {
   for (const target of targets) {
     const suffix = target.replace(/^bun-/, ""); // "darwin-arm64", "linux-x64", …
     const outfile = path.join(BIN_DIR, `${binName}-${suffix}`);
-    run(`bun build --compile --target=${target} --outfile=${outfile} ${bundleOut}`);
+    run(`bun build --compile --target=${target} --outfile=${outfile} ${externals} ${bundleOut}`);
     const sizeBytes = fs.statSync(outfile).size;
     console.log(`  → ${outfile}  (${Math.round(sizeBytes / 1024 / 1024)} MB)`);
   }
