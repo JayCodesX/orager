@@ -198,6 +198,15 @@ export async function runTrainingPipeline(opts: PipelineOptions): Promise<Pipeli
   const result: PipelineResult = { success: false, steps: [] };
   const startMs = Date.now();
 
+  // ── Mode guard ─────────────────────────────────────────────────────────────
+  const mode = cfg.mode ?? "auto";
+  if (mode === "prompt") {
+    const msg = `[omls] mode=prompt: LoRA training is disabled. Set omls.mode to "lora" or "auto" to enable.`;
+    process.stderr.write(msg + "\n");
+    result.error = msg;
+    return result;
+  }
+
   // ── Base model validation ──────────────────────────────────────────────────
   // Only one base model is active at a time. All adapters are hard-tied to the
   // base model they were trained on — switching discards existing adapters.

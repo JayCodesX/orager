@@ -157,6 +157,72 @@ async function handleExtract(argv: string[]): Promise<void> {
   printLine("Done. Run `orager skills list` to see the new skill.");
 }
 
+async function handleMerge(argv: string[]): Promise<void> {
+  const dryRun = argv.includes("--dry-run");
+  const thresholdArg = argv.find((a) => a.startsWith("--threshold="));
+  const threshold = thresholdArg ? parseFloat(thresholdArg.split("=")[1]!) : undefined;
+
+  const { loadSettings } = await import("../settings.js");
+  const settings = await loadSettings();
+  const userConfig = settings.skillbank;
+
+  const mergeConfig = {
+    ...userConfig,
+    ...(threshold !== undefined ? { mergeThreshold: threshold } : {}),
+  };
+
+  if (dryRun) {
+    const { dryRunMerge } = await import("../skillbank-merge.js");
+    const result = await dryRunMerge(mergeConfig);
+    printLine(`\nSkill merge dry run`);
+    printLine("─────────────────────────────────────────");
+    printLine(`Clusters found:  ${result.clustersFound}`);
+    if (result.clusters.length === 0) {
+      printLine("\nNo clusters found — no merges needed.");
+    } else {
+      printLine("\nClusters:");
+      for (const [i, c] of result.clusters.entries()) {
+        printLine(`\n  Cluster ${i + 1} (${c.size} skills):`);
+        for (const preview of c.preview) {
+          printLine(`    • ${preview}`);
+        }
+      }
+    }
+    return;
+  }
+
+  const apiKey = (process.env["PROTOCOL_API_KEY"] ?? "").trim();
+  if (!apiKey) {
+    printErr("orager: API key not set. Export PROTOCOL_API_KEY.");
+    process.exit(1);
+  }
+
+  const model = settings.skillbank?.extractionModel || process.env["ORAGER_DEFAULT_MODEL"] || "openai/gpt-4o-mini";
+
+  printLine(`\nRunning skill merge (threshold: ${mergeConfig.mergeThreshold ?? 0.78}, min cluster: ${mergeConfig.mergeMinClusterSize ?? 3})…`);
+
+  const { mergeSkillClusters } = await import("../skillbank-merge.js");
+  const result = await mergeSkillClusters(model, apiKey, mergeConfig);
+
+  printLine(`\nMerge complete`);
+  printLine("─────────────────────────────────────────");
+  printLine(`Clusters found:    ${result.clustersFound}`);
+  printLine(`Merges completed:  ${result.mergesCompleted}`);
+  printLine(`Skills archived:   ${result.skillsArchived}`);
+  printLine(`Meta-skills added: ${result.skillsCreated}`);
+
+  if (result.errors.length > 0) {
+    printLine("\nErrors:");
+    for (const e of result.errors) printErr(`  ${e}`);
+  }
+
+  if (result.mergesCompleted === 0 && result.clustersFound === 0) {
+    printLine("\nNo clusters found — skills are already well-differentiated.");
+  } else if (result.mergesCompleted === 0) {
+    printLine("\nClusters found but synthesis returned NO_MERGE for all — try a lower --threshold.");
+  }
+}
+
 // ── Main entry point ──────────────────────────────────────────────────────────
 
 /**
@@ -186,6 +252,9 @@ export async function handleSkillsSubcommand(argv: string[]): Promise<void> {
     case "extract":
       await handleExtract(rest);
       break;
+    case "merge":
+      await handleMerge(rest);
+      break;
     default:
       printLine("Usage: orager skills <subcommand> [args]");
       printLine("");
@@ -195,6 +264,7 @@ export async function handleSkillsSubcommand(argv: string[]): Promise<void> {
       printLine("  delete <id>            Soft-delete a skill");
       printLine("  stats                  Show aggregate statistics");
       printLine("  extract <session-id>   Manually extract a skill from a trajectory");
+      printLine("  merge [--dry-run]      Cluster similar skills and synthesize meta-skills");
       printLine("");
       if (sub && sub !== "--help" && sub !== "help") {
         printErr(`Unknown subcommand: '${sub}'`);

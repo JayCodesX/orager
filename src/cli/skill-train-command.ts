@@ -74,6 +74,14 @@ async function handleStatus(): Promise<void> {
   printLine(`Current skill gen:   ${skillGen}`);
   printLine(`Base model:          ${baseModel}`);
 
+  const mode = settings.omls?.mode ?? "auto";
+  const modeDesc = mode === "prompt"
+    ? "prompt (LoRA disabled — SkillBank only)"
+    : mode === "lora"
+    ? "lora (always trains when idle)"
+    : `auto (prompt until ${settings.omls?.autoLoraThreshold ?? 150} active skills, then LoRA)`;
+  printLine(`OMLS mode:           ${modeDesc}`);
+
   if (bufferSize === 0) {
     printLine("\nNo distillable trajectories yet. These are collected when:");
     printLine("  1. A run fails and the confidence router escalates to a teacher model");

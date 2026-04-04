@@ -86,7 +86,8 @@ const _cache = new Map<string, CachedSettings>();
 const KNOWN_SETTINGS_KEYS = new Set(["permissions", "bashPolicy", "hooks", "hooksEnabled", "skillbank", "omls", "memory", "telemetry", "providers"]);
 const KNOWN_MEMORY_KEYS = new Set(["tokenPressureThreshold", "turnInterval", "keepRecentTurns", "summarizationModel"]);
 const KNOWN_BASH_POLICY_KEYS = new Set(["blockedCommands", "stripEnvKeys", "isolateEnv", "allowedEnvKeys", "osSandbox", "allowNetwork"]);
-const KNOWN_SKILLBANK_KEYS = new Set(["enabled", "extractionModel", "maxSkills", "similarityThreshold", "deduplicationThreshold", "topK", "retentionDays", "autoExtract"]);
+const KNOWN_SKILLBANK_KEYS = new Set(["enabled", "extractionModel", "maxSkills", "similarityThreshold", "deduplicationThreshold", "topK", "retentionDays", "autoExtract", "mergeAt", "mergeThreshold", "mergeMinClusterSize"]);
+const KNOWN_OMLS_KEYS = new Set(["enabled", "mode", "autoLoraThreshold", "teacherModels", "teacherMode", "autoLearnRouting", "autoLearnThreshold", "router", "schedule", "sleepStart", "sleepEnd", "idleThresholdMinutes", "minBatchSize", "calendarCredentials", "rl", "localTraining"]);
 const KNOWN_TELEMETRY_KEYS = new Set(["enabled", "endpoint"]);
 
 /**
@@ -249,6 +250,66 @@ export function validateSettings(
         if (typeof v !== "number" || v < 1 || !Number.isInteger(v)) {
           warnings.push(`'skillbank.maxSkills' must be an integer >= 1 (got ${JSON.stringify(v)}) — using default`);
           delete sb.maxSkills;
+        }
+      }
+
+      // mergeAt: integer >= 0 (0 = disabled)
+      if (sb.mergeAt !== undefined) {
+        const v = sb.mergeAt;
+        if (typeof v !== "number" || v < 0 || !Number.isInteger(v)) {
+          warnings.push(`'skillbank.mergeAt' must be an integer >= 0 (got ${JSON.stringify(v)}) — using default`);
+          delete sb.mergeAt;
+        }
+      }
+
+      // mergeThreshold: 0–1
+      if (sb.mergeThreshold !== undefined) {
+        const v = sb.mergeThreshold;
+        if (typeof v !== "number" || v < 0 || v > 1) {
+          warnings.push(`'skillbank.mergeThreshold' must be between 0 and 1 (got ${JSON.stringify(v)}) — using default`);
+          delete sb.mergeThreshold;
+        }
+      }
+
+      // mergeMinClusterSize: integer >= 2
+      if (sb.mergeMinClusterSize !== undefined) {
+        const v = sb.mergeMinClusterSize;
+        if (typeof v !== "number" || v < 2 || !Number.isInteger(v)) {
+          warnings.push(`'skillbank.mergeMinClusterSize' must be an integer >= 2 (got ${JSON.stringify(v)}) — using default`);
+          delete sb.mergeMinClusterSize;
+        }
+      }
+    }
+  }
+
+  // ── omls ─────────────────────────────────────────────────────────────────
+  if (settings.omls !== undefined) {
+    if (typeof settings.omls !== "object" || settings.omls === null) {
+      warnings.push(`'omls' must be an object — ignoring`);
+      delete settings.omls;
+    } else {
+      const omls = settings.omls as Record<string, unknown>;
+
+      for (const key of Object.keys(omls)) {
+        if (!KNOWN_OMLS_KEYS.has(key)) {
+          warnings.push(`unknown key 'omls.${key}'`);
+        }
+      }
+
+      // mode: "prompt" | "lora" | "auto"
+      if (omls.mode !== undefined) {
+        if (!["prompt", "lora", "auto"].includes(omls.mode as string)) {
+          warnings.push(`'omls.mode' must be "prompt", "lora", or "auto" (got ${JSON.stringify(omls.mode)}) — using default`);
+          delete omls.mode;
+        }
+      }
+
+      // autoLoraThreshold: integer >= 1
+      if (omls.autoLoraThreshold !== undefined) {
+        const v = omls.autoLoraThreshold;
+        if (typeof v !== "number" || v < 1 || !Number.isInteger(v)) {
+          warnings.push(`'omls.autoLoraThreshold' must be an integer >= 1 (got ${JSON.stringify(v)}) — using default`);
+          delete omls.autoLoraThreshold;
         }
       }
     }

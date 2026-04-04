@@ -17,6 +17,7 @@ import type { OmlsConfig } from "../types.js";
 import { checkIdle } from "./idle-detector.js";
 import { countDistillableBuffer, getCurrentSkillGeneration } from "./trajectory-buffer.js";
 import type { LocalBackend } from "./hardware-detector.js";
+import { listSkills } from "../skillbank.js";
 
 export interface SchedulerCheckResult {
   shouldTrain: boolean;
@@ -41,6 +42,39 @@ export async function checkSchedulerConditions(
   cfg: OmlsConfig,
 ): Promise<SchedulerCheckResult> {
   const minBatchSize = cfg.minBatchSize ?? 8;
+  const mode = cfg.mode ?? "auto";
+
+  // ── 0. Mode gate ──────────────────────────────────────────────────────────
+  if (mode === "prompt") {
+    return {
+      shouldTrain: false,
+      reason: "mode=prompt: LoRA training disabled — set omls.mode to 'lora' or 'auto' to enable",
+      bufferSize: 0,
+      idleResult: { isIdle: false, reason: "mode=prompt", idleSeconds: null, inSleepWindow: false, calendarBusy: false },
+      preferredBackend: "cloud",
+    };
+  }
+
+  if (mode === "auto") {
+    const threshold = cfg.autoLoraThreshold ?? 150;
+    try {
+      const skills = await listSkills(false);
+      if (skills.length < threshold) {
+        return {
+          shouldTrain: false,
+          reason: `mode=auto: ${skills.length}/${threshold} active skills — staying in prompt mode until threshold is reached`,
+          bufferSize: 0,
+          idleResult: { isIdle: true, reason: "mode=auto (below threshold)", idleSeconds: null, inSleepWindow: false, calendarBusy: false },
+          preferredBackend: "cloud",
+        };
+      }
+      process.stderr.write(
+        `[omls] auto mode: ${skills.length} skills ≥ threshold ${threshold} — proceeding with LoRA training\n`,
+      );
+    } catch {
+      // SkillBank unavailable — fall through to standard checks
+    }
+  }
 
   // ── 1. Idle check ─────────────────────────────────────────────────────────
   const idleResult = await checkIdle(cfg);
